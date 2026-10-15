@@ -33,7 +33,7 @@ local NUMBER_FIELDS = {
 local TOOLTIPS = {
   predict = "Start a prediction, as the Predict button does, each time this condition becomes true.",
   deconstruct = "Each time this condition becomes true, stop the cluster and mark everything on its " ..
-    "painted area for deconstruction, as the Clear button does.",
+    "build region for deconstruction, as the Clear button does.",
   read_state = "Write this server's state to its wires:\n" ..
     "[virtual-signal=factorion-predicting] 1 while predicting\n" ..
     "[virtual-signal=factorion-ready] 1 when a prediction could start\n" ..
@@ -46,7 +46,7 @@ local TOOLTIPS = {
 }
 
 local ENDPOINT_HELP = "Each item signal on the green wire is a source and on the red wire a sink, " ..
-  "at X + 100 × Y + 10000 × D: X and Y count tiles from the painted area's top-left corner, " ..
+  "at X + 100 × Y + 10000 × D: X and Y count tiles from the build region's top-left corner, " ..
   "0 being just outside it, and D is 1, 2, 3 or 4 for facing north, east, south or west."
 
 local DEFAULT_CONDITIONS = {
@@ -102,7 +102,7 @@ local function show_endpoints(frame, region, from_wires)
         unused, unused == 1 and "signal" or "signals"))
     end
   elseif from_wires then
-    table.insert(decoded, "Decoded once this server has a painted area.")
+    table.insert(decoded, "Decoded once this server has a build region.")
   end
   fill(frame.panels.window.body.main.endpoints, used)
   fill(frame.panels.circuit.inner.endpoints.signals, decoded)
@@ -112,7 +112,7 @@ end
 -- Load; describe, on_predict and on_clear get the window's GPU server and
 -- return a message (describe also returns whether Predict can run, its
 -- cluster and its region, if it has one); info returns the server's live state; settings its circuit
--- settings.
+-- settings, and settings_changed shares an edit with its cluster.
 M.on_load = function(_) end
 M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
@@ -121,6 +121,7 @@ M.info = function(_)
   return { status = "idle", caption = "", utilisation = 0, power_kw = 0, networks = {}, powered = false }
 end
 M.settings = function(_) return { conditions = {} } end
+M.settings_changed = function(_) end
 
 function M.config()
   storage.inference = storage.inference or {}
@@ -213,13 +214,13 @@ function M.open(player, server)
   local actions = main.add({ type = "flow", name = "action_row", direction = "horizontal" })
   actions.add({
     type = "button", name = "predict_button", caption = "Predict", style = "green_button",
-    tooltip = "Build a factory on the painted area touching this server with " ..
+    tooltip = "Build a factory on the build region touching this server with " ..
       "every GPU server sharing it, starting from whatever is already on it.",
     tags = { factorion_gpu = "predict" },
   })
   actions.add({
     type = "button", name = "clear_button", caption = "Clear",
-    tooltip = "Stop this cluster's prediction and mark everything on its painted area for deconstruction. Unbuilt ghosts vanish.",
+    tooltip = "Stop this cluster's prediction and mark everything on its build region for deconstruction. Unbuilt ghosts vanish.",
     tags = { factorion_gpu = "clear" },
   })
 
@@ -246,7 +247,7 @@ function M.open(player, server)
 
   local circuit = gui.circuit_panel(frame)
   for _, key in ipairs({ "predict", "deconstruct" }) do
-    gui.condition_section(circuit, key, key == "predict" and "Predict" or "Deconstruct painted area",
+    gui.condition_section(circuit, key, key == "predict" and "Predict" or "Deconstruct build region",
       settings.conditions[key] or DEFAULT_CONDITIONS[key], TOOLTIPS[key])
   end
   gui.circuit_section(circuit, "read_state", "Read state", settings.read_state ~= false,
@@ -284,8 +285,9 @@ local function condition_edited(event)
   local section = event.element.parent
   if section.name ~= key then section = section.parent end
   settings.conditions[key] = gui.read_condition_section(section)
-  gui.grey_condition(section)
   settings.circuit_player = player.index
+  M.settings_changed(server)
+  gui.grey_condition(section)
   return true
 end
 
@@ -320,6 +322,7 @@ function M.on_gui_checked_state_changed(event)
   local tag = event.element.tags.factorion_gpu
   if not (server and (tag == "read_state" or tag == "circuit_endpoints")) then return false end
   M.settings(server)[tag] = event.element.state
+  M.settings_changed(server)
   M.refresh(player, true)
   return true
 end
