@@ -47,6 +47,8 @@ def gh_ctx(monkeypatch):
     monkeypatch.setattr("ci.runpod_api.create_pod", fake_create_pod)
     monkeypatch.setattr(gh_command, "_wandb_entity", lambda: "testent")
     monkeypatch.setattr(gh_command, "_missing_run_warnings", lambda infos: "")
+    # Its probe spawns a Python that imports torch (~3s); tested on its own below.
+    monkeypatch.setattr(gh_command, "_ensure_render_deps", lambda: None)
     # Live pod/run statuses hit RunPod + W&B; give every pod a "running" pair.
     monkeypatch.setattr(
         gh_command,

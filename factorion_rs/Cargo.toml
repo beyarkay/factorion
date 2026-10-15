@@ -27,3 +27,8 @@ pyo3-bindings = ["pyo3/extension-module", "dep:pyo3", "dep:numpy"]
 # weight to the wheel.
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+
+[profile.test]
+# The generator tests build thousands of factories, ~7x faster optimised for
+# ~1s more compile. Debug assertions and overflow checks stay on.
+opt-level = 1
