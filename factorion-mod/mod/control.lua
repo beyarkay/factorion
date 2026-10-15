@@ -1,9 +1,12 @@
 -- Factorion mod runtime.
 --
--- A region is a painted (blue) area with a GPU server against its edge; the
--- server's state lives in `storage.servers[unit_number]`:
---   footprint = { x=int, y=int, w=int, h=int }   model grid, world tiles
---   pending   = { request_id=string, tick=int }  in-flight request, if any
+-- A region is a painted (blue) area with a GPU server against its edge or
+-- cabled to it; every server sharing paint with it is its cluster, and they
+-- predict together. A server's state lives in `storage.servers[unit_number]`:
+--   footprint  = { x=int, y=int, w=int, h=int }   model grid, world tiles
+--   pending    = { request_id=string, tick=int }  in-flight request it owns
+--   computing  = request_id                       its cluster's request
+--   conditions = { predict=…, deconstruct=… }     circuit conditions
 --
 -- Round trip (single-channel RCON, both directions):
 --   1. On the GPU server's Predict button, we build a request JSON describing
@@ -22,6 +25,7 @@
 
 local parity = require("parity")
 local inference = require("inference")
+local gui = require("gui")
 
 local PROTOCOL_VERSION = "11"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
@@ -33,6 +37,15 @@ local STOP_REASONS = {
   max_steps = "it was still changing at the step limit",
   server_error = "the server hit an error",
 }
+-- A cluster's denoising step takes the forward-pass time divided by its
+-- powered servers, counting at most this many.
+local MAX_CLUSTER_SPEEDUP = 8
+local FORWARD_PASS = "factorion-forward-pass"
+local GPU_SIGNALS = "factorion-gpu-signals"
+local IDLE_KW, BUSY_KW = 0.9, 4.5
+-- Utilisation is a moving average with this time constant.
+local UTILISATION_TICKS = 2 * 60
+local SOURCE_EMPTY_TICKS = 2 * 60
 
 local SETTING_DEFAULTS = {}
 for _, spec in pairs(require("settings_spec")) do
@@ -88,7 +101,8 @@ local function show_startup_message(player)
   player.print("[Factorion] Ready. Craft a [item=factorion-planner], click a " ..
     "tile with it to choose what to make, then click a tile for each source. " ..
     "Paint the tiles the factory may use with [item=factorion-mask], put a " ..
-    "[item=factorion-gpu-server] against the paint and press Predict in its window.")
+    "[item=factorion-gpu-server] against the paint and press Predict in its window. " ..
+    "Belt the ingredients into the source belts and carry the product away from the sink.")
 end
 
 script.on_event(defines.events.on_player_created, function(event)
@@ -264,9 +278,49 @@ local function server_pieces(server, size)
   return pieces
 end
 
--- Outlines each painted area of the surface, in alt-mode only. An area
--- bigger than the model's grid is outlined only where GPU servers would
--- build, or in red when none would. removed is a GPU server about to go.
+-- Blinks, like vanilla's alert icons.
+local function draw_alert(kind, target, surface, offset)
+  local object = rendering.draw_sprite({
+    sprite = "factorion-alert-" .. kind, target = target, surface = surface,
+    target_offset = offset, x_scale = 0.8, y_scale = 0.8,
+    render_layer = "entity-info-icon-above",
+  })
+  storage.blinking = storage.blinking or {}
+  table.insert(storage.blinking, object.id)
+  return object.id
+end
+
+-- Every GPU server on server's surface sharing painted tiles with it,
+-- server first.
+local function cluster(server)
+  local size = storage.model.grid_size
+  local own = {}
+  for _, piece in ipairs(server_pieces(server, size) or {}) do
+    for key in pairs(piece.area) do own[key] = true end
+  end
+  local members = { server }
+  for _, other in pairs(server.surface.find_entities_filtered({ name = inference.GPU_SERVER })) do
+    local shared = false
+    for _, piece in ipairs(other ~= server and server_pieces(other, size) or {}) do
+      for key in pairs(piece.area) do shared = shared or own[key] ~= nil end
+    end
+    if shared then table.insert(members, other) end
+  end
+  return members
+end
+
+local function powered(servers)
+  local result = {}
+  for _, server in ipairs(servers) do
+    if server.energy > 0 then table.insert(result, server) end
+  end
+  return result
+end
+
+-- Outlines each painted area of the surface, in alt-mode only, and flags
+-- the ones no GPU server reaches. An area bigger than the model's grid is
+-- outlined only where GPU servers would build, or in red when none would.
+-- removed is a GPU server about to go.
 local function draw_mask_outline(surface, removed)
   storage.mask_outlines = storage.mask_outlines or {}
   for _, id in ipairs(storage.mask_outlines[surface.index] or {}) do
@@ -350,18 +404,25 @@ local function draw_mask_outline(surface, removed)
           end
         end
       end
+      local part = {}
+      for tile_at, tile in pairs(area) do
+        if covered[tile_at] then part[tile_at] = tile end
+      end
       if not size or (max_x - min_x < size and max_y - min_y < size) then
         outline(area, MASK_OUTLINE_COLOR)
+      elseif next(part) then
+        outline(part, MASK_OUTLINE_COLOR)
       else
-        local part = {}
-        for tile_at, tile in pairs(area) do
-          if covered[tile_at] then part[tile_at] = tile end
+        outline(area, MASK_TOO_BIG_COLOR)
+      end
+      if size and not next(part) then
+        local cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+        local best
+        for _, tile in pairs(area) do
+          local d = (tile.x - cx) ^ 2 + (tile.y - cy) ^ 2
+          if not best or d < best.d then best = { x = tile.x, y = tile.y, d = d } end
         end
-        if next(part) then
-          outline(part, MASK_OUTLINE_COLOR)
-        else
-          outline(area, MASK_TOO_BIG_COLOR)
-        end
+        table.insert(ids, draw_alert("unlinked", { best.x + 0.5, best.y + 0.5 }, surface))
       end
     end
   end
@@ -516,7 +577,7 @@ local function cable_select(event, player)
   })
   state.cable = { server = cable.server, poles = {} }
   draw_mask_outline(surface)
-  inference.refresh_all()
+  inference.refresh_all(true)
 end
 
 -- Right-click a GPU server, pole or cable end to remove the cables on it.
@@ -532,7 +593,7 @@ local function cable_cut(event, player)
     return cable.x == x and cable.y == y
   end)
   player.print(string.format("[Factorion] Removed %d data cable(s).", removed))
-  inference.refresh_all()
+  inference.refresh_all(true)
 end
 
 local function mask_tiles_changed(event)
@@ -555,7 +616,6 @@ script.on_event({
 
 local MARKER_DIALOG = "factorion-marker-dialog"
 local ITEM_PICKER = "factorion-marker-item"
-local SAVE_MARKER = "factorion-save-marker"
 local FACTORIO_TO_DIRECTION = {
   [defines.direction.north] = 1,
   [defines.direction.east] = 2,
@@ -621,6 +681,7 @@ local function refresh_sink_rate_label(entity, config)
     alignment = "center",
     vertical_alignment = "bottom",
     render_mode = "game",
+    only_in_alt_mode = true,
   })
   config.rate_render_id = label.id
 end
@@ -647,48 +708,12 @@ local function refresh_endpoint_alt_icon(entity, config)
   config.render_id = icon.id
 end
 
-local function clear_downstream_item(source, item)
-  local queue = { source }
-  local next_index = 1
-  local visited = {}
-  local removed = 0
-
-  while next_index <= #queue do
-    local entity = queue[next_index]
-    next_index = next_index + 1
-    local unit_number = entity and entity.valid and entity.unit_number or nil
-    if unit_number and not visited[unit_number] then
-      visited[unit_number] = true
-      for line_index = 1, entity.get_max_transport_line_index() do
-        local line = entity.get_transport_line(line_index)
-        local count = line.get_item_count({ name = item })
-        if count > 0 then
-          removed = removed + line.remove_item({ name = item, count = count })
-        end
-        for _, output_line in pairs(line.output_lines) do
-          local owner = output_line.owner
-          if owner and owner.valid and owner.unit_number
-              and not visited[owner.unit_number] then
-            table.insert(queue, owner)
-          end
-        end
-      end
-    end
-  end
-
-  return removed
-end
-
 local function register_endpoint(entity, item)
   local role = endpoint_role(entity)
   if not role or not entity.unit_number then return nil end
   storage.endpoints = storage.endpoints or {}
-  local config = storage.endpoints[entity.unit_number] or {}
+  local config = storage.endpoints[entity.unit_number] or { seen_tick = game.tick }
   local item_changed = item and config.item and item ~= config.item
-  local cleared_items = 0
-  if role == "source" and item_changed then
-    cleared_items = clear_downstream_item(entity, config.item)
-  end
   config.entity = entity
   config.role = role
   config.item = item or config.item or get_default_item(role)
@@ -702,7 +727,7 @@ local function register_endpoint(entity, item)
     destroy_sink_rate_label(config)
   end
   refresh_endpoint_alt_icon(entity, config)
-  return config, cleared_items
+  return config
 end
 
 local function endpoint_config(entity)
@@ -733,7 +758,7 @@ local function remove_entity(entity, player, is_predicted)
     entity.destroy({ raise_destroy = true })
   elseif setting("factorion-placement-mode") == "ghost" then
     entity.order_deconstruction(entity.force, player)
-  elseif is_predicted then
+  elseif is_predicted or not player then
     entity.destroy({ raise_destroy = true })
   else
     player.mine_entity(entity, true)
@@ -749,9 +774,23 @@ local function clear_predicted_entities(state, player)
   state.model_entities = {}
 end
 
+-- The cluster computing request_id drops its unused forward-pass tokens and
+-- idles once the current pass finishes.
+local function release_cluster(request_id)
+  for _, state in pairs(storage.servers or {}) do
+    if state.computing == request_id then
+      state.computing = nil
+      if state.entity.valid then
+        state.entity.get_inventory(defines.inventory.crafter_input).clear()
+      end
+    end
+  end
+end
+
 local function cancel_pending(state)
   if not state.pending then return end
   local request_id = state.pending.request_id
+  release_cluster(request_id)
   if storage.pending_by_request then
     storage.pending_by_request[request_id] = nil
   end
@@ -773,31 +812,55 @@ local function close_marker_dialog(player, state)
   state.picker = nil
 end
 
+local function source_receiving(config)
+  return game.tick - (config.seen_tick or 0) < SOURCE_EMPTY_TICKS
+end
+
+local function refresh_marker_dialog(player, state)
+  local frame = player.gui.screen[MARKER_DIALOG]
+  local config = state.picker and endpoint_config(state.picker.entity)
+  if not (frame and config and config.entity.valid) then
+    if frame then close_marker_dialog(player, state) end
+    return
+  end
+  local item = "[item=" .. config.item .. "]"
+  local main = frame.body.main
+  if config.role == "source" then
+    if source_receiving(config) then
+      gui.set_status(main, "working", "Receiving " .. item)
+    else
+      gui.set_status(main, "waiting", "No " .. item .. " arriving; belt some in")
+    end
+  elseif (config.throughput_rate or 0) >= 0.05 then
+    gui.set_status(main, "working", string.format("%.1f %s per second", config.throughput_rate, item))
+  else
+    gui.set_status(main, "waiting", "No " .. item .. " passing through")
+  end
+end
+
 local function open_marker_dialog(player, state, role, entity)
   close_marker_dialog(player, state)
-  state.picker = {
-    entity_unit_number = entity.unit_number,
-  }
+  state.picker = { entity = entity }
   local config = endpoint_config(entity)
-  local title = "Configure Factorion " .. role .. " belt"
-  local prompt = role == "source"
-    and "Choose the item this source belt produces:"
-    or "Choose the item this sink counts toward throughput:"
-  local frame = player.gui.screen.add({
-    type = "frame", name = MARKER_DIALOG, caption = title,
-    direction = "vertical",
+  local frame, main = gui.entity_window(player, MARKER_DIALOG,
+    { "entity-name." .. entity.name }, entity)
+  gui.heading(main, role == "source" and "Expected item" or "Counted item")
+  local row = main.add({ type = "flow", direction = "horizontal" })
+  row.style.vertical_align = "center"
+  row.add({
+    type = "choose-elem-button", name = ITEM_PICKER, elem_type = "item",
+    item = config and config.item or get_default_item(role),
+    style = "slot_button_in_shallow_frame",
   })
-  frame.auto_center = true
-  frame.add({ type = "label", caption = prompt })
-  frame.add({
-    type = "choose-elem-button", name = ITEM_PICKER,
-    elem_type = "item", item = config and config.item or get_default_item(role),
+  local hint = row.add({
+    type = "label",
+    caption = role == "source"
+      and "Belt this item into the source; the model builds from it."
+      or "The model builds to make this item; its rate is shown in alt-mode.",
   })
-  local actions = frame.add({ type = "flow", direction = "horizontal" })
-  actions.add({
-    type = "button", name = SAVE_MARKER, caption = "Save item",
-    style = "confirm_button",
-  })
+  hint.style.single_line = false
+  hint.style.maximal_width = 260
+  refresh_marker_dialog(player, state)
   player.opened = frame
 end
 
@@ -971,7 +1034,8 @@ local function finish_plan(player, state)
   plan.done = true
   orient_sink(plan)
   close_panel(player)
-  player.print("[Factorion] Belts placed. Paint the tiles the factory may use " ..
+  player.print("[Factorion] Belts placed. Belt each ingredient into its source " ..
+    "and carry the product away from the sink. Paint the tiles the factory may use " ..
     "with [item=factorion-mask], then put a [item=factorion-gpu-server] against " ..
     "the paint and press Predict in its window.")
 end
@@ -1055,70 +1119,46 @@ script.on_event(defines.events.on_player_alt_selected_area, function(event)
   end
 end)
 
-local function save_marker_dialog(player, state)
-  if not state.picker then
-    close_marker_dialog(player, state)
-    return
-  end
-  local frame = player.gui.screen[MARKER_DIALOG]
-  local picker = frame and frame[ITEM_PICKER]
-  local item = picker and picker.elem_value
-  if not item then
-    player.print("[Factorion] Choose an item first.")
-    return
-  end
-  local config = storage.endpoints
-    and storage.endpoints[state.picker.entity_unit_number] or nil
-  local entity = config and config.entity or nil
-  if not entity or not endpoint_role(entity) then
-    player.print("[Factorion] That endpoint belt no longer exists.")
-    close_marker_dialog(player, state)
-    return
-  end
-  local cleared_items
-  config, cleared_items = register_endpoint(entity, item)
-  if not config then return end
-  if config.role == "source" and cleared_items > 0 then
-    player.print(string.format(
-      "[Factorion] Source belt now uses [item=%s]; cleared %d old item(s) " ..
-      "from its downstream belts.",
-      config.item, cleared_items))
-  else
-    player.print(string.format(
-      "[Factorion] %s belt now uses [item=%s].",
-      config.role, config.item))
-  end
-  close_marker_dialog(player, state)
+local function marker_item_changed(event)
+  if event.element.name ~= ITEM_PICKER then return end
+  local state = ensure_player_state(event.player_index)
+  local entity = state.picker and state.picker.entity
+  local item = event.element.elem_value
+  if item and entity and entity.valid then register_endpoint(entity, item) end
+  local player = game.get_player(event.player_index)
+  if player then refresh_marker_dialog(player, state) end
 end
 
 script.on_event(defines.events.on_gui_click, function(event)
-  if inference.on_gui_click(event) then return end
-  if event.element.valid and event.element.tags.factorion_plan == "place_sink" then
-    local player = game.get_player(event.player_index)
-    if player then place_sink(player, ensure_player_state(event.player_index)) end
+  local close = event.element.valid and event.element.tags.factorion_close
+  local player = game.get_player(event.player_index)
+  if close and player then
+    local frame = player.gui.screen[close]
+    if frame then frame.destroy() end
+    if close == MARKER_DIALOG then ensure_player_state(event.player_index).picker = nil end
     return
   end
-  local element = event.element
-  if not element or not element.valid or element.name ~= SAVE_MARKER then return end
-  local player = game.get_player(event.player_index)
-  if not player then return end
-  save_marker_dialog(player, ensure_player_state(event.player_index))
+  if inference.on_gui_click(event) then return end
+  if event.element.valid and event.element.tags.factorion_plan == "place_sink" then
+    if player then place_sink(player, ensure_player_state(event.player_index)) end
+  end
 end)
 
 script.on_event("factorion-confirm-dialog", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
   local state = ensure_player_state(event.player_index)
-  if player.gui.screen[PLAN_DIALOG] then
-    place_sink(player, state)
-    return
-  end
-  if not state.picker or not player.gui.screen[MARKER_DIALOG] then return end
-  save_marker_dialog(player, state)
+  if player.gui.screen[PLAN_DIALOG] then place_sink(player, state) end
 end)
 
 script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_changed)
 script.on_event(defines.events.on_gui_confirmed, inference.on_gui_confirmed)
+script.on_event(defines.events.on_gui_checked_state_changed, inference.on_gui_checked_state_changed)
+script.on_event(defines.events.on_gui_selection_state_changed, inference.on_gui_selection_state_changed)
+script.on_event(defines.events.on_gui_elem_changed, function(event)
+  if not event.element.valid or inference.on_gui_elem_changed(event) then return end
+  marker_item_changed(event)
+end)
 
 -- The server keeps its built-in window only so clicking it raises this event;
 -- the inference window replaces it straight away.
@@ -1140,6 +1180,7 @@ script.on_event(defines.events.on_gui_closed, function(event)
   end
   if not event.element or not event.element.valid
       or event.element.name ~= MARKER_DIALOG then return end
+  event.element.destroy()
   ensure_player_state(event.player_index).picker = nil
 end)
 
@@ -1163,6 +1204,11 @@ local function entity_built(event)
     owner.model_entities[entity.unit_number] = entity
   end
   if entity and entity.valid and entity.name == inference.GPU_SERVER then
+    local copied = event.tags and event.tags.factorion_gpu
+    if copied then
+      local state = server_state(entity)
+      state.conditions, state.read_state = copied.conditions, copied.read_state
+    end
     draw_mask_outline(entity.surface)
   end
   local role = endpoint_role(entity)
@@ -1186,10 +1232,23 @@ script.on_event(defines.events.on_entity_cloned, function(event)
   end
 end)
 
+local function gpu_settings(entity)
+  local state = storage.servers and storage.servers[entity.unit_number]
+  return state and { conditions = state.conditions, read_state = state.read_state }
+end
+
 script.on_event(defines.events.on_entity_settings_pasted, function(event)
   local source = endpoint_config(event.source)
   if source and endpoint_role(event.destination) then
     register_endpoint(event.destination, source.item)
+  end
+  local copied = event.source.name == inference.GPU_SERVER
+    and event.destination.name == inference.GPU_SERVER and gpu_settings(event.source)
+  if copied then
+    local state = server_state(event.destination)
+    ---@diagnostic disable-next-line: undefined-field
+    state.conditions = table.deepcopy(copied.conditions)
+    state.read_state = copied.read_state
   end
 end)
 
@@ -1201,6 +1260,8 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
     if config then
       blueprint.set_blueprint_entity_tag(index, "factorion_item", config.item)
     end
+    local copied = entity.name == inference.GPU_SERVER and gpu_settings(entity)
+    if copied then blueprint.set_blueprint_entity_tag(index, "factorion_gpu", copied) end
   end
 end)
 
@@ -1219,8 +1280,10 @@ local function endpoint_entity_removed(event)
   if server then
     cancel_pending(server)
     for _, cable in ipairs(server.cables or {}) do destroy_cable(cable) end
+    if server.signals and server.signals.valid then server.signals.destroy() end
     storage.servers[entity.unit_number] = nil
   end
+  if storage.entity_alerts then storage.entity_alerts[entity.unit_number] = nil end
   if entity.type == "electric-pole" then remove_cables(through_pole(entity)) end
   if entity.name == inference.GPU_SERVER then draw_mask_outline(entity.surface, entity) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
@@ -1230,58 +1293,43 @@ local function endpoint_entity_removed(event)
 end
 
 script.on_event(defines.events.on_player_mined_entity, endpoint_entity_removed)
+
+-- Mining a server would otherwise hand over its forward-pass tokens.
+local function gpu_pre_mined(event)
+  local entity = event.entity
+  if entity.valid and entity.name == inference.GPU_SERVER then
+    entity.get_inventory(defines.inventory.crafter_input).clear()
+  end
+end
+script.on_event(defines.events.on_pre_player_mined_item, gpu_pre_mined)
+script.on_event(defines.events.on_robot_pre_mined, gpu_pre_mined)
 script.on_event(defines.events.on_robot_mined_entity, endpoint_entity_removed)
 script.on_event(defines.events.on_entity_died, endpoint_entity_removed)
 script.on_event(defines.events.script_raised_destroy, endpoint_entity_removed)
 
-local function feed_source(mark, entity)
+-- How many of the endpoint's item newly reached its tile since the last
+-- tick. Transport lines run past the tile, so only items on it count.
+local function count_arrivals(config, entity)
+  local left, right = entity.position.x - 0.51, entity.position.x + 0.51
+  local top, bottom = entity.position.y - 0.51, entity.position.y + 0.51
+  local previous, present, arrived = config.on_tile or {}, {}, 0
   for line_index = 1, entity.get_max_transport_line_index() do
     local line = entity.get_transport_line(line_index)
-    -- Four unstacked items fit on a one-tile lane. Eight attempts also fill
-    -- stacked lanes while remaining bounded if another mod changes belt rules.
-    for _ = 1, 8 do
-      if not line.can_insert_at_back() then break end
-      if not line.insert_at_back({ name = mark.item, count = 1 }) then break end
-    end
-  end
-end
-
-local function drain_sink(mark, entity)
-  local removed_total = 0
-  local left = entity.position.x - 0.51
-  local right = entity.position.x + 0.51
-  local top = entity.position.y - 0.51
-  local bottom = entity.position.y + 0.51
-  for line_index = 1, entity.get_max_transport_line_index() do
-    local line = entity.get_transport_line(line_index)
-    local removals = {}
     for _, detail in ipairs(line.get_detailed_contents()) do
       local stack = detail.stack
-      if stack.valid_for_read then
+      if stack.valid_for_read and stack.name == config.item then
         local position = line.get_line_item_position(detail.position)
         if position.x >= left and position.x <= right
             and position.y >= top and position.y <= bottom then
-          local quality = stack.quality and stack.quality.name or nil
-          local key = stack.name .. "\0" .. (quality or "")
-          local removal = removals[key]
-          if not removal then
-            removal = { name = stack.name, quality = quality, count = 0 }
-            removals[key] = removal
-          end
-          removal.count = removal.count + stack.count
+          present[detail.unique_id] = true
+          if not previous[detail.unique_id] then arrived = arrived + stack.count end
         end
       end
     end
-    for _, removal in pairs(removals) do
-      local request = { name = removal.name, count = removal.count }
-      if removal.quality then request.quality = removal.quality end
-      local removed = line.remove_item(request)
-      if removal.name == mark.item then
-        removed_total = removed_total + removed
-      end
-    end
   end
-  return removed_total
+  config.on_tile = present
+  if next(present) then config.seen_tick = game.tick end
+  return arrived
 end
 
 local function service_endpoint_belts()
@@ -1293,12 +1341,10 @@ local function service_endpoint_belts()
     if not entity or not endpoint_role(entity) then
       destroy_endpoint_alt_icon(config)
       storage.endpoints[unit_number] = nil
-    elseif config.role == "source" then
-      feed_source(config, entity)
     else
       config.throughput_rate = (config.throughput_rate or 0) * decay
-        + drain_sink(config, entity) * 60 * (1 - decay)
-      if game.tick % SINK_LABEL_REFRESH_TICKS == 0 then
+        + count_arrivals(config, entity) * 60 * (1 - decay)
+      if config.role == "sink" and game.tick % SINK_LABEL_REFRESH_TICKS == 0 then
         refresh_sink_rate_label(entity, config)
       end
     end
@@ -1373,10 +1419,6 @@ local function check_server()
   end
 end
 
-script.on_nth_tick(60, function()
-  check_server()
-  inference.refresh_all()
-end)
 
 -- ----------------------------------------------------------------------------
 -- execute: write a request JSON the server picks up
@@ -1389,8 +1431,7 @@ end
 
 -- The entities wholly inside fp, as the model sees them: the player's, and
 -- what this GPU server built before.
-local function gather_existing_entities(state, surface, fp)
-  local predicted = state.model_entities or {}
+local function gather_existing_entities(predicted, surface, fp)
   local result, previous = {}, {}
   local candidates = surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
@@ -1501,11 +1542,14 @@ local function region_for(server)
     y = min_y - math.floor((size - span_y) / 2),
     w = size, h = size,
   }
-  local region = { fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {} }
+  local region = { fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {}, sink_units = {} }
   for _, tile in pairs(area) do
     table.insert(region.allowed, { x = tile.x - fp.x, y = tile.y - fp.y })
   end
   for _, endpoint in ipairs(endpoints) do
+    if endpoint.config.role == "sink" then
+      table.insert(region.sink_units, endpoint.entity.unit_number)
+    end
     table.insert(endpoint.config.role == "source" and region.sources or region.sinks, {
       x = endpoint.x - fp.x, y = endpoint.y - fp.y,
       direction = FACTORIO_TO_DIRECTION[endpoint.entity.direction],
@@ -1523,12 +1567,17 @@ local function icons(endpoints)
   return table.concat(parts, " ")
 end
 
--- What the GPU server's window says about the area it would build.
+-- The description of the request a server's cluster is computing.
+local function computing_description(state)
+  local owner = storage.servers[storage.pending_by_request[state.computing] or 0]
+  return owner and owner.pending and owner.pending.description or "a factory"
+end
+
 -- The region server would build now, or nil and why it can't.
 local function predictable_region(server)
   local state = server_state(server)
-  if state.pending then
-    return nil, "Building " .. state.pending.description .. "…"
+  if state.computing then
+    return nil, "Building " .. computing_description(state) .. "…"
   end
   if server.energy <= 0 then return nil, "This GPU server has no power." end
   local region, reason = region_for(server)
@@ -1542,15 +1591,30 @@ local function predictable_region(server)
   return region
 end
 
-inference.describe = function(server)
-  local region, reason = predictable_region(server)
-  if not region then return reason, false end
-  return string.format("Painted area of %d tiles, converting %s to %s.",
-    region.tiles, icons(region.sources), icons(region.sinks)), true
+local function step_seconds(servers)
+  return setting("factorion-forward-pass-time") / math.max(1, math.min(#servers, MAX_CLUSTER_SPEEDUP))
 end
 
-local function gather_request(state, region)
-  local model_entities, previous = gather_existing_entities(state, state.entity.surface, region.fp)
+inference.describe = function(server)
+  local members = storage.model and cluster(server) or { server }
+  local on = powered(members)
+  local speed = #on == 0 and "none powered" or string.format(
+    "%d powered: %.2f s per denoising step", #on, step_seconds(on))
+  local cluster_caption = #members == 1
+    and string.format("No other GPU server shares this paint; %s.", speed)
+    or string.format("Cluster of %d GPU servers sharing this paint, %s.", #members, speed)
+  local region, reason = predictable_region(server)
+  if not region then return reason, false, cluster_caption end
+  return string.format("Painted area of %d tiles, converting %s to %s.",
+    region.tiles, icons(region.sources), icons(region.sinks)), true, cluster_caption
+end
+
+local function gather_request(state, region, members)
+  local predicted = {}
+  for _, member in ipairs(members) do
+    for unit, entity in pairs(server_state(member).model_entities or {}) do predicted[unit] = entity end
+  end
+  local model_entities, previous = gather_existing_entities(predicted, state.entity.surface, region.fp)
   local description = string.format("converting %s to %s on %d painted tiles",
     icons(region.sources), icons(region.sinks), region.tiles)
   if #model_entities > 0 then
@@ -1568,7 +1632,7 @@ local function gather_request(state, region)
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = region.fp.w,
-    step_delay_s  = setting("factorion-step-delay"),
+    step_delay_s  = step_seconds(members),
     temperature   = config.temperature,
     steps         = config.steps,
     refine        = config.refine,
@@ -1583,22 +1647,31 @@ local function gather_request(state, region)
   return request, description
 end
 
--- Rebuilds the factory in the painted area against server, starting from
--- what this server built before. Returns the message for the player.
-inference.on_predict = function(player, server)
+-- Rebuilds the factory in the painted area with every powered server of
+-- server's cluster, starting from what they built before. Returns the
+-- message for the player and whether it started; player is nil when a
+-- circuit condition asked.
+inference.on_predict = function(player, server, quiet)
   ensure_pending_lookup()
   local region, reason = predictable_region(server)
-  if not region then return reason end
+  if not region then return reason, false end
   local state = server_state(server)
-  local request, description = gather_request(state, region)
+  local members = powered(cluster(server))
+  local request, description = gather_request(state, region, members)
   local request_json = helpers.table_to_json(request)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = server.unit_number
   state.footprint = region.fp
-  state.player_index = player.index
+  state.player_index = player and player.index
+  state.quiet = quiet
   state.pending = {
     request_id = request.request_id, tick = game.tick, description = description,
   }
+  for _, member in ipairs(members) do
+    local member_state = server_state(member)
+    member_state.computing = request.request_id
+    member_state.steps = 0
+  end
   log("[Factorion] enqueued request " .. request.request_id ..
       " json=" .. request_json)
   local changed = {}
@@ -1608,14 +1681,14 @@ inference.on_predict = function(player, server)
       table.insert(changed, string.format(knob[2], value))
     end
   end
-  local message = string.format("Requesting a factory %s using checkpoint %s%s.",
-    description, request.checkpoint,
+  local message = string.format("Requesting a factory %s using checkpoint %s on %d GPU server(s)%s.",
+    description, request.checkpoint, #members,
     #changed > 0 and " (" .. table.concat(changed, ", ") .. ")" or "")
   if not server_alive() then
     message = message .. " No model server is connected, so nothing will " ..
       "happen yet. " .. server_help()
   end
-  return message
+  return message, true
 end
 
 script.on_event("factorion-predict", function(event)
@@ -1625,12 +1698,267 @@ script.on_event("factorion-predict", function(event)
   player.print("[Factorion] " .. inference.on_predict(player, server))
 end)
 
--- Stops the server's prediction and removes everything it built.
+-- Stops the cluster's prediction and removes everything it built.
 inference.on_clear = function(player, server)
+  for _, member in ipairs(storage.model and cluster(server) or { server }) do
+    local state = server_state(member)
+    cancel_pending(state)
+    clear_predicted_entities(state, player)
+  end
+  return "Cleared this cluster's factory."
+end
+
+-- Marks every entity of the kinds the model builds on the server's paint
+-- for robots to deconstruct, and drops unbuilt ghosts; returns how many.
+local function deconstruct_region(server, player)
+  if not storage.model then return 0 end
+  local members = cluster(server)
+  for _, member in ipairs(members) do
+    local state = server_state(member)
+    cancel_pending(state)
+    state.model_entities = {}
+  end
+  local marked = 0
+  for _, piece in ipairs(server_pieces(server, storage.model.grid_size) or {}) do
+    local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
+    for _, tile in pairs(piece.area) do
+      min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+      min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+    end
+    local area = { { min_x, min_y }, { max_x + 1, max_y + 1 } }
+    local found = server.surface.find_entities_filtered({ area = area, name = MODEL_ENTITY_NAMES })
+    for _, ghost in pairs(server.surface.find_entities_filtered({ area = area, ghost_name = MODEL_ENTITY_NAMES })) do
+      table.insert(found, ghost)
+    end
+    for _, entity in pairs(found) do
+      local at = tile_key(math.floor(entity.position.x), math.floor(entity.position.y))
+      if piece.area[at] then
+        if entity.type == "entity-ghost" then
+          entity.destroy({ raise_destroy = true })
+        elseif not entity.to_be_deconstructed() then
+          entity.order_deconstruction(entity.force, player)
+          marked = marked + 1
+        end
+      end
+    end
+  end
+  return marked
+end
+
+-- ----------------------------------------------------------------------------
+-- GPU servers: power, utilisation, circuit conditions and state signals
+-- ----------------------------------------------------------------------------
+
+local WIRES = { defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }
+local UTILISATION_DECAY = math.exp(-10 / UTILISATION_TICKS)
+
+-- A hidden constant combinator wired to the server writes its state onto
+-- whatever networks the player wires to it.
+local function ensure_signals(state)
+  if state.signals and state.signals.valid then return state.signals end
+  local server = state.entity
+  local combinator = server.surface.create_entity({
+    name = GPU_SIGNALS, position = server.position, force = server.force,
+  })
+  for _, wire in ipairs(WIRES) do
+    combinator.get_wire_connector(wire, true).connect_to(
+      server.get_wire_connector(wire, true), false, defines.wire_origin.script)
+  end
+  state.signals = combinator
+  return combinator
+end
+
+local function wired(server)
+  for _, wire in ipairs(WIRES) do
+    local connector = server.get_wire_connector(wire, false)
+    for _, connection in ipairs(connector and connector.connections or {}) do
+      if connection.origin == defines.wire_origin.player then return true end
+    end
+  end
+  return false
+end
+
+local function write_state_signals(state)
+  local behavior = ensure_signals(state).get_control_behavior()
+  local section = behavior.get_section(1) or behavior.add_section()
+  local throughput = 0
+  for _, unit in ipairs(state.sink_units or {}) do
+    local config = storage.endpoints[unit]
+    if config then throughput = throughput + (config.throughput_rate or 0) end
+  end
+  local filters = {}
+  for _, entry in ipairs(state.read_state ~= false and {
+    { "predicting", state.computing and 1 or 0 },
+    { "ready", state.ready and 1 or 0 },
+    { "utilisation", math.floor((state.utilisation or 0) * 100 + 0.5) },
+    { "cluster", state.cluster_size or 0 },
+    { "step", state.steps or 0 },
+    { "throughput", math.floor(throughput * 60 + 0.5) },
+  } or {}) do
+    if entry[2] ~= 0 then
+      table.insert(filters, {
+        value = { type = "virtual", name = "factorion-" .. entry[1], quality = "normal" },
+        min = entry[2],
+      })
+    end
+  end
+  section.filters = filters
+end
+
+local function draw_utilisation(state)
+  local u = state.utilisation or 0
+  local text = string.format("GPU %d%%", math.floor(u * 100 + 0.5))
+  local color = { r = 0.7 - 0.5 * u, g = 0.7 + 0.3 * u, b = 0.7 - 0.5 * u }
+  local label = state.utilisation_label and rendering.get_object_by_id(state.utilisation_label)
+  if label then
+    label.text, label.color = text, color
+    return
+  end
+  state.utilisation_label = rendering.draw_text({
+    text = text, surface = state.entity.surface, target = state.entity,
+    color = color, scale = 1.2, alignment = "center", vertical_alignment = "middle",
+    only_in_alt_mode = true,
+  }).id
+end
+
+-- Every 10 ticks: a server computing for its cluster always has its next
+-- forward-pass token waiting, so it crafts, and draws full power, until the
+-- prediction ends.
+local function service_gpu_servers()
+  for _, state in pairs(storage.servers or {}) do
+    local server = state.entity
+    if server.valid then
+      if state.computing and server.energy > 0 then
+        local inventory = server.get_inventory(defines.inventory.crafter_input)
+        local short = 2 - inventory.get_item_count(FORWARD_PASS)
+        if short > 0 then inventory.insert({ name = FORWARD_PASS, count = short }) end
+      end
+      local status = server.status
+      local busy = (status == defines.entity_status.working
+        or status == defines.entity_status.low_power) and 1 or 0
+      state.utilisation = (state.utilisation or 0) * UTILISATION_DECAY + busy * (1 - UTILISATION_DECAY)
+      write_state_signals(state)
+      draw_utilisation(state)
+    end
+  end
+end
+
+local CIRCUIT_ACTIONS = {
+  predict = function(server, player) inference.on_predict(player, server, true) end,
+  deconstruct = function(server, player) deconstruct_region(server, player) end,
+}
+
+-- Every tick, so a one-tick pulse counts; each condition acts once each time
+-- it becomes true.
+local function check_circuit_conditions()
+  for _, state in pairs(storage.servers or {}) do
+    if state.conditions and state.entity.valid then
+      state.fired = state.fired or {}
+      for key, action in pairs(CIRCUIT_ACTIONS) do
+        local condition = state.conditions[key]
+        local now = condition ~= nil and gui.fulfilled(state.entity, condition)
+        if now and not state.fired[key] then
+          action(state.entity, state.circuit_player and game.get_player(state.circuit_player))
+        end
+        state.fired[key] = now
+      end
+    end
+  end
+end
+
+local function set_alert(entity, kind, offset)
+  storage.entity_alerts = storage.entity_alerts or {}
+  local current = storage.entity_alerts[entity.unit_number]
+  local object = current and rendering.get_object_by_id(current.id)
+  if current and current.kind == kind and object then return end
+  if object then object.destroy() end
+  storage.entity_alerts[entity.unit_number] = kind and {
+    kind = kind, id = draw_alert(kind, entity, entity.surface, offset),
+  } or nil
+end
+
+-- Every second: each server's cluster size, sinks and readiness for its
+-- signals, and the warnings over servers and sources.
+local function survey()
+  local offline = storage.server_connected == false or storage.model_error ~= nil
+  local size = storage.model and storage.model.grid_size
+  for _, surface in pairs(game.surfaces) do
+    local servers = surface.find_entities_filtered({ name = inference.GPU_SERVER })
+    local pieces, on_tile = {}, {}
+    for _, server in ipairs(servers) do
+      pieces[server] = size and server_pieces(server, size) or nil
+      for _, piece in ipairs(pieces[server] or {}) do
+        for key in pairs(piece.area) do
+          on_tile[key] = on_tile[key] or {}
+          on_tile[key][server] = true
+        end
+      end
+    end
+    for _, server in ipairs(servers) do
+      local state = server_state(server)
+      local members = { [server] = true }
+      for _, piece in ipairs(pieces[server] or {}) do
+        for key in pairs(piece.area) do
+          for other in pairs(on_tile[key]) do members[other] = true end
+        end
+      end
+      state.cluster_size = 0
+      for member in pairs(members) do
+        if member.energy > 0 then state.cluster_size = state.cluster_size + 1 end
+      end
+      local region = pieces[server] and region_for(server)
+      state.sink_units = region and region.sink_units or {}
+      state.ready = not state.computing and server.energy > 0 and server_alive()
+        and region and #region.sources > 0 and #region.sinks > 0 or false
+      set_alert(server, offline and "gpu-offline" or (size and not pieces[server] and "unlinked") or nil,
+        { 0, -0.4 })
+    end
+  end
+  for _, config in pairs(storage.endpoints or {}) do
+    if config.entity.valid then
+      set_alert(config.entity,
+        config.role == "source" and not source_receiving(config) and "source-empty" or nil)
+    end
+  end
+end
+
+local function blink()
+  local kept, visible = {}, game.tick % 60 < 30
+  for _, id in ipairs(storage.blinking or {}) do
+    local object = rendering.get_object_by_id(id)
+    if object then
+      object.visible = visible
+      table.insert(kept, id)
+    end
+  end
+  storage.blinking = kept
+end
+
+inference.info = function(server)
   local state = server_state(server)
-  cancel_pending(state)
-  clear_predicted_entities(state, player)
-  return "Cleared this GPU server's factory."
+  local status, caption = "idle", "Idle"
+  if server.energy <= 0 then
+    status, caption = "broken", "No power"
+  elseif storage.server_connected == false then
+    status, caption = "broken", "Can't reach the model server"
+  elseif storage.model_error then
+    status, caption = "broken", "The model failed to load"
+  elseif not storage.model then
+    status, caption = "waiting", "Loading the model…"
+  elseif state.computing then
+    status, caption = "working", string.format("Predicting, %d steps placed", state.steps or 0)
+  end
+  local u = state.utilisation or 0
+  return {
+    status = status, caption = caption, utilisation = u, wired = wired(server),
+    power_kw = server.energy > 0 and IDLE_KW + (BUSY_KW - IDLE_KW) * u or 0,
+  }
+end
+
+inference.settings = function(server)
+  local state = server_state(server)
+  state.conditions = state.conditions or {}
+  return state
 end
 
 local function describe_placement_failure(surface, fp, placement)
@@ -1789,9 +2117,11 @@ remote.add_interface("factorion", {
 
     local state = storage.servers[server]
     if not (state and state.entity.valid) then return "cancelled" end
-    local player = game.get_player(state.player_index)
-    if not player then return "error: requesting player is unavailable" end
+    local player = state.player_index and game.get_player(state.player_index)
     local fp = state.footprint
+    for _, member in pairs(storage.servers) do
+      if member.computing == request_id then member.steps = (member.steps or 0) + 1 end
+    end
 
     local ok, placements = pcall(
       function() return helpers.json_to_table(placements_json) end)
@@ -1820,6 +2150,7 @@ remote.add_interface("factorion", {
       return "cancelled"
     end
     storage.pending_by_request[request_id] = nil
+    release_cluster(request_id)
     if server == 0 then
       log("[Factorion] (headless) prediction complete for " ..
         tostring(request_id) .. ": " .. tostring(summary_json))
@@ -1828,14 +2159,14 @@ remote.add_interface("factorion", {
 
     local state = storage.servers[server]
     if not state then return "cancelled" end
-    local player = game.get_player(state.player_index)
+    local player = state.player_index and game.get_player(state.player_index)
     local description = state.pending and state.pending.description
       or "for an unknown request"
     state.pending = nil
     local ok, summary = pcall(
       function() return helpers.json_to_table(summary_json) end)
     summary = ok and summary or {}
-    if player then
+    if player and not state.quiet then
       local stop = STOP_REASONS[summary.stop_reason]
         or tostring(summary.stop_reason)
       player.print(string.format(
@@ -1869,7 +2200,7 @@ remote.add_interface("factorion", {
     storage.model_loading = nil
     storage.model_error = nil
     for _, surface in pairs(game.surfaces) do draw_mask_outline(surface) end
-    inference.refresh_all()
+    inference.refresh_all(true)
     game.print(string.format(
       "[Factorion] Model %s (%s) ready: it builds painted areas up to %dx%d " ..
       "tiles. Plan a factory with the [item=factorion-planner].",
@@ -1882,7 +2213,7 @@ remote.add_interface("factorion", {
     if failure.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model_loading = nil
     storage.model_error = tostring(failure.error)
-    inference.refresh_all()
+    inference.refresh_all(true)
     game.print(string.format(
       "[Factorion] Could not load checkpoint %s: %s",
       tostring(failure.checkpoint), tostring(failure.error)))
@@ -1949,7 +2280,22 @@ remote.add_interface("factorion", {
 -- surface and early-outs when no run is active.
 script.on_event(defines.events.on_tick, function()
   service_endpoint_belts()
+  check_circuit_conditions()
   parity.on_tick()
+end)
+
+script.on_nth_tick(10, function()
+  service_gpu_servers()
+  inference.refresh_all(false)
+  for _, player in pairs(game.connected_players) do
+    refresh_marker_dialog(player, ensure_player_state(player.index))
+  end
+end)
+script.on_nth_tick(30, blink)
+script.on_nth_tick(60, function()
+  check_server()
+  survey()
+  inference.refresh_all(true)
 end)
 
 -- ----------------------------------------------------------------------------
@@ -1972,6 +2318,13 @@ script.on_configuration_changed(function()
   storage.pending_by_request = storage.pending_by_request or {}
   storage.outbox = storage.outbox or {}
   storage.endpoints = storage.endpoints or {}
+  -- A server whose prototype changed type is gone from the map.
+  for unit, state in pairs(storage.servers) do
+    if not state.entity.valid then
+      for _, cable in ipairs(state.cables or {}) do destroy_cable(cable) end
+      storage.servers[unit] = nil
+    end
+  end
   for _, player in pairs(game.players) do
     -- Saves keep open windows, including ones a newer mod version no longer
     -- manages; every Factorion window is transient, so none should persist.
