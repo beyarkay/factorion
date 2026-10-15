@@ -165,16 +165,16 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
     )
     g = lua.globals()
     frame = g.player.gui.screen["factorion-gpu-gui"]
-    main = frame.window.body.main
+    main = frame.panels.window.body.main
     assert main.status.status_caption.caption == "Predicting"
     assert main.cluster.caption == "Cluster of 2"
 
-    button = frame.window.titlebar.circuit_button
-    assert not frame.circuit.visible
+    button = frame.panels.window.titlebar.circuit_button
+    assert not frame.panels.circuit.visible
     assert g.inference.on_gui_click(event(lua, button))
-    assert frame.circuit.visible and button.toggled
+    assert frame.panels.circuit.visible and button.toggled
 
-    section = frame.circuit.inner.predict
+    section = frame.panels.circuit.inner.predict
     section.active.state = True
     section.condition.signal.elem_value = lua.eval('{ type = "virtual", name = "signal-P" }')
     section.condition.constant.text = "3"
@@ -204,7 +204,7 @@ def test_marker_window_opens_and_shows_status(lua, role):
     )
     frame = lua.globals().frame
     assert find(lua, frame, "factorion-marker-item").elem_value == "iron-plate"
-    assert frame.window.body.main.status.status_caption.caption
+    assert frame.panels.window.body.main.status.status_caption.caption
 
 
 def test_condition_matches_signals_like_vanilla(lua):

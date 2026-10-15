@@ -1,7 +1,7 @@
 -- A strict stand-in for Factorio's GUI, for tests/test_mod_gui.py. It fails
 -- where the game does: an element named after one of LuaGuiElement's own
 -- members, two siblings with one name, or setting a property or style field
--- that doesn't exist. A missing child reads as nil, as in the game.
+-- that doesn't exist or that its element type doesn't have. A missing child reads as nil, as in the game.
 
 local M = {}
 local members, style_fields = {}, {}
@@ -14,10 +14,19 @@ function M.setup(member_list, style_list)
   for _, name in ipairs(style_list) do style_fields[name] = true end
 end
 
-local function new_style()
+-- Style fields only some element types have.
+local STYLE_TYPES = {
+  horizontal_spacing = { flow = true, table = true },
+  vertical_spacing = { flow = true, table = true },
+}
+
+local function new_style(element_type)
   return setmetatable({}, {
     __newindex = function(t, key, value)
       if not style_fields[key] then error("LuaStyle doesn't contain key " .. tostring(key), 2) end
+      if STYLE_TYPES[key] and not STYLE_TYPES[key][element_type] then
+        error("LuaStyle of a " .. tostring(element_type) .. " doesn't contain key " .. key, 2)
+      end
       rawset(t, key, value)
     end,
   })
@@ -26,7 +35,7 @@ end
 local function new_element(spec, parent)
   local element = {
     valid = true, type = spec.type, name = spec.name or "", parent = parent,
-    tags = spec.tags or {}, style = new_style(), children = {},
+    tags = spec.tags or {}, style = new_style(spec.type), children = {},
     caption = "", text = "", tooltip = "", visible = true, enabled = true,
   }
   for key, value in pairs(spec) do

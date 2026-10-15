@@ -13,15 +13,17 @@ local STATUS_SPRITES = {
 
 M.COMPARATORS = { ">", "<", "=", "≥", "≤", "≠" }
 
--- The root is an invisible frame holding the window and any side panels, so
--- they move together. Its close button carries tags.factorion_close = name;
+-- The root is an invisible frame holding the window and any side panels in
+-- root.panels, so they move together. Its close button carries tags.factorion_close = name;
 -- with circuit_tags, a circuit network button carrying them sits beside it.
 function M.entity_window(player, name, title, entity, circuit_tags)
   local root = player.gui.screen.add({
     type = "frame", name = name, style = "invisible_frame", direction = "horizontal",
   })
   root.auto_center = true
-  local frame = root.add({ type = "frame", name = "window", direction = "vertical" })
+  local panels = root.add({ type = "flow", name = "panels", direction = "horizontal" })
+  panels.style.horizontal_spacing = 0
+  local frame = panels.add({ type = "frame", name = "window", direction = "vertical" })
   local titlebar = frame.add({ type = "flow", name = "titlebar", direction = "horizontal" })
   titlebar.drag_target = root
   titlebar.add({
@@ -57,10 +59,9 @@ end
 -- Vanilla's circuit connection panel: a titled frame beside the window, a
 -- subheader naming the networks, then sections divided by lines.
 function M.circuit_panel(root)
-  local frame = root.add({
+  local frame = root.panels.add({
     type = "frame", name = "circuit", caption = "Circuit connection", direction = "vertical",
   })
-  frame.style.left_margin = 4
   frame.drag_target = root
   local inner = frame.add({
     type = "frame", name = "inner", style = "inside_shallow_frame", direction = "vertical",
@@ -127,7 +128,7 @@ end
 
 function M.marker_status(root, role, item, receiving, rate)
   local icon = "[item=" .. item .. "]"
-  local main = root.window.body.main
+  local main = root.panels.window.body.main
   if role == "source" then
     if receiving then
       M.set_status(main, "working", "Receiving " .. icon)

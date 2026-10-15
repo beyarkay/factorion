@@ -81,8 +81,8 @@ end
 -- Whether each player keeps the circuit panel open, as vanilla remembers.
 local function show_circuit(player, frame)
   local open = (storage.gpu_circuit_open or {})[player.index] or false
-  frame.circuit.visible = open
-  frame.window.titlebar.circuit_button.toggled = open
+  frame.panels.circuit.visible = open
+  frame.panels.window.titlebar.circuit_button.toggled = open
 end
 
 local function window_server(player)
@@ -100,13 +100,13 @@ function M.refresh(player, full)
     frame.destroy()
     return
   end
-  local main = frame.window.body.main
+  local main = frame.panels.window.body.main
   local info = M.info(server)
   gui.set_status(main, info.status, info.caption)
   main.utilisation.value = info.utilisation
   main.utilisation_label.caption = string.format("Utilisation %d%%, drawing %.1f kW",
     math.floor(info.utilisation * 100 + 0.5), info.power_kw)
-  frame.circuit.inner.header.network.caption = info.network
+  frame.panels.circuit.inner.header.network.caption = info.network
   if not full then return end
   main.settings.model_status.caption = model_caption()
   local caption, can_predict, cluster = M.describe(server)
@@ -198,7 +198,7 @@ end
 
 local function load_checkpoint(player)
   local frame = player.gui.screen[FRAME]
-  local field = frame and frame.window.body.main.settings.checkpoint_row.checkpoint
+  local field = frame and frame.panels.window.body.main.settings.checkpoint_row.checkpoint
   local checkpoint = field and field.text:match("^%s*(.-)%s*$") or ""
   if checkpoint == "" then return end
   M.config().checkpoint = checkpoint
