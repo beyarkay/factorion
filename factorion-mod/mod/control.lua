@@ -614,6 +614,12 @@ local function destroy_ids(ids)
   end
 end
 
+-- Removes what an endpoint drew, and its belt ghost if nobody built it.
+local function drop_virtual_endpoint(entry)
+  destroy_ids(entry.render_ids)
+  if entry.ghost and entry.ghost.valid and entry.ghost.type == "entity-ghost" then entry.ghost.destroy() end
+end
+
 -- Removes every link cut(link) picks; returns how many.
 local function remove_links(cut)
   local removed, surfaces = 0, {}
@@ -1398,7 +1404,7 @@ local function endpoint_entity_removed(event)
   if server then
     cancel_pending(server)
     if server.power and server.power.valid then server.power.destroy() end
-    for _, endpoint in pairs(server.virtual or {}) do destroy_ids(endpoint.render_ids) end
+    for _, endpoint in pairs(server.virtual or {}) do drop_virtual_endpoint(endpoint) end
     storage.servers[entity.unit_number] = nil
   end
   if storage.entity_alerts then storage.entity_alerts[entity.unit_number] = nil end
@@ -2065,6 +2071,25 @@ end
 
 -- Keeps the server's circuit endpoints drawn, measured from whatever belt
 -- is on their tile, and flagged when a source has nothing arriving.
+local DIRECTION_TO_FACTORIO = {
+  defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west,
+}
+
+-- A belt ghost on the endpoint's tile, facing its way, to belt into or out
+-- of; only where nothing is in the way.
+local function ghost_endpoint_belt(surface, force, entry)
+  local spec = {
+    name = "transport-belt", position = { entry.x + 0.5, entry.y + 0.5 },
+    direction = DIRECTION_TO_FACTORIO[entry.direction], force = force,
+  }
+  if not surface.can_place_entity({
+    name = spec.name, position = spec.position, direction = spec.direction, force = force,
+    build_check_type = defines.build_check_type.manual_ghost,
+  }) then return end
+  spec.inner_name, spec.name = spec.name, "entity-ghost"
+  return surface.create_entity(spec)
+end
+
 local function sync_virtual_endpoints(server, state, endpoints)
   local kept = {}
   for _, endpoint in ipairs(endpoints) do
@@ -2076,6 +2101,7 @@ local function sync_virtual_endpoints(server, state, endpoints)
         entry = endpoint
         entry.seen_tick = game.tick
         entry.render_ids = draw_virtual_endpoint(server.surface, entry)
+        if not entry.problem then entry.ghost = ghost_endpoint_belt(server.surface, server.force, entry) end
       end
       entry.belt = server.surface.find_entities_filtered({
         position = { entry.x + 0.5, entry.y + 0.5 }, type = BELT_TYPES,
@@ -2084,7 +2110,7 @@ local function sync_virtual_endpoints(server, state, endpoints)
     end
   end
   for key, entry in pairs(state.virtual or {}) do
-    if not kept[key] then destroy_ids(entry.render_ids) end
+    if not kept[key] then drop_virtual_endpoint(entry) end
   end
   state.virtual = kept
 end
