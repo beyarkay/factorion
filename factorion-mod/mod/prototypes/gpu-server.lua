@@ -1,8 +1,10 @@
 -- 4x2 GPU server. Draws a 4x H200 server's power: 4 x 700 W GPUs plus
--- ~1.7 kW of host at full load, and the host alone when idle. It is an
--- assembling machine so it can take circuit wires and has a working state:
--- script hands it one forward-pass token per craft while its cluster
--- predicts, and it idles on its drain otherwise.
+-- ~1.7 kW of host at full load, and the host alone when idle. Mods can't add
+-- engine types, so it borrows the assembling machine's: that type takes
+-- circuit wires and has a working state. Everything else an assembler does
+-- (recipes, modules, beacons, inserters, upgrades) is switched off. Script
+-- hands it one forward-pass token per craft while its cluster predicts, and
+-- it idles on its drain otherwise.
 
 local NAME = "factorion-gpu-server"
 local FORWARD_PASS = "factorion-forward-pass"
@@ -93,7 +95,10 @@ data:extend({
     name = NAME,
     icon = "__factorion__/graphics/icons/gpu-server.png",
     icon_size = 64,
-    flags = { "placeable-player", "player-creation" },
+    flags = {
+      "placeable-player", "player-creation", "not-upgradable",
+      "no-automated-item-insertion", "no-automated-item-removal",
+    },
     minable = { mining_time = 0.5, result = NAME },
     max_health = 300,
     collision_box = { { -1.9, -0.9 }, { 1.9, 0.9 } },
@@ -103,6 +108,9 @@ data:extend({
     crafting_speed = 1,
     show_recipe_icon = false,
     show_recipe_icon_on_map = false,
+    module_slots = 0,
+    allowed_effects = {},
+    effect_receiver = { uses_module_effects = false, uses_beacon_effects = false, uses_surface_effects = false },
     energy_source = {
       type = "electric",
       usage_priority = "secondary-input",
