@@ -377,20 +377,37 @@ function M.on_gui_confirmed(event)
   return true
 end
 
+-- A value out of range turns the field red and says what is used instead.
 function M.on_gui_text_changed(event)
   if condition_edited(event) then return true end
-  local tag = event.element.valid and event.element.tags.factorion_gpu
+  local element = event.element
+  local tag = element.valid and element.tags.factorion_gpu
   if not tag then return false end
+  if tag == "checkpoint" then
+    local status = element.parent.parent.model_status
+    status.caption = element.text ~= M.config().checkpoint and "Press Load or Enter to load " .. element.text
+      or model_caption()
+  end
   for _, field in ipairs(NUMBER_FIELDS) do
     if field.key == tag then
-      local value = tonumber(event.element.text)
-      if value and value >= field.min and value <= field.max
-          and (field.decimal or value == math.floor(value)) then
-        M.config()[tag] = value
-      end
+      local value = tonumber(element.text)
+      local valid = value and value >= field.min and value <= field.max
+        and (field.decimal or value == math.floor(value))
+      if valid then M.config()[tag] = value end
+      element.style = valid and "textbox" or "invalid_value_textfield"
+      element.tooltip = valid and field.tooltip or string.format("%s must be %s from %s to %s; using %s.",
+        field.caption, field.decimal and "a number" or "a whole number", field.min, field.max, M.config()[tag])
     end
   end
   return true
+end
+
+-- After a checkpoint fails to load, the fields show the one still in use.
+function M.reset_checkpoint_fields()
+  for _, player in pairs(game.connected_players) do
+    local frame = player.gui.screen[FRAME]
+    if frame then frame.panels.window.body.main.settings.checkpoint_row.checkpoint.text = M.config().checkpoint end
+  end
 end
 
 function M.on_gui_closed(event)

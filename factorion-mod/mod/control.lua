@@ -887,11 +887,10 @@ local function endpoint_config(entity)
 end
 
 -- The server loads the checkpoint and reports its grid size via model_loaded;
--- until then storage.model is nil and no region can be planned.
+-- the model loaded before keeps working until then, and if it fails.
 local function request_model_load()
   local checkpoint = get_checkpoint()
   if storage.model_loading == checkpoint then return end
-  storage.model = nil
   storage.model_loading = checkpoint
   storage.outbox = storage.outbox or {}
   table.insert(storage.outbox, helpers.table_to_json({
@@ -1948,6 +1947,40 @@ local function step_seconds(servers)
     / math.max(1, math.min(#servers, MAX_CLUSTER_SPEEDUP))
 end
 
+-- Mistakes in how the server is set up rather than in its region.
+local function setup_warnings(server, region)
+  local state, warnings = server_state(server), {}
+  if state.circuit_failure then
+    table.insert(warnings, "The last Predict from the circuit condition didn't start: " .. state.circuit_failure)
+  end
+  local wired = server.get_circuit_network(defines.wire_connector_id.circuit_red)
+    or server.get_circuit_network(defines.wire_connector_id.circuit_green)
+  for _, key in ipairs({ "predict", "deconstruct" }) do
+    local condition = (state.conditions or {})[key]
+    if condition and condition.enabled and not wired then
+      table.insert(warnings, string.format("The %s condition is on, but no circuit wire is connected.", key))
+    elseif condition and condition.enabled and condition.signal and state.circuit_endpoints
+        and (condition.signal.type or "item") == "item" then
+      table.insert(warnings, string.format("The %s condition reads an item signal, which Set sources and sinks " ..
+        "keeps from conditions.", key))
+    end
+  end
+  if setting("factorion-placement-mode") == "ghost" then
+    local editor = false
+    for _, player in pairs(game.connected_players) do
+      editor = editor or player.controller_type == defines.controllers.editor
+    end
+    local fp = region.fp
+    local network = server.surface.find_logistic_network_by_position(
+      { fp.x + fp.w / 2, fp.y + fp.h / 2 }, server.force)
+    if not editor and (not network or network.all_construction_robots == 0) then
+      table.insert(warnings, "The model places ghosts, but no construction robots reach this build region; " ..
+        "build them by hand, or set Placement mode to build entities in the mod settings.")
+    end
+  end
+  return warnings
+end
+
 inference.describe = function(server)
   local members = cluster(server)
   local on = powered(members)
@@ -1957,10 +1990,14 @@ inference.describe = function(server)
     and string.format("No other GPU server touches, shares a build region with or is cabled to this one; %s.", speed)
     or string.format("Cluster of %d GPU servers predicting together, %s.", #members, speed)
   local region, reason = predictable_region(server)
-  if not region then return reason, false, cluster_caption, (region_for(server)) end
-  local caption = string.format("Build region of %d tiles, converting %s to %s.",
-    region.tiles, icons(region.sources), icons(region.sinks))
-  return caption, true, cluster_caption, region
+  local can_predict = region ~= nil
+  local caption = region and string.format("Build region of %d tiles, converting %s to %s.",
+    region.tiles, icons(region.sources), icons(region.sinks)) or reason
+  region = region or region_for(server)
+  if region then
+    for _, warning in ipairs(setup_warnings(server, region)) do table.insert(region.warnings, 1, warning) end
+  end
+  return caption, can_predict, cluster_caption, region
 end
 
 local function gather_request(state, region, members)
@@ -2026,6 +2063,7 @@ inference.on_predict = function(player, server, quiet)
     member_state.computing = request.request_id
     member_state.steps = 0
     member_state.steps_left = most
+    member_state.circuit_failure = nil
   end
   log("[Factorion] enqueued request " .. request.request_id ..
       " json=" .. request_json)
@@ -2181,7 +2219,10 @@ local function service_gpu_servers()
 end
 
 local CIRCUIT_ACTIONS = {
-  predict = function(server, player) inference.on_predict(player, server, true) end,
+  predict = function(server, player)
+    local message, started = inference.on_predict(player, server, true)
+    server_state(server).circuit_failure = not started and message or nil
+  end,
   deconstruct = function(server) deconstruct_region(server) end,
 }
 
@@ -2666,11 +2707,16 @@ remote.add_interface("factorion", {
     local failure = helpers.json_to_table(error_json) or {}
     if failure.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model_loading = nil
-    storage.model_error = tostring(failure.error)
+    local still = storage.model and storage.model.checkpoint
+    if still then
+      inference.config().checkpoint = still
+      inference.reset_checkpoint_fields()
+    else
+      storage.model_error = tostring(failure.error)
+    end
     inference.refresh_all(true)
-    game.print(string.format(
-      "[Factorion] Could not load checkpoint %s: %s",
-      tostring(failure.checkpoint), tostring(failure.error)))
+    game.print(string.format("[Factorion] Could not load checkpoint %s: %s%s",
+      tostring(failure.checkpoint), tostring(failure.error), still and (". Still using " .. still .. ".") or ""))
     return "ok"
   end,
 

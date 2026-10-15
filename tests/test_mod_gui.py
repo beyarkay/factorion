@@ -274,3 +274,23 @@ def test_wire_signals_are_decoded_in_the_window(lua):
     assert "[item=iron-plate] Source at X 0, Y 3, facing east" in used
     warnings = [c.caption for c in frame.panels.window.body.main.warnings.children.values()]
     assert warnings and "[img=utility/warning_icon]" in warnings[0] and "1001001" in warnings[0]
+
+
+def test_out_of_range_setting_turns_red_and_keeps_the_old_value(lua):
+    lua.execute(
+        """
+        inference = require("inference")
+        server = { valid = true, name = "factorion-gpu-server", unit_number = 7 }
+        inference.open(player, server)
+        """
+    )
+    g = lua.globals()
+    frame = g.player.gui.screen["factorion-gpu-gui"]
+    best_of = next(e for e in g.mock.descendants(frame).values() if e.tags.factorion_gpu == "best_of")
+    best_of.text = "100"
+    assert g.inference.on_gui_text_changed(event(lua, best_of))
+    assert best_of.style == "invalid_value_textfield" and "1 to 64; using 1" in best_of.tooltip
+    assert g.inference.config().best_of == 1
+    best_of.text = "4"
+    g.inference.on_gui_text_changed(event(lua, best_of))
+    assert best_of.style == "textbox" and g.inference.config().best_of == 4
