@@ -612,13 +612,12 @@ local function node_position(node)
   return node.position
 end
 
--- The data port on top of the GPU server's I/O box, which sits at the left
--- end of the horizontal picture and the bottom of the vertical one.
+-- The port block on the front of the rig's board, in the middle.
 local GPU_CABLE_PORT = {
-  [defines.direction.north] = { -1.67, -0.7 },
-  [defines.direction.south] = { -1.67, -0.7 },
-  [defines.direction.east] = { 0.25, 0.9 },
-  [defines.direction.west] = { 0.25, 0.9 },
+  [defines.direction.north] = { -0.4, 0.22 },
+  [defines.direction.south] = { -0.4, 0.22 },
+  [defines.direction.east] = { 0.5, 0.54 },
+  [defines.direction.west] = { 0.5, 0.54 },
 }
 
 -- Where a cable hangs from a GPU server's port, an electric pole's wire

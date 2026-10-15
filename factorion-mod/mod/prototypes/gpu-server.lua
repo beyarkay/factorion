@@ -11,18 +11,22 @@ local processor = data.raw.item["quantum-processor"] and "quantum-processor"
   or "processing-unit"
 local assembler = data.raw["assembling-machine"]["assembling-machine-2"]
 
--- Purple placeholder blocks exactly 4x2 (or 2x4) tiles at half scale.
-local function placeholder(orientation)
+-- Rendered in Blender by art/gpu_server.py and cut by art/pack.py, which
+-- writes each orientation's sizes and offsets beside its pictures.
+local art = {
+  horizontal = require("graphics/entity/gpu-server-horizontal"),
+  vertical = require("graphics/entity/gpu-server-vertical"),
+}
+
+local function picture(orientation, part)
+  local spec = art[orientation][part]
   return {
-    filename = "__factorion__/graphics/entity/gpu-server-" .. orientation .. ".png",
-    width = 384,
-    height = 384,
-    scale = 0.5,
-    priority = "high",
+    filename = spec.filename, width = spec.width, height = spec.height, shift = spec.shift,
+    scale = 0.5, priority = "high", draw_as_shadow = part == "shadow",
   }
 end
 
--- On the I/O box at the left end (horizontal) or bottom end (vertical).
+-- Beside the board's cooler, in the middle of the rig.
 local function connector(x, y)
   return {
     variation = 18,
@@ -33,12 +37,17 @@ local function connector(x, y)
 end
 
 local connectors = circuit_connector_definitions.create_vector(universal_connector_template, {
-  connector(-50, 12), connector(-12, 46), connector(-50, 12), connector(-12, 46),
+  connector(17, 5), connector(10, 1), connector(17, 5), connector(10, 1),
 })
 
 local function sprite(orientation, i)
   local parts = connectors[i].sprites
-  return { layers = { placeholder(orientation), parts.connector_main, parts.wire_pins, parts.connector_shadow } }
+  return {
+    layers = {
+      picture(orientation, "shadow"), picture(orientation, "main"),
+      parts.connector_main, parts.wire_pins, parts.connector_shadow,
+    },
+  }
 end
 
 local server = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
