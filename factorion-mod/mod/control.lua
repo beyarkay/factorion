@@ -893,9 +893,15 @@ end
 
 -- Keyed by unit number, holding the entity itself: get_entity_by_unit_number
 -- can't find belts, inserters, assemblers or ghosts.
+-- Clearing leaves the removal to robots whatever the placement mode; ghosts
+-- vanish, as under vanilla's deconstruction planner.
 local function clear_predicted_entities(state, player)
   for _, entity in pairs(state.model_entities or {}) do
-    if entity.valid then remove_entity(entity, player, true) end
+    if entity.valid and entity.type == "entity-ghost" then
+      entity.destroy({ raise_destroy = true })
+    elseif entity.valid then
+      entity.order_deconstruction(entity.force, player)
+    end
   end
   state.model_entities = {}
 end
