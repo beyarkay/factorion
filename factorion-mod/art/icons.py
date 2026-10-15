@@ -1,0 +1,100 @@
+"""Draw the mod's alert icons and the GPU glyph its circuit signals are built on.
+
+    uv run --no-project --with pillow python icons.py MOD_GRAPHICS_DIR
+
+Alerts copy vanilla's: a flat yellow rounded triangle with a dark symbol.
+Everything is drawn at four times size and shrunk, for clean edges.
+"""
+
+import sys
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+SS = 4
+SIZE = 64 * SS
+YELLOW = (255, 197, 0, 255)
+INK = (29, 29, 29, 255)
+out = Path(sys.argv[1])
+
+
+def s(*values):
+    return [v * SS for v in values]
+
+
+def triangle():
+    im = Image.new("RGBA", (SIZE, SIZE))
+    d = ImageDraw.Draw(im)
+    r = 7
+    # Corners inset by r, then grown by r: a triangle with round corners.
+    pts = [(32, 2 + r), (r - 1, 62 - r), (65 - r, 62 - r)]
+    d.polygon([tuple(s(*p)) for p in pts], fill=YELLOW)
+    for a, b in zip(pts, pts[1:] + pts[:1]):
+        d.line([tuple(s(*a)), tuple(s(*b))], fill=YELLOW, width=2 * r * SS)
+    for p in pts:
+        d.ellipse(s(p[0] - r, p[1] - r, p[0] + r, p[1] + r), fill=YELLOW)
+    return im, d
+
+
+def save(im, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.resize((SIZE // SS, SIZE // SS), Image.LANCZOS).save(path)
+
+
+def chevrons(d, cx, cy, w, h, n, fill):
+    """Belt chevrons pointing up, n of them stacked."""
+    for k in range(n):
+        y = cy - (n - 1) * h * 0.55 + k * h * 1.1
+        d.line([tuple(s(cx - w, y + h / 2)), tuple(s(cx, y - h / 2)), tuple(s(cx + w, y + h / 2))],
+               fill=fill, width=int(3.5 * SS), joint="curve")
+
+
+def card(d, x0, y0, x1, y1, fill, hole):
+    """A GPU card from the side: a slab with two fans and a bracket."""
+    d.rounded_rectangle(s(x0, y0, x1, y1), radius=2 * SS, fill=fill)
+    r = (y1 - y0) / 2 - 2.2
+    cy = (y0 + y1) / 2
+    for cx in (x0 + (x1 - x0) * 0.3, x0 + (x1 - x0) * 0.7):
+        d.ellipse(s(cx - r, cy - r, cx + r, cy + r), fill=hole)
+        d.ellipse(s(cx - r * 0.35, cy - r * 0.35, cx + r * 0.35, cy + r * 0.35), fill=fill)
+    d.rectangle(s(x0 + 2, y1, x0 + 7, y1 + 3), fill=fill)
+
+
+def slash(d):
+    d.line([tuple(s(15, 58)), tuple(s(49, 24))], fill=YELLOW, width=8 * SS)
+    d.line([tuple(s(15, 58)), tuple(s(49, 24))], fill=INK, width=3 * SS)
+
+
+# A source with nothing arriving: a belt, and a dashed empty slot on it.
+im, d = triangle()
+for x in (21, 43):
+    d.line([tuple(s(x, 27)), tuple(s(x, 58))], fill=INK, width=3 * SS)
+chevrons(d, 32, 51, 6, 4, 2, INK)
+for k in range(4):
+    for side in ((25 + 4 * k, 25, 27 + 4 * k, 25), (25 + 4 * k, 39, 27 + 4 * k, 39),
+                 (25, 25 + 4 * k, 25, 27 + 4 * k), (39, 25 + 4 * k, 39, 27 + 4 * k)):
+        d.line([tuple(s(*side[:2])), tuple(s(*side[2:]))], fill=INK, width=int(2.5 * SS))
+save(im, out / "alerts/source-empty.png")
+
+# A GPU server that can't reach its model: a card, struck out.
+im, d = triangle()
+card(d, 16, 31, 48, 48, INK, YELLOW)
+slash(d)
+save(im, out / "alerts/gpu-offline.png")
+
+# A painted area with no GPU server, or a server with no area: a broken link.
+im, d = triangle()
+for x0 in (11, 34):
+    d.rounded_rectangle(s(x0, 38, x0 + 19, 50), radius=6 * SS, outline=INK, width=3 * SS)
+d.line([tuple(s(21, 44)), tuple(s(27, 44))], fill=INK, width=3 * SS)
+d.line([tuple(s(37, 44)), tuple(s(43, 44))], fill=INK, width=3 * SS)
+for a, b in (((29, 33), (30, 37)), ((35, 33), (34, 37)), ((29, 55), (30, 51)), ((35, 55), (34, 51))):
+    d.line([tuple(s(*a)), tuple(s(*b))], fill=INK, width=2 * SS)
+save(im, out / "alerts/unlinked.png")
+
+# Light grey like vanilla signal glyphs, with a dark rim to read on any slot.
+im = Image.new("RGBA", (SIZE, SIZE))
+d = ImageDraw.Draw(im)
+card(d, 4, 14, 60, 44, (40, 40, 40, 255), (40, 40, 40, 255))
+card(d, 6, 16, 58, 42, (215, 215, 215, 255), (60, 60, 60, 255))
+save(im, out / "icons/gpu-glyph.png")
