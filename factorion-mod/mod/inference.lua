@@ -39,11 +39,11 @@ local STATE_SIGNALS = "[virtual-signal=factorion-predicting] 1 while predicting,
 
 local ENDPOINT_SIGNALS = "Instead of source and sink belts, each item signal on the red wire is " ..
   "a source of that item and each on the green wire a sink, drawn on its tile. Its value is " ..
-  "D YYY XXX: D is 1, 2, 3 or 4 for a belt facing north, east, south or west, and X and Y " ..
-  "count tiles from the painted area's top-left corner, so 0 is the column or row just " ..
-  "outside it. For example 2 003 000 is a source entering from the left, three rows down, " ..
-  "facing east. Belt the items over those tiles as you would into source belts. Conditions " ..
-  "then ignore item signals."
+  "X + 100 × Y + 10000 × D: D is 1, 2, 3 or 4 for a belt facing north, east, south or west, " ..
+  "and X and Y count tiles from the painted area's top-left corner, so 0 is the column or " ..
+  "row just outside it. For example 0 + 100 × 3 + 10000 × 2 = 20300 is a source entering " ..
+  "from the left, three rows down, facing east. Belt the items over those tiles as you would " ..
+  "into source belts. Conditions then ignore item signals."
 
 -- Set by control.lua: on_load gets the new checkpoint when the player presses
 -- Load; describe, on_predict and on_clear get the window's GPU server and
