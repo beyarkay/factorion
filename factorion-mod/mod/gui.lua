@@ -110,7 +110,7 @@ function M.set_networks(inner, networks)
       id.style.left_padding = 4
       local info = header.add({ type = "sprite", name = "info_" .. network.wire, sprite = "info_no_border" })
       info.style.stretch_image_to_widget_size = true
-      info.style.size = 14
+      info.style.size = 12
     end
   end
   for _, network in ipairs(networks) do
