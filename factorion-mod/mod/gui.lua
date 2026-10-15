@@ -13,13 +13,17 @@ local STATUS_SPRITES = {
 
 M.COMPARATORS = { ">", "<", "=", "≥", "≤", "≠" }
 
--- Its close button carries tags.factorion_close = name. Further panels go
--- beside the first in frame.body.
-function M.entity_window(player, name, title, entity)
-  local frame = player.gui.screen.add({ type = "frame", name = name, direction = "vertical" })
-  frame.auto_center = true
-  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
-  titlebar.drag_target = frame
+-- The root is an invisible frame holding the window and any side panels, so
+-- they move together. Its close button carries tags.factorion_close = name;
+-- with circuit_tags, a circuit network button carrying them sits beside it.
+function M.entity_window(player, name, title, entity, circuit_tags)
+  local root = player.gui.screen.add({
+    type = "frame", name = name, style = "invisible_frame", direction = "horizontal",
+  })
+  root.auto_center = true
+  local frame = root.add({ type = "frame", name = "window", direction = "vertical" })
+  local titlebar = frame.add({ type = "flow", name = "titlebar", direction = "horizontal" })
+  titlebar.drag_target = root
   titlebar.add({
     type = "label", caption = title, style = "frame_title", ignored_by_interaction = true,
   })
@@ -28,12 +32,17 @@ function M.entity_window(player, name, title, entity)
   })
   drag.style.height = 24
   drag.style.horizontally_stretchable = true
+  if circuit_tags then
+    titlebar.add({
+      type = "sprite-button", name = "circuit_button", style = "frame_action_button",
+      sprite = "utility/circuit_network_panel", tooltip = "Circuit network", tags = circuit_tags,
+    })
+  end
   titlebar.add({
     type = "sprite-button", style = "frame_action_button", sprite = "utility/close",
     tooltip = { "gui.close-instruction" }, tags = { factorion_close = name },
   })
   local body = frame.add({ type = "flow", name = "body", direction = "horizontal" })
-  body.style.horizontal_spacing = 12
   local panel = M.panel(body, "main")
   local status = panel.add({ type = "flow", name = "status", direction = "horizontal" })
   status.style.vertical_align = "center"
@@ -42,7 +51,37 @@ function M.entity_window(player, name, title, entity)
   local preview_frame = panel.add({ type = "frame", style = "deep_frame_in_shallow_frame" })
   local preview = preview_frame.add({ type = "entity-preview", style = "wide_entity_button" })
   preview.entity = entity
-  return frame, panel
+  return root, panel
+end
+
+-- Vanilla's circuit connection panel: a titled frame beside the window, a
+-- subheader naming the networks, then sections divided by lines.
+function M.circuit_panel(root)
+  local frame = root.add({
+    type = "frame", name = "circuit", caption = "Circuit connection", direction = "vertical",
+  })
+  frame.style.left_margin = 4
+  frame.drag_target = root
+  local inner = frame.add({
+    type = "frame", name = "inner", style = "inside_shallow_frame", direction = "vertical",
+  })
+  local header = inner.add({ type = "frame", name = "header", style = "subheader_frame" })
+  header.style.horizontally_stretchable = true
+  header.add({ type = "label", name = "network" }).style.left_padding = 8
+  return inner
+end
+
+-- A section of a circuit panel headed by a checkbox.
+function M.circuit_section(inner, name, caption, state, tags, tooltip)
+  if #inner.children > 1 then inner.add({ type = "line" }) end
+  local section = inner.add({ type = "flow", name = name, direction = "vertical" })
+  section.style.padding = { 8, 12 }
+  section.style.vertical_spacing = 8
+  section.add({
+    type = "checkbox", name = "active", caption = caption, state = state,
+    tags = tags, tooltip = tooltip,
+  }).style.font = "default-bold"
+  return section
 end
 
 function M.panel(body, name)
@@ -67,7 +106,7 @@ end
 -- A source or sink belt's window: the entity, then its item, picked by the
 -- choose-elem-button named picker.
 function M.marker_window(player, name, picker, entity, role, item)
-  local frame, main = M.entity_window(player, name, { "entity-name." .. entity.name }, entity)
+  local root, main = M.entity_window(player, name, { "entity-name." .. entity.name }, entity)
   M.heading(main, role == "source" and "Expected item" or "Counted item")
   local row = main.add({ type = "flow", direction = "horizontal" })
   row.style.vertical_align = "center"
@@ -83,12 +122,12 @@ function M.marker_window(player, name, picker, entity, role, item)
   })
   hint.style.single_line = false
   hint.style.maximal_width = 260
-  return frame
+  return root
 end
 
-function M.marker_status(frame, role, item, receiving, rate)
+function M.marker_status(root, role, item, receiving, rate)
   local icon = "[item=" .. item .. "]"
-  local main = frame.body.main
+  local main = root.window.body.main
   if role == "source" then
     if receiving then
       M.set_status(main, "working", "Receiving " .. icon)
@@ -102,17 +141,13 @@ function M.marker_status(frame, role, item, receiving, rate)
   end
 end
 
--- A checkbox, then signal, comparator and constant; each carries
--- tags.factorion_condition = key so an edit finds its condition.
-function M.condition_row(parent, key, caption, condition)
+-- A circuit section enabling a condition: signal, comparator and constant;
+-- each carries tags.factorion_condition = key so an edit finds its condition.
+function M.condition_section(inner, key, caption, condition)
   local tags = { factorion_condition = key }
-  local row = parent.add({ type = "flow", name = key, direction = "horizontal" })
+  local section = M.circuit_section(inner, key, caption, condition.enabled or false, tags)
+  local row = section.add({ type = "flow", name = "condition", direction = "horizontal" })
   row.style.vertical_align = "center"
-  row.add({
-    type = "checkbox", name = "active", caption = caption,
-    state = condition.enabled or false, tags = tags,
-  })
-  row.add({ type = "empty-widget" }).style.horizontally_stretchable = true
   row.add({
     type = "choose-elem-button", name = "signal", elem_type = "signal",
     signal = condition.signal, style = "slot_button_in_shallow_frame", tags = tags,
@@ -131,9 +166,10 @@ function M.condition_row(parent, key, caption, condition)
   })
 end
 
-function M.read_condition_row(row)
+function M.read_condition_section(section)
+  local row = section.condition
   return {
-    enabled = row.active.state,
+    enabled = section.active.state,
     signal = row.signal.elem_value,
     comparator = M.COMPARATORS[row.comparator.selected_index],
     constant = tonumber(row.constant.text) or 0,

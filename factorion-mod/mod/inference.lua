@@ -55,7 +55,7 @@ M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
 M.on_clear = function(_, _) return "" end
 M.info = function(_)
-  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, wired = false }
+  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, network = "Not connected" }
 end
 M.settings = function(_) return { conditions = {} } end
 
@@ -78,6 +78,13 @@ local function model_caption()
   return "Loading " .. config.checkpoint .. "…"
 end
 
+-- Whether each player keeps the circuit panel open, as vanilla remembers.
+local function show_circuit(player, frame)
+  local open = (storage.gpu_circuit_open or {})[player.index] or false
+  frame.circuit.visible = open
+  frame.window.titlebar.circuit_button.toggled = open
+end
+
 local function window_server(player)
   local server = storage.gpu_windows and storage.gpu_windows[player.index]
   return server and server.valid and server or nil
@@ -93,15 +100,15 @@ function M.refresh(player, full)
     frame.destroy()
     return
   end
-  local main, circuit = frame.body.main, frame.body.circuit
+  local main = frame.window.body.main
   local info = M.info(server)
   gui.set_status(main, info.status, info.caption)
   main.utilisation.value = info.utilisation
   main.utilisation_label.caption = string.format("Utilisation %d%%, drawing %.1f kW",
     math.floor(info.utilisation * 100 + 0.5), info.power_kw)
-  circuit.unwired.visible = not info.wired
+  frame.circuit.inner.header.network.caption = info.network
   if not full then return end
-  circuit.settings.model_status.caption = model_caption()
+  main.settings.model_status.caption = model_caption()
   local caption, can_predict, cluster = M.describe(server)
   main.region.caption = caption
   main.cluster.caption = cluster
@@ -124,7 +131,8 @@ function M.open(player, server)
   storage.gpu_windows[player.index] = server
   local config = M.config()
   local settings = M.settings(server)
-  local frame, main = gui.entity_window(player, FRAME, "GPU server", server)
+  local frame, main = gui.entity_window(player, FRAME, "GPU server", server,
+    { factorion_gpu = "circuit" })
 
   local bar = main.add({ type = "progressbar", name = "utilisation", style = "production_progressbar" })
   bar.style.horizontally_stretchable = true
@@ -150,28 +158,8 @@ function M.open(player, server)
     tags = { factorion_gpu = "clear" },
   })
 
-  local circuit = gui.panel(frame.body, "circuit")
-  circuit.add({ type = "label", caption = "Circuit network", style = "caption_label" })
-  local unwired = circuit.add({
-    type = "label", name = "unwired",
-    caption = "Connect a red or green wire to this server to use these.",
-  })
-  unwired.style.font_color = { 1, 0.75, 0.3 }
-  gui.condition_row(circuit, "predict", "Predict when", settings.conditions.predict or {})
-  gui.condition_row(circuit, "deconstruct", "Deconstruct region when",
-    settings.conditions.deconstruct or {})
-  circuit.add({
-    type = "checkbox", caption = "Read state", state = settings.read_state ~= false,
-    tooltip = STATE_SIGNALS, tags = { factorion_gpu = "read_state" },
-  })
-  circuit.add({
-    type = "checkbox", caption = "Sources on the red wire, sinks on the green",
-    state = settings.circuit_endpoints or false, tooltip = ENDPOINT_SIGNALS,
-    tags = { factorion_gpu = "circuit_endpoints" },
-  })
-
-  gui.heading(circuit, "Model, shared by every GPU server")
-  local table_ = circuit.add({ type = "table", name = "settings", column_count = 2 })
+  gui.heading(main, "Model, shared by every GPU server")
+  local table_ = main.add({ type = "table", name = "settings", column_count = 2 })
   table_.add({ type = "label", caption = "Checkpoint" })
   local row = table_.add({ type = "flow", name = "checkpoint_row", direction = "horizontal" })
   row.add({
@@ -191,13 +179,26 @@ function M.open(player, server)
     })
   end
 
+  local circuit = gui.circuit_panel(frame)
+  gui.condition_section(circuit, "predict", "Predict", settings.conditions.predict or {})
+  gui.condition_section(circuit, "deconstruct", "Deconstruct painted area",
+    settings.conditions.deconstruct or {})
+  gui.circuit_section(circuit, "read_state", "Read state", settings.read_state ~= false,
+    { factorion_gpu = "read_state" }, STATE_SIGNALS)
+  local endpoints = gui.circuit_section(circuit, "endpoints", "Set sources and sinks",
+    settings.circuit_endpoints or false, { factorion_gpu = "circuit_endpoints" }, ENDPOINT_SIGNALS)
+  local hint = endpoints.add({ type = "label", caption = "Sources on the red wire, sinks on the green." })
+  hint.style.single_line = false
+  hint.style.maximal_width = 240
+  show_circuit(player, frame)
+
   M.refresh(player, true)
   player.opened = frame
 end
 
 local function load_checkpoint(player)
   local frame = player.gui.screen[FRAME]
-  local field = frame and frame.body.circuit.settings.checkpoint_row.checkpoint
+  local field = frame and frame.window.body.main.settings.checkpoint_row.checkpoint
   local checkpoint = field and field.text:match("^%s*(.-)%s*$") or ""
   if checkpoint == "" then return end
   M.config().checkpoint = checkpoint
@@ -213,7 +214,9 @@ local function condition_edited(event)
   local server = player and window_server(player)
   if not (key and server) then return false end
   local settings = M.settings(server)
-  settings.conditions[key] = gui.read_condition_row(event.element.parent)
+  local section = event.element.parent
+  if section.name ~= key then section = section.parent end
+  settings.conditions[key] = gui.read_condition_section(section)
   settings.circuit_player = player.index
   return true
 end
@@ -225,6 +228,13 @@ function M.on_gui_click(event)
   if not player then return false end
   if tag == "load" then
     load_checkpoint(player)
+    return true
+  end
+  if tag == "circuit" then
+    storage.gpu_circuit_open = storage.gpu_circuit_open or {}
+    storage.gpu_circuit_open[player.index] = not storage.gpu_circuit_open[player.index]
+    local frame = player.gui.screen[FRAME]
+    if frame then show_circuit(player, frame) end
     return true
   end
   local action = (tag == "predict" and M.on_predict) or (tag == "clear" and M.on_clear)

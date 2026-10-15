@@ -156,7 +156,7 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
         inference.settings = function() return settings_of end
         inference.describe = function() return "Painted area", true, "Cluster of 2" end
         inference.info = function()
-          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, wired = true }
+          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, network = "Not connected" }
         end
         inference.open(player, server)
         inference.refresh(player, true)
@@ -165,14 +165,21 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
     )
     g = lua.globals()
     frame = g.player.gui.screen["factorion-gpu-gui"]
-    assert frame.body.main.status.status_caption.caption == "Predicting"
-    assert frame.body.main.cluster.caption == "Cluster of 2"
+    main = frame.window.body.main
+    assert main.status.status_caption.caption == "Predicting"
+    assert main.cluster.caption == "Cluster of 2"
 
-    row = frame.body.circuit.predict
-    row.active.state = True
-    row.signal.elem_value = lua.eval('{ type = "virtual", name = "signal-P" }')
-    row.constant.text = "3"
-    assert g.inference.on_gui_checked_state_changed(event(lua, row.active))
+    button = frame.window.titlebar.circuit_button
+    assert not frame.circuit.visible
+    assert g.inference.on_gui_click(event(lua, button))
+    assert frame.circuit.visible and button.toggled
+
+    section = frame.circuit.inner.predict
+    section.active.state = True
+    section.condition.signal.elem_value = lua.eval('{ type = "virtual", name = "signal-P" }')
+    section.condition.constant.text = "3"
+    assert g.inference.on_gui_text_changed(event(lua, section.condition.constant))
+    assert g.inference.on_gui_checked_state_changed(event(lua, section.active))
     condition = g.settings_of.conditions.predict
     assert condition.enabled and condition.signal.name == "signal-P" and condition.constant == 3
 
@@ -197,7 +204,7 @@ def test_marker_window_opens_and_shows_status(lua, role):
     )
     frame = lua.globals().frame
     assert find(lua, frame, "factorion-marker-item").elem_value == "iron-plate"
-    assert frame.body.main.status.status_caption.caption
+    assert frame.window.body.main.status.status_caption.caption
 
 
 def test_condition_matches_signals_like_vanilla(lua):

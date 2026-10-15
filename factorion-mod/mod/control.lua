@@ -1963,14 +1963,23 @@ local function ensure_signals(state)
   return combinator
 end
 
-local function wired(server)
+-- The hidden combinator's script wires put every server on a network, so only
+-- a player's wire counts as connected.
+local function network_caption(server)
+  local parts = {}
   for _, wire in ipairs(WIRES) do
     local connector = server.get_wire_connector(wire, false)
     for _, connection in ipairs(connector and connector.connections or {}) do
-      if connection.origin == defines.wire_origin.player then return true end
+      if connection.origin == defines.wire_origin.player then
+        local network = server.get_circuit_network(wire)
+        local red = wire == defines.wire_connector_id.circuit_red
+        table.insert(parts, string.format("[color=%s]%s network %d[/color]", red and "1,0.4,0.4" or "0.4,1,0.4",
+          red and "red" or "green", network and network.network_id or 0))
+        break
+      end
     end
   end
-  return false
+  return #parts == 0 and "Not connected" or "Connected to " .. table.concat(parts, " and ")
 end
 
 local function write_state_signals(state)
@@ -2177,7 +2186,7 @@ inference.info = function(server)
   end
   local u = state.utilisation or 0
   return {
-    status = status, caption = caption, utilisation = u, wired = wired(server),
+    status = status, caption = caption, utilisation = u, network = network_caption(server),
     power_kw = server.energy > 0 and IDLE_KW + (BUSY_KW - IDLE_KW) * u or 0,
   }
 end
@@ -2546,6 +2555,12 @@ script.on_configuration_changed(function()
   storage.pending_by_request = storage.pending_by_request or {}
   storage.outbox = storage.outbox or {}
   storage.endpoints = storage.endpoints or {}
+  -- Windows saved open may have an older layout.
+  for _, player in pairs(game.players) do
+    inference.close(player)
+    local marker = player.gui.screen[MARKER_DIALOG]
+    if marker then marker.destroy() end
+  end
   -- A server whose prototype changed type is gone from the map.
   for unit, state in pairs(storage.servers) do
     -- Cables ran server, poles, tile; each hop becomes a link.
