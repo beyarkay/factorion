@@ -124,7 +124,7 @@ def lua():
     runtime.execute(
         """
         storage = {}
-        defines = { wire_connector_id = { circuit_red = 1, circuit_green = 2 } }
+        defines = { wire_connector_id = { circuit_red = 1, circuit_green = 2 }, print_sound = { never = 1 } }
         player = mock.player(1)
         game = {
           tick = 0,

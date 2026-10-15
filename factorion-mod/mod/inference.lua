@@ -357,7 +357,7 @@ function M.on_gui_click(event)
   local action = (tag == "predict" and M.on_predict) or (tag == "clear" and M.on_clear)
   if not action then return false end
   local server = window_server(player)
-  if server then player.print("[Factorion] " .. action(player, server)) end
+  if server then player.print("[Factorion] " .. action(player, server), { sound = defines.print_sound.never }) end
   if tag == "predict" then M.close(player) else M.refresh(player, true) end
   return true
 end

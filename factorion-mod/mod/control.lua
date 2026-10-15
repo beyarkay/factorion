@@ -1984,12 +1984,16 @@ local function setup_warnings(server, region)
   if state.circuit_failure then
     table.insert(warnings, "The last Predict from the circuit condition didn't start: " .. state.circuit_failure)
   end
-  local wired = server.get_circuit_network(defines.wire_connector_id.circuit_red)
-    or server.get_circuit_network(defines.wire_connector_id.circuit_green)
+  -- Conditions are shared across the cluster, so any member's wire counts.
+  local wired = false
+  for _, member in ipairs(cluster(server)) do
+    wired = wired or member.get_circuit_network(defines.wire_connector_id.circuit_red) ~= nil
+      or member.get_circuit_network(defines.wire_connector_id.circuit_green) ~= nil
+  end
   for _, key in ipairs({ "predict", "deconstruct" }) do
     local condition = (state.conditions or {})[key]
     if condition and condition.enabled and not wired then
-      table.insert(warnings, string.format("The %s condition is on, but no circuit wire is connected.", key))
+      table.insert(warnings, string.format("The %s condition is on, but no server in this cluster has a circuit wire.", key))
     elseif condition and condition.enabled and condition.signal and state.circuit_endpoints
         and (condition.signal.type or "item") == "item" then
       table.insert(warnings, string.format("The %s condition reads an item signal, which Set sources and sinks " ..
@@ -2123,7 +2127,7 @@ script.on_event("factorion-predict", function(event)
   local player = game.get_player(event.player_index)
   local server = player and player.selected
   if not (server and server.name == inference.GPU_SERVER) then return end
-  player.print("[Factorion] " .. inference.on_predict(player, server))
+  player.print("[Factorion] " .. inference.on_predict(player, server), { sound = defines.print_sound.never })
 end)
 
 -- Stops the cluster's prediction and removes everything it built.
@@ -2712,7 +2716,7 @@ remote.add_interface("factorion", {
         tostring(summary.best_of or "?"),
         tonumber(summary.thput) or 0,
         stop,
-        tostring(summary.seed or "?")))
+        tostring(summary.seed or "?")), { sound = defines.print_sound.never })
       if (summary.refused_steps or 0) > 0 then
         player.print(string.format(
           "[Factorion] Factorio refused part of %d step(s); see the server log.",
