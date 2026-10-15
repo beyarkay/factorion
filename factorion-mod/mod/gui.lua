@@ -210,24 +210,91 @@ function M.condition_section(inner, key, caption, condition, tooltip)
     type = "drop-down", name = "comparator", items = M.COMPARATORS,
     selected_index = selected, style = "circuit_condition_comparator_dropdown", tags = tags,
   })
-  row.add({
-    type = "textfield", name = "constant", text = tostring(condition.constant or 0),
-    numeric = true, allow_negative = true, style = "short_number_textfield", tags = tags,
-  })
+  M.show_second(row, condition)
   M.grey_condition(section)
+end
+
+-- The right-hand side, as vanilla shows it: the constant large in an orange
+-- slot, or the second signal's icon; rebuilt in place, as the two need
+-- different element types.
+function M.show_second(row, condition)
+  local signal, index = condition.second_signal, nil
+  if row.second then
+    index = row.second.get_index_in_parent()
+    row.second.destroy()
+  end
+  local spec = { name = "second", index = index, tags = { factorion_rhs = row.parent.name } }
+  if signal then
+    spec.type, spec.style = "sprite-button", "slot_button_in_shallow_frame"
+    spec.sprite = SIGNAL_TAGS[signal.type or "item"] .. "/" .. signal.name
+    spec.tooltip = "Compared with this signal; click to change"
+  else
+    spec.type, spec.style = "button", "yellow_slot_button"
+    spec.caption = tostring(condition.constant or 0)
+    spec.tooltip = "Compared with this constant; click to change"
+  end
+  local button = row.add(spec)
+  button.style.font = "default-large-bold"
+  button.enabled = row.signal.enabled
+  return button
+end
+
+M.RHS_POPUP = "factorion-condition-rhs"
+
+-- Vanilla's picker for a condition's right-hand side: a signal, or a constant
+-- set with a slider and a field.
+function M.rhs_popup(player, key, condition)
+  local old = player.gui.screen[M.RHS_POPUP]
+  if old then old.destroy() end
+  local frame = player.gui.screen.add({ type = "frame", name = M.RHS_POPUP, direction = "vertical" })
+  frame.auto_center = true
+  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
+  titlebar.drag_target = frame
+  titlebar.add({ type = "label", caption = "Select a signal", style = "frame_title", ignored_by_interaction = true })
+  local drag = titlebar.add({ type = "empty-widget", style = "draggable_space_header", ignored_by_interaction = true })
+  drag.style.height = 24
+  drag.style.horizontally_stretchable = true
+  titlebar.add({
+    type = "sprite-button", style = "frame_action_button", sprite = "utility/close",
+    tooltip = { "gui.close-instruction" }, tags = { factorion_close = M.RHS_POPUP },
+  })
+  local inner = frame.add({ type = "frame", name = "inner", style = "inside_shallow_frame_with_padding", direction = "vertical" })
+  local pick = inner.add({ type = "flow", direction = "horizontal" })
+  pick.style.vertical_align = "center"
+  pick.add({
+    type = "choose-elem-button", name = "signal", elem_type = "signal", signal = condition.second_signal,
+    style = "slot_button_in_shallow_frame", tags = { factorion_rhs_signal = key },
+  })
+  pick.add({ type = "label", caption = "Click to pick a signal" })
+  M.heading(inner, "Or set a constant")
+  local row = inner.add({ type = "flow", name = "constant_row", direction = "horizontal" })
+  row.style.vertical_align = "center"
+  local constant = condition.constant or 0
+  row.add({
+    type = "slider", name = "slider", minimum_value = 0, maximum_value = 100, value = math.max(0, math.min(100, constant)),
+    tags = { factorion_rhs_slider = key },
+  })
+  row.add({
+    type = "textfield", name = "amount", text = tostring(constant), numeric = true, allow_negative = true,
+    style = "short_number_textfield", tags = { factorion_rhs_value = key },
+  })
+  row.add({ type = "button", caption = "Set constant", style = "green_button", tags = { factorion_rhs_set = key } })
+  return frame
 end
 
 function M.grey_condition(section)
   for _, child in pairs(section.condition.children) do child.enabled = section.active.state end
 end
 
-function M.read_condition_section(section)
+-- The right-hand side isn't in the row, so it's kept from before.
+function M.read_condition_section(section, before)
   local row = section.condition
   return {
     enabled = section.active.state,
     signal = row.signal.elem_value,
     comparator = M.COMPARATORS[row.comparator.selected_index],
-    constant = tonumber(row.constant.text) or 0,
+    constant = before and before.constant or 0,
+    second_signal = before and before.second_signal,
   }
 end
 
@@ -253,7 +320,16 @@ function M.fulfilled(entity, condition, skip_items)
       table.insert(signals, signal)
     end
   end
-  local function holds(count) return compare(count, condition.comparator, condition.constant) end
+  local function value_of(wanted_signal)
+    for _, signal in ipairs(signals) do
+      if signal.signal.name == wanted_signal.name and (signal.signal.type or "item") == (wanted_signal.type or "item") then
+        return signal.count
+      end
+    end
+    return 0
+  end
+  local rhs = condition.second_signal and value_of(condition.second_signal) or condition.constant or 0
+  local function holds(count) return compare(count, condition.comparator, rhs) end
   if wanted.type == "virtual" and (wanted.name == "signal-anything" or wanted.name == "signal-everything") then
     local anything = wanted.name == "signal-anything"
     for _, signal in ipairs(signals) do
@@ -261,12 +337,7 @@ function M.fulfilled(entity, condition, skip_items)
     end
     return not anything
   end
-  for _, signal in ipairs(signals) do
-    if signal.signal.name == wanted.name and (signal.signal.type or "item") == (wanted.type or "item") then
-      return holds(signal.count)
-    end
-  end
-  return holds(0)
+  return holds(value_of(wanted))
 end
 
 return M

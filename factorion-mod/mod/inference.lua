@@ -63,6 +63,12 @@ local function grey_state_rows(section)
   for _, row in ipairs(M.STATE_SIGNALS) do section["row_" .. row.key].signal.enabled = section.active.state end
 end
 
+local function util_copy(t)
+  local copy = {}
+  for k, v in pairs(t) do copy[k] = type(v) == "table" and util_copy(v) or v end
+  return copy
+end
+
 local DEFAULT_CONDITIONS = {
   predict = { signal = { type = "virtual", name = "signal-P" }, comparator = ">", constant = 0 },
   deconstruct = { signal = { type = "virtual", name = "signal-D" }, comparator = ">", constant = 0 },
@@ -214,8 +220,18 @@ function M.refresh_all(full)
 end
 
 function M.close(player)
-  local frame = player.gui.screen[FRAME]
-  if frame then frame.destroy() end
+  for _, name in ipairs({ FRAME, gui.RHS_POPUP }) do
+    local frame = player.gui.screen[name]
+    if frame then frame.destroy() end
+  end
+end
+
+-- The picker's slider and field follow each other.
+function M.on_gui_value_changed(event)
+  local key = event.element.valid and event.element.tags.factorion_rhs_slider
+  if not key then return false end
+  event.element.parent.amount.text = tostring(math.floor(event.element.slider_value + 0.5))
+  return true
 end
 
 function M.open(player, server)
@@ -331,11 +347,27 @@ local function condition_edited(event)
   local settings = M.settings(server)
   local section = event.element.parent
   if section.name ~= key then section = section.parent end
-  settings.conditions[key] = gui.read_condition_section(section)
+  settings.conditions[key] = gui.read_condition_section(section, settings.conditions[key] or DEFAULT_CONDITIONS[key])
   settings.circuit_player = player.index
   M.settings_changed(server)
   gui.grey_condition(section)
   return true
+end
+
+-- Sets a condition's right-hand side from its picker, which then closes.
+local function set_rhs(player, key, constant, second_signal)
+  local server = window_server(player)
+  if not server then return end
+  local settings = M.settings(server)
+  local condition = settings.conditions[key] or util_copy(DEFAULT_CONDITIONS[key])
+  condition.constant, condition.second_signal = constant or condition.constant, second_signal
+  settings.conditions[key] = condition
+  settings.circuit_player = player.index
+  M.settings_changed(server)
+  local frame = player.gui.screen[FRAME]
+  if frame then gui.show_second(frame.panels.circuit.inner[key].condition, condition) end
+  local popup = player.gui.screen[gui.RHS_POPUP]
+  if popup then popup.destroy() end
 end
 
 -- Each handler returns true when the event belonged to this window.
@@ -343,6 +375,18 @@ function M.on_gui_click(event)
   local tag = event.element.valid and event.element.tags.factorion_gpu
   local player = game.get_player(event.player_index)
   if not player then return false end
+  local tags = event.element.valid and event.element.tags or {}
+  local server = window_server(player)
+  if tags.factorion_rhs and server then
+    gui.rhs_popup(player, tags.factorion_rhs,
+      M.settings(server).conditions[tags.factorion_rhs] or DEFAULT_CONDITIONS[tags.factorion_rhs])
+    return true
+  end
+  if tags.factorion_rhs_set then
+    local field = player.gui.screen[gui.RHS_POPUP].inner.constant_row.amount
+    set_rhs(player, tags.factorion_rhs_set, tonumber(field.text) or 0, nil)
+    return true
+  end
   if tag == "load" then
     load_checkpoint(player)
     return true
@@ -377,6 +421,13 @@ end
 
 function M.on_gui_elem_changed(event)
   if condition_edited(event) then return true end
+  local rhs = event.element.valid and event.element.tags.factorion_rhs_signal
+  if rhs then
+    if event.element.elem_value then
+      set_rhs(game.get_player(event.player_index), rhs, nil, event.element.elem_value)
+    end
+    return true
+  end
   local key = event.element.valid and event.element.tags.factorion_state
   local player = game.get_player(event.player_index)
   local server = player and window_server(player)
@@ -435,7 +486,7 @@ function M.on_gui_closed(event)
       or event.element.name ~= FRAME then
     return false
   end
-  event.element.destroy()
+  M.close(game.get_player(event.player_index))
   return true
 end
 
