@@ -5349,13 +5349,13 @@ fn build_cross_under_belt(
 /// Most sources, and most sinks, a ROUTE_BELTS lesson places.
 const ROUTE_MAX_MARKERS: usize = 8;
 
-/// How a ROUTE_BELTS group of same-item markers is wired.
+/// How a ROUTE_BELTS group of same-item markers is wired. There is no merge: one
+/// source already fills the belt a merge would feed, so a second arm would
+/// carry nothing the sink needs.
 #[derive(Clone, Copy)]
 enum RouteGroup {
     /// One source belted straight to one sink.
     Direct,
-    /// Two sources into a splitter's inputs, one of its outputs to the sink.
-    Merge,
     /// One source into a splitter, each output to its own sink.
     Split,
     /// A source whose item no sink takes, left unconnected.
@@ -5363,44 +5363,31 @@ enum RouteGroup {
 }
 
 impl RouteGroup {
-    fn sources(self) -> usize {
-        match self {
-            RouteGroup::Merge => 2,
-            _ => 1,
-        }
-    }
-
     fn sinks(self) -> usize {
         match self {
-            RouteGroup::Direct | RouteGroup::Merge => 1,
+            RouteGroup::Direct => 1,
             RouteGroup::Split => 2,
             RouteGroup::Unmatched => 0,
         }
     }
 }
 
-/// Up to [`ROUTE_MAX_MARKERS`] sinks and sources: matched groups until a drawn
-/// sink count is met, then sometimes a few unmatched sources (always last).
+/// Up to [`ROUTE_MAX_MARKERS`] sinks and sources (one per group): matched
+/// groups until a drawn sink count is met, then sometimes a few unmatched
+/// sources (always last).
 fn draw_route_groups(rng: &mut Rng) -> Vec<RouteGroup> {
     let want_sinks = rng.randint(1, ROUTE_MAX_MARKERS as i64) as usize;
-    let (mut sources, mut sinks) = (0, 0);
+    let mut sinks = 0;
     let mut groups = Vec::new();
-    while sinks < want_sinks && sources < ROUTE_MAX_MARKERS {
-        let g = [
-            RouteGroup::Direct,
-            RouteGroup::Direct,
-            RouteGroup::Direct,
-            RouteGroup::Merge,
-            RouteGroup::Split,
-        ][rng.choice_index(5)];
-        if sources + g.sources() <= ROUTE_MAX_MARKERS && sinks + g.sinks() <= want_sinks {
-            sources += g.sources();
+    while sinks < want_sinks {
+        let g = [RouteGroup::Direct, RouteGroup::Direct, RouteGroup::Split][rng.choice_index(3)];
+        if sinks + g.sinks() <= want_sinks {
             sinks += g.sinks();
             groups.push(g);
         }
     }
-    if sources < ROUTE_MAX_MARKERS && rng.choice_index(2) == 0 {
-        let n = rng.randint(1, (ROUTE_MAX_MARKERS - sources).min(2) as i64);
+    if groups.len() < ROUTE_MAX_MARKERS && rng.choice_index(2) == 0 {
+        let n = rng.randint(1, (ROUTE_MAX_MARKERS - groups.len()).min(2) as i64);
         groups.extend((0..n).map(|_| RouteGroup::Unmatched));
     }
     groups
@@ -5485,8 +5472,8 @@ fn nearest_port(cell: Cell, ports: [Cell; 2]) -> Cell {
 }
 
 /// Build a ROUTE_BELTS lesson: belts only, no crafting. 1–8 sinks, each fed
-/// by a source of its item — directly, through a splitter merging two sources,
-/// or as one of the two outputs of a splitter splitting one source — plus
+/// by a source of its item — directly, or as one of the two outputs of a
+/// splitter splitting one source — plus
 /// sometimes sources whose item no sink takes, which stay unconnected (the
 /// lesson's only orphans). Several groups may share an item. Every route is a
 /// randomly drawn shortest path that tunnels only where it must, hugging the
@@ -5529,7 +5516,7 @@ fn build_route_belts(
         }
 
         let mut reserved: HashSet<Cell> = HashSet::new();
-        let n_sources = groups.iter().map(|g| g.sources()).sum();
+        let n_sources = groups.len();
         let n_sinks = groups.iter().map(|g| g.sinks()).sum();
         // A bus runs on in its sources' facing or turns one corner, never back.
         let src_bus = bus.then(|| DIRS[rng.choice_index(4)]);
@@ -5561,7 +5548,7 @@ fn build_route_belts(
         let mut snks = srcs.clone();
         let (mut a, mut b) = (src_slots.into_iter(), snk_slots.into_iter());
         for &g in &src_order {
-            srcs[g].extend(a.by_ref().take(groups[g].sources()));
+            srcs[g].extend(a.next());
         }
         for &g in &snk_order {
             snks[g].extend(b.by_ref().take(groups[g].sinks()));
@@ -5587,7 +5574,7 @@ fn build_route_belts(
             match groups[g] {
                 RouteGroup::Unmatched => {}
                 RouteGroup::Direct => segments.push((src[0].2, snk[0].2, snk[0].1)),
-                RouteGroup::Merge | RouteGroup::Split => {
+                RouteGroup::Split => {
                     // Splitter somewhere in the group's bounding box, facing
                     // from its sources toward its sinks along the major axis.
                     let markers: Vec<Cell> = src.iter().chain(snk).map(|m| m.0).collect();
@@ -5638,17 +5625,10 @@ fn build_route_belts(
                     };
                     place_splitter(&mut world, &tiles, dir);
                     splitters += 1;
-                    if matches!(groups[g], RouteGroup::Merge) {
-                        let to = pair_nearest([src[0].2, src[1].2], ins);
-                        segments.push((src[0].2, to[0], dir));
-                        segments.push((src[1].2, to[1], dir));
-                        segments.push((nearest_port(snk[0].2, outs), snk[0].2, snk[0].1));
-                    } else {
-                        segments.push((src[0].2, nearest_port(src[0].2, ins), dir));
-                        let from = pair_nearest([snk[0].2, snk[1].2], outs);
-                        segments.push((from[0], snk[0].2, snk[0].1));
-                        segments.push((from[1], snk[1].2, snk[1].1));
-                    }
+                    segments.push((src[0].2, nearest_port(src[0].2, ins), dir));
+                    let from = pair_nearest([snk[0].2, snk[1].2], outs);
+                    segments.push((from[0], snk[0].2, snk[0].1));
+                    segments.push((from[1], snk[1].2, snk[1].1));
                 }
             }
             let rate = match groups[g] {
@@ -7681,8 +7661,12 @@ mod tests {
                         "{kind:?} seed={seed}: {e:?} not one line: {markers:?}"
                     );
                 }
-                sink_counts.insert(lines[&Item::Sink].len());
-                unmatched += unmatched_sources(w);
+                let n_sinks = lines[&Item::Sink].len();
+                sink_counts.insert(n_sinks);
+                let n_unmatched = unmatched_sources(w);
+                unmatched += n_unmatched;
+                // No merges: every matched source feeds at least one sink.
+                assert!(lines[&Item::Source].len() - n_unmatched <= n_sinks);
                 assert!(world_throughput(w) > 0.0);
             }
             assert!(splitters > 0 && tunnels > 0 && unmatched > 0, "{kind:?}");
