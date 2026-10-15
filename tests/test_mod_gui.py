@@ -156,7 +156,8 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
         inference.settings = function() return settings_of end
         inference.describe = function() return "Painted area", true, "Cluster of 2" end
         inference.info = function()
-          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, networks = { { wire = "red", id = 41, signals = { { signal = { name = "iron-plate" }, count = 1 } } } }, powered = true }
+          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, networks = { { wire = "red", id = 41, signals = { { signal = { name = "iron-plate" }, count = 1 } } } }, powered = true,
+            readings = { predicting = 5, throughput = 1250 } }
         end
         inference.open(player, server)
         inference.refresh(player, true)
@@ -190,6 +191,9 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
 
     header = [child.caption for child in frame.panels.circuit.inner.header.children.values() if child.type == "label"]
     assert header == ["Connected to:", "41"]
+    rows = frame.panels.circuit.inner.read_state
+    assert rows.row_predicting.count.caption == "5" and rows.row_throughput.count.caption == "1.2k"
+    assert rows.row_utilisation.count.caption == ""
     tooltip = frame.panels.circuit.inner.header.info_red.tooltip
     assert "Circuit network: 41" in tooltip and "[item=iron-plate] 1" in tooltip
 

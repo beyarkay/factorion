@@ -2219,6 +2219,7 @@ local function write_state_signals(state)
     cluster = state.cluster_size or 0,
     throughput = math.floor(throughput * 60 + 0.5),
   }
+  state.readings = values
   -- Two readings set to one signal add up, as on a wire.
   local filters, by_signal = {}, {}
   for _, row in ipairs(state.read_state ~= false and inference.STATE_SIGNALS or {}) do
@@ -2469,7 +2470,7 @@ inference.info = function(server)
   end
   local u = state.utilisation or 0
   return {
-    status = status, caption = caption, utilisation = u, networks = networks(server), powered = on,
+    status = status, caption = caption, utilisation = u, networks = networks(server), powered = on, readings = state.readings or {},
     power_kw = on and IDLE_KW + (BUSY_KW - IDLE_KW) * u or 0,
   }
 end
