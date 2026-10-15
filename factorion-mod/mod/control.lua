@@ -260,11 +260,11 @@ end
 -- electric poles and painted tiles. storage.links[key] = { a, b, ka, kb,
 -- render_ids }, where ka and kb are the nodes' keys and key joins them.
 
--- The painted tiles server reaches through data links, passing only through
--- electric poles.
-local function cabled_tiles(server)
+-- The painted tiles and GPU servers server reaches through data links,
+-- passing only through electric poles.
+local function linked_nodes(server)
   local start = "e" .. server.unit_number
-  local seen, queue, tiles = { [start] = true }, { start }, {}
+  local seen, queue, tiles, servers = { [start] = true }, { start }, {}, {}
   while #queue > 0 do
     local at = table.remove(queue)
     for _, link in pairs(storage.links or {}) do
@@ -276,15 +276,17 @@ local function cabled_tiles(server)
             table.insert(tiles, node)
           elseif node.valid and node.type == "electric-pole" then
             table.insert(queue, key)
+          elseif node.valid and node.name == inference.GPU_SERVER then
+            table.insert(servers, node)
           end
         end
       end
     end
   end
-  return tiles
+  return tiles, servers
 end
 
--- Every painted piece server predicts for, { area, window }: the paint it
+-- Every painted piece server reaches itself, { area, window }: the paint it
 -- touches and the paint its data links reach. Or nil and why.
 local function server_pieces(server, size)
   local pieces = {}
@@ -294,14 +296,10 @@ local function server_pieces(server, size)
   elseif window then
     return nil, window
   end
-  for _, cable in ipairs(cabled_tiles(server)) do
+  for _, cable in ipairs((linked_nodes(server))) do
     local cabled, cut = cable_paint(server, cable, size)
     if not cabled then return nil, cut end
     table.insert(pieces, { area = cabled, window = cut })
-  end
-  if #pieces == 0 then
-    return nil, "it neither touches [item=" .. MASK_TILE .. "] paint nor has a " ..
-      "[item=" .. DATA_CABLE .. "] to any"
   end
   return pieces
 end
@@ -318,23 +316,73 @@ local function draw_alert(kind, target, surface, offset)
   return object.id
 end
 
--- Every GPU server on server's surface sharing painted tiles with it,
--- server first.
-local function cluster(server)
-  local size = storage.model.grid_size
-  local own = {}
-  for _, piece in ipairs(server_pieces(server, size) or {}) do
-    for key in pairs(piece.area) do own[key] = true end
+-- GPU servers predict together when they touch, share paint, or are joined
+-- by data links through any poles. Each server's cluster, by unit number;
+-- the members of one cluster share a list.
+local function clusters(surface)
+  local size = storage.model and storage.model.grid_size
+  local servers = surface.find_entities_filtered({ name = inference.GPU_SERVER })
+  local parent = {}
+  local function find(unit)
+    while parent[unit] ~= unit do unit = parent[unit] end
+    return unit
   end
-  local members = { server }
-  for _, other in pairs(server.surface.find_entities_filtered({ name = inference.GPU_SERVER })) do
-    local shared = false
-    for _, piece in ipairs(other ~= server and server_pieces(other, size) or {}) do
-      for key in pairs(piece.area) do shared = shared or own[key] ~= nil end
+  local function join(a, b) parent[find(a)] = find(b) end
+  for _, server in ipairs(servers) do parent[server.unit_number] = server.unit_number end
+  local painted_by = {}
+  for i, server in ipairs(servers) do
+    local unit = server.unit_number
+    for _, piece in ipairs(size and server_pieces(server, size) or {}) do
+      for key in pairs(piece.area) do
+        if painted_by[key] then join(painted_by[key], unit) else painted_by[key] = unit end
+      end
     end
-    if shared then table.insert(members, other) end
+    local _, linked = linked_nodes(server)
+    for _, other in ipairs(linked) do join(unit, other.unit_number) end
+    local x0, y0, x1, y1 = tile_box(server)
+    for j = i + 1, #servers do
+      local a0, b0, a1, b1 = tile_box(servers[j])
+      local across = a0 <= x1 and a1 >= x0
+      local along = b0 <= y1 and b1 >= y0
+      if (across and (b0 == y1 + 1 or b1 == y0 - 1)) or (along and (a0 == x1 + 1 or a1 == x0 - 1)) then
+        join(unit, servers[j].unit_number)
+      end
+    end
+  end
+  local groups, result = {}, {}
+  for _, server in ipairs(servers) do
+    local root = find(server.unit_number)
+    groups[root] = groups[root] or {}
+    table.insert(groups[root], server)
+    result[server.unit_number] = groups[root]
+  end
+  return result
+end
+
+-- server's cluster, server first; groups is clusters() of its surface when
+-- the caller already has it.
+local function cluster(server, groups)
+  local members = { server }
+  for _, other in ipairs((groups or clusters(server.surface))[server.unit_number] or {}) do
+    if other.unit_number ~= server.unit_number then table.insert(members, other) end
   end
   return members
+end
+
+-- The painted pieces server's whole cluster reaches, its own first; or nil
+-- and why.
+local function cluster_pieces(server, size, groups)
+  local pieces = {}
+  for _, member in ipairs(cluster(server, groups)) do
+    local own, reason = server_pieces(member, size)
+    if not own and member == server then return nil, reason end
+    for _, piece in ipairs(own or {}) do table.insert(pieces, piece) end
+  end
+  if #pieces == 0 then
+    return nil, "neither it nor a GPU server beside or cabled to it touches [item=" ..
+      MASK_TILE .. "] paint or has a [item=" .. DATA_CABLE .. "] to any"
+  end
+  return pieces
 end
 
 local function powered(servers)
@@ -472,12 +520,24 @@ local function node_position(node)
   return node.position
 end
 
--- Where a cable hangs from a GPU server, an electric pole's wire point, or a
--- painted tile's centre.
+-- The data port on top of the GPU server's I/O box, which sits at the left
+-- end of the horizontal picture and the bottom of the vertical one.
+local GPU_CABLE_PORT = {
+  [defines.direction.north] = { -1.67, -0.7 },
+  [defines.direction.south] = { -1.67, -0.7 },
+  [defines.direction.east] = { 0.25, 0.9 },
+  [defines.direction.west] = { 0.25, 0.9 },
+}
+
+-- Where a cable hangs from a GPU server's port, an electric pole's wire
+-- point, or a painted tile's centre.
 local function cable_point(node)
   if is_tile(node) then return node_position(node) end
-  local lift = node.type == "electric-pole" and 2.4 or 0.5
-  return { x = node.position.x, y = node.position.y - lift }
+  if node.type == "electric-pole" then
+    return { x = node.position.x, y = node.position.y - 2.4 }
+  end
+  local port = GPU_CABLE_PORT[node.direction]
+  return { x = node.position.x + port[1], y = node.position.y + port[2] }
 end
 
 local function hop_reach(from, to)
@@ -1609,18 +1669,25 @@ end
 
 -- The server's painted areas, the sources and sinks on or beside them, and
 -- the model's grid around them all; or nil and why not.
-local function region_for(server)
+local function region_for(server, groups)
   if not storage.model then
     request_model_load()
     return nil, "no model is loaded yet"
   end
   local size = storage.model.grid_size
-  local pieces, reason = server_pieces(server, size)
+  local pieces, reason = cluster_pieces(server, size, groups)
   if not pieces then return nil, reason end
-  local window = #pieces == 1 and pieces[1].window or nil
+  -- Paint bigger than the grid is cut to the first window, the server's own.
+  local window
+  for _, piece in ipairs(pieces) do window = window or piece.window end
   local area = {}
   for _, piece in ipairs(pieces) do
-    for key, tile in pairs(piece.area) do area[key] = tile end
+    for key, tile in pairs(piece.area) do
+      if not window or (tile.x >= window.x and tile.x < window.x + size
+          and tile.y >= window.y and tile.y < window.y + size) then
+        area[key] = tile
+      end
+    end
   end
   local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
   local tiles = 0
@@ -1729,13 +1796,13 @@ local function step_seconds(servers)
 end
 
 inference.describe = function(server)
-  local members = storage.model and cluster(server) or { server }
+  local members = cluster(server)
   local on = powered(members)
   local speed = #on == 0 and "none powered" or string.format(
     "%d powered: %.2f s per denoising step", #on, step_seconds(on))
   local cluster_caption = #members == 1
-    and string.format("No other GPU server shares this paint; %s.", speed)
-    or string.format("Cluster of %d GPU servers sharing this paint, %s.", #members, speed)
+    and string.format("No other GPU server touches, shares paint or is cabled to this one; %s.", speed)
+    or string.format("Cluster of %d GPU servers predicting together, %s.", #members, speed)
   local region, reason = predictable_region(server)
   if not region then return reason, false, cluster_caption end
   local caption = string.format("Painted area of %d tiles, converting %s to %s.",
@@ -1844,7 +1911,7 @@ end)
 
 -- Stops the cluster's prediction and removes everything it built.
 inference.on_clear = function(player, server)
-  for _, member in ipairs(storage.model and cluster(server) or { server }) do
+  for _, member in ipairs(cluster(server)) do
     local state = server_state(member)
     cancel_pending(state)
     clear_predicted_entities(state, player)
@@ -1867,7 +1934,7 @@ local function deconstruct_region(server, player)
     feeds[tile_key(endpoint.x, endpoint.y)] = true
   end
   local marked = 0
-  for _, piece in ipairs(server_pieces(server, storage.model.grid_size) or {}) do
+  for _, piece in ipairs(cluster_pieces(server, storage.model.grid_size) or {}) do
     local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
     for _, tile in pairs(piece.area) do
       min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
@@ -2109,30 +2176,11 @@ local function survey()
   local offline = storage.server_connected == false or storage.model_error ~= nil
   local size = storage.model and storage.model.grid_size
   for _, surface in pairs(game.surfaces) do
-    local servers = surface.find_entities_filtered({ name = inference.GPU_SERVER })
-    local pieces, on_tile = {}, {}
-    for _, server in ipairs(servers) do
-      pieces[server] = size and server_pieces(server, size) or nil
-      for _, piece in ipairs(pieces[server] or {}) do
-        for key in pairs(piece.area) do
-          on_tile[key] = on_tile[key] or {}
-          on_tile[key][server] = true
-        end
-      end
-    end
-    for _, server in ipairs(servers) do
+    local groups = clusters(surface)
+    for _, server in ipairs(surface.find_entities_filtered({ name = inference.GPU_SERVER })) do
       local state = server_state(server)
-      local members = { [server] = true }
-      for _, piece in ipairs(pieces[server] or {}) do
-        for key in pairs(piece.area) do
-          for other in pairs(on_tile[key]) do members[other] = true end
-        end
-      end
-      state.cluster_size = 0
-      for member in pairs(members) do
-        if member.energy > 0 then state.cluster_size = state.cluster_size + 1 end
-      end
-      local region = pieces[server] and region_for(server)
+      state.cluster_size = #powered(groups[server.unit_number])
+      local region = size and region_for(server, groups)
       state.sink_units = {}
       for _, endpoint in ipairs(region and region.endpoints or {}) do
         if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
@@ -2140,8 +2188,8 @@ local function survey()
       sync_virtual_endpoints(server, state, region and region.endpoints or {})
       state.ready = not state.computing and server.energy > 0 and server_alive()
         and region and #region.sources > 0 and #region.sinks > 0 or false
-      set_alert(server, offline and "gpu-offline" or (size and not pieces[server] and "unlinked") or nil,
-        { 0, -0.4 })
+      local unlinked = size and not region and not cluster_pieces(server, size, groups)
+      set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or nil, { 0, -0.4 })
     end
   end
   for _, config in pairs(storage.endpoints or {}) do
