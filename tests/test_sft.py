@@ -1027,11 +1027,11 @@ class TestLRSchedule:
         lrs.append(optimizer.param_groups[0]["lr"])
         return lrs
 
-    def _lrs(self, args, total_steps):
+    def _lrs(self, args, total_steps, n=None):
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         scheduler = build_lr_schedule(optimizer, total_steps, args)
-        return self._step_n(scheduler, optimizer, total_steps)
+        return self._step_n(scheduler, optimizer, n or total_steps)
 
     def test_warmup_stable_decay(self):
         args = SftArgs(lr=1e-3, warmup_steps=10, cooldown_frac=0.2, min_lr_ratio=0.01)
@@ -1049,7 +1049,7 @@ class TestLRSchedule:
         cooling, so their curves are directly comparable."""
         args = SftArgs(lr=1e-3, warmup_steps=50, cooldown_frac=0.2)
         short = self._lrs(args, 1_000)
-        long = self._lrs(args, 100_000)
+        long = self._lrs(args, 100_000, n=800)
         assert short[:800] == pytest.approx(long[:800], rel=1e-9)
 
     def test_handles_run_shorter_than_warmup(self):
