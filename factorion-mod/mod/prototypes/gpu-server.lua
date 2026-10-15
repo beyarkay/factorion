@@ -89,7 +89,6 @@ local function power(orientation, box)
     energy_usage = "900W",
     gui_mode = "none",
     allow_copy_paste = false,
-    working_sound = data.raw.lab.lab.working_sound,
   }
 end
 
