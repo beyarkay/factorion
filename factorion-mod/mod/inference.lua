@@ -25,7 +25,7 @@ local NUMBER_FIELDS = {
   { key = "refine", caption = "Refinement steps", min = 0, max = 100,
     tooltip = "Most extra greedy steps after denoising; they end early once the model leaves its own factory unchanged. 0 uses the checkpoint's training schedule." },
   { key = "best_of", caption = "Best of", min = 1, max = 64,
-    tooltip = "Factories denoised side by side; the one with the highest simulated throughput is built, step by step." },
+    tooltip = "Factories denoised side by side; the one with the highest simulated throughput is built, step by step. Each step takes this many times as long." },
   { key = "seed", caption = "Seed", min = 0, max = 2147483647,
     tooltip = "0 draws a fresh random seed each prediction; any other value replays that seed exactly." },
 }

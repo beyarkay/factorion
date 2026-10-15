@@ -1780,15 +1780,17 @@ local function predictable_region(server)
   return region
 end
 
+-- Best of N runs N forward passes per step.
 local function step_seconds(servers)
-  return setting("factorion-forward-pass-time") / math.max(1, math.min(#servers, MAX_CLUSTER_SPEEDUP))
+  return setting("factorion-forward-pass-time") * inference.config().best_of
+    / math.max(1, math.min(#servers, MAX_CLUSTER_SPEEDUP))
 end
 
 inference.describe = function(server)
   local members = cluster(server)
   local on = powered(members)
   local speed = #on == 0 and "none powered" or string.format(
-    "%d powered: %.2f s per denoising step", #on, step_seconds(on))
+    "%d powered: %.2f s per denoising step of best of %d", #on, step_seconds(on), inference.config().best_of)
   local cluster_caption = #members == 1
     and string.format("No other GPU server touches, shares paint or is cabled to this one; %s.", speed)
     or string.format("Cluster of %d GPU servers predicting together, %s.", #members, speed)
