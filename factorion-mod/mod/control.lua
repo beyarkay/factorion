@@ -1644,8 +1644,9 @@ end
 -- polls and explains in chat why they aren't arriving
 -- ----------------------------------------------------------------------------
 
+-- Timeouts are wall-clock seconds; at a higher game speed more ticks pass.
 local function recently(tick)
-  return tick ~= nil and game.tick - tick < SERVER_TIMEOUT_TICKS
+  return tick ~= nil and game.tick - tick < SERVER_TIMEOUT_TICKS * math.max(1, game.speed)
 end
 
 -- Every call the server makes counts: it doesn't poll while it is building.
@@ -1654,8 +1655,8 @@ local function heard_from_server()
 end
 
 local function server_alive()
-  local timeout = storage.model_loading and MODEL_LOAD_TIMEOUT_TICKS
-    or SERVER_TIMEOUT_TICKS
+  local timeout = (storage.model_loading and MODEL_LOAD_TIMEOUT_TICKS
+    or SERVER_TIMEOUT_TICKS) * math.max(1, game.speed)
   return storage.server_contact_tick ~= nil
     and game.tick - storage.server_contact_tick < timeout
 end
