@@ -49,8 +49,8 @@ def envs(registered_env):
 
 @pytest.fixture()
 def agent(envs):
-    """Create an AgentCNN with default params."""
-    return AgentCNN(envs, layers=(32, 64, 64))
+    """Create an AgentCNN with a small attention stack."""
+    return AgentCNN(envs, layers=(32, 64, 64), **_TINY_ATTN)
 
 
 class TestForwardPass:
