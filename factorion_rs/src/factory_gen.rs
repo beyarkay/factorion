@@ -286,12 +286,16 @@ enum Routes<'a> {
 /// `Vec<UgPlacement>` laying exactly one entity per cell from `start` through
 /// `end` (which faces `end_dir`).
 ///
-/// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 4 and
-/// a `span`-tile tunnel costs `5 * (span + 1)` (an integral 1.25×/tile penalty),
-/// so tunnels only ever clear blocked cells, with minimal span. Tunnels run
-/// straight; 180° reversals and self-overlapping routes are rejected. See
-/// [`Underground`] for the tunnel options; `Underground::Off` reduces this to a
-/// plain uniform-cost belt search.
+/// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 16 and
+/// a `span`-tile tunnel costs `20 * (span + 1)` (an integral 1.25×/tile penalty),
+/// so tunnels only ever clear blocked cells, with minimal span. A belt beside a
+/// `hug` cell costs `hug_discount` less, so routes stick to belts already laid:
+/// a small discount picks the tidiest of the shortest routes, and only a long
+/// enough stretch of hugging pays for a detour. Tunnels run straight; 180°
+/// reversals and self-overlapping routes are rejected. See [`Underground`] for
+/// the tunnel options; `Underground::Off` reduces this to a plain uniform-cost
+/// belt search.
+#[allow(clippy::too_many_arguments)]
 fn find_belt_paths(
     start: Cell,
     end: Cell,
@@ -300,6 +304,8 @@ fn find_belt_paths(
     blocked: &HashSet<Cell>,
     underground: Underground,
     routes: Routes,
+    hug: &HashSet<Cell>,
+    hug_discount: u64,
 ) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
     if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
@@ -391,7 +397,10 @@ fn find_belt_paths(
                 continue;
             }
             let ns: State = (n.0, n.1, d as i64);
-            let nd = d_so_far + 4;
+            let hugging = BFS_DELTAS
+                .iter()
+                .any(|&(hx, hy)| hug.contains(&(cx + hx, cy + hy)));
+            let nd = d_so_far + 16 - if hugging { hug_discount } else { 0 };
             relax(
                 &mut dist,
                 &mut preds,
@@ -416,7 +425,7 @@ fn find_belt_paths(
                 // Charged like a normal tunnel, so used only when the obstruction
                 // reaches the sink.
                 if exit_cell == end && d == end_dir {
-                    let cost = d_so_far + 5 * (span as u64 + 1);
+                    let cost = d_so_far + 20 * (span as u64 + 1);
                     if cost < goal_cost {
                         goal_cost = cost;
                         goal_arrivals.clear();
@@ -437,7 +446,7 @@ fn find_belt_paths(
                     continue;
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
-                let nd = d_so_far + 5 * (span as u64 + 1);
+                let nd = d_so_far + 20 * (span as u64 + 1);
                 relax(
                     &mut dist,
                     &mut preds,
@@ -574,9 +583,19 @@ fn find_belt_path(
     underground: Underground,
 ) -> Option<Vec<UgPlacement>> {
     let one = Routes::First(NonZeroUsize::MIN);
-    find_belt_paths(start, end, end_dir, size, blocked, underground, one)
-        .into_iter()
-        .next()
+    find_belt_paths(
+        start,
+        end,
+        end_dir,
+        size,
+        blocked,
+        underground,
+        one,
+        &HashSet::new(),
+        0,
+    )
+    .into_iter()
+    .next()
 }
 
 /// The `(x, y)` cells of a belt run (dropping directions).
@@ -916,7 +935,17 @@ fn build_move_one_item(
         blocked.insert(source_wh);
         blocked.insert(sink_wh);
         let sampled = Routes::Sampled(rng);
-        let paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, sampled);
+        let paths = find_belt_paths(
+            start,
+            end,
+            sink_dir,
+            s,
+            &blocked,
+            Underground::Off,
+            sampled,
+            &HashSet::new(),
+            0,
+        );
         let Some(chosen) = paths.into_iter().next() else {
             continue;
         };
@@ -6602,6 +6631,8 @@ mod tests {
             &free,
             Underground::Off,
             Routes::First(NonZeroUsize::new(50).unwrap()),
+            &free,
+            0,
         );
         assert_eq!(all.len(), 6);
         for p in &all {
@@ -6625,6 +6656,8 @@ mod tests {
                 &free,
                 Underground::Off,
                 Routes::First(NonZeroUsize::new(2).unwrap()),
+                &free,
+                0,
             )
             .len(),
             2
@@ -6638,6 +6671,8 @@ mod tests {
                 &free,
                 Underground::Off,
                 Routes::First(NonZeroUsize::MIN),
+                &free,
+                0,
             )
             .len(),
             1
@@ -6652,6 +6687,8 @@ mod tests {
             &blocked,
             Underground::Off,
             Routes::First(NonZeroUsize::new(50).unwrap()),
+            &free,
+            0,
         )
         .is_empty());
     }
@@ -6673,6 +6710,8 @@ mod tests {
                 &free,
                 Underground::Off,
                 Routes::Sampled(&mut rng),
+                &free,
+                0,
             );
             assert_eq!(paths.len(), 1);
             assert_eq!(paths[0].len(), 39, "every shortest route is 39 tiles");
@@ -7175,6 +7214,34 @@ mod tests {
                 );
             }
             assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_hug_picks_the_shortest_route_beside_laid_belts() {
+        // A belt row along y = 3 makes y = 2 the hugging lane: of the many
+        // shortest (0, 0) → (5, 2) routes, every sample drops straight to it,
+        // and the discount never buys a detour.
+        let free = HashSet::new();
+        let hug: HashSet<Cell> = (0..10).map(|x| (x, 3)).collect();
+        let want: Vec<Cell> = [(0, 0), (0, 1)]
+            .into_iter()
+            .chain((0..=5).map(|x| (x, 2)))
+            .collect();
+        for seed in 0..20u64 {
+            let mut rng = Rng::seeded(seed);
+            let route = find_belt_paths(
+                (0, 0),
+                (5, 2),
+                Direction::East,
+                10,
+                &free,
+                Underground::Off,
+                Routes::Sampled(&mut rng),
+                &hug,
+                2,
+            );
+            assert_eq!(belt_cells(&route[0]), want, "seed={seed}");
         }
     }
 
