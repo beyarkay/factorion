@@ -26,6 +26,7 @@
 local parity = require("parity")
 local inference = require("inference")
 local gui = require("gui")
+local util = require("util")
 
 local PROTOCOL_VERSION = "11"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
@@ -100,7 +101,7 @@ local function show_startup_message(player)
   player.print("[Factorion] Ready. Craft a [item=factorion-planner], click a " ..
     "tile with it to choose what to make, then click a tile for each source. " ..
     "Paint the tiles the factory may use with [item=factorion-mask], put a " ..
-    "[item=factorion-gpu-server] against the paint and press Predict in its window. " ..
+    "[item=factorion-gpu-server] against that build region and press Predict in its window. " ..
     "Belt the ingredients into the source belts and carry the product away from the sink.")
 end
 
@@ -250,7 +251,7 @@ local function touching_paint(server, size)
   end
   for _, seed in ipairs(seeds) do
     if not area[tile_key(seed.x, seed.y)] then
-      return nil, "it touches more than one painted area"
+      return nil, "it touches more than one build region"
     end
   end
   return area, window
@@ -261,7 +262,7 @@ end
 local function cable_paint(server, cable, size)
   local surface = server.surface
   if surface.get_tile(cable.x, cable.y).name ~= MASK_TILE then
-    return nil, "a data cable ends off the paint"
+    return nil, "a data cable ends outside the build region"
   end
   local start = { x = cable.x, y = cable.y }
   local area = flood_paint(surface, start, size, nil, server)
@@ -394,8 +395,8 @@ local function cluster_pieces(server, size, groups)
     for _, piece in ipairs(own or {}) do table.insert(pieces, piece) end
   end
   if #pieces == 0 then
-    return nil, "neither it nor a GPU server beside or cabled to it touches [item=" ..
-      MASK_TILE .. "] paint or has a [item=" .. DATA_CABLE .. "] to any"
+    return nil, "neither it nor a GPU server beside or cabled to it touches a [item=" ..
+      MASK_TILE .. "] build region or has a [item=" .. DATA_CABLE .. "] to any"
   end
   return pieces
 end
@@ -706,7 +707,7 @@ local function cable_select(event, player)
   local ka, kb = node_key(from, surface), node_key(node, surface)
   if ka == kb then return end
   if is_tile(from) and is_tile(node) then
-    player.print("[Factorion] Run the cable from paint to a GPU server or a pole.")
+    player.print("[Factorion] Run the cable from a build region to a GPU server or a pole.")
     return
   end
   local key = ka < kb and ka .. "|" .. kb or kb .. "|" .. ka
@@ -904,7 +905,9 @@ local function remove_entity(entity, player, is_predicted)
   if entity.type == "entity-ghost" then
     entity.destroy({ raise_destroy = true })
   elseif setting("factorion-placement-mode") == "ghost" then
-    entity.order_deconstruction(entity.force, player)
+    -- Naming the player would let the map editor's instant deconstruction
+    -- remove it outright instead of marking it.
+    entity.order_deconstruction(entity.force)
   elseif is_predicted or not player then
     entity.destroy({ raise_destroy = true })
   else
@@ -1140,7 +1143,7 @@ local function finish_plan(player, state)
   player.print("[Factorion] Belts placed. Belt each ingredient into its source " ..
     "and carry the product away from the sink. Paint the tiles the factory may use " ..
     "with [item=factorion-mask], then put a [item=factorion-gpu-server] against " ..
-    "the paint and press Predict in its window.")
+    "that build region and press Predict in its window.")
 end
 
 -- A source belt the player places while a plan is waiting for sources becomes
@@ -1365,8 +1368,7 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
     and event.destination.name == inference.GPU_SERVER and gpu_settings(event.source)
   if copied then
     local state = server_state(event.destination)
-    ---@diagnostic disable-next-line: undefined-field
-    state.conditions = table.deepcopy(copied.conditions)
+    state.conditions = util.table.deepcopy(copied.conditions)
     state.read_state = copied.read_state
     state.circuit_endpoints = copied.circuit_endpoints
   end
@@ -1688,13 +1690,23 @@ local function region_for(server, groups)
     return false
   end
   local origin = { x = min_x, y = min_y }
-  local candidates, signals = {}, nil
-  if server_state(server).circuit_endpoints then
-    signals = circuit_endpoints(server, min_x, min_y)
-    for _, endpoint in ipairs(signals) do
-      if not endpoint.problem then table.insert(candidates, endpoint) end
+  -- A cluster takes its sources and sinks from the wires of every member set
+  -- to read them, if any is, so they all agree.
+  local candidates, signals, seen = {}, nil, {}
+  for _, member in ipairs(cluster(server, groups)) do
+    if server_state(member).circuit_endpoints then
+      signals = signals or {}
+      for _, endpoint in ipairs(circuit_endpoints(member, min_x, min_y)) do
+        local key = endpoint.role .. endpoint.item .. endpoint.value
+        if not seen[key] then
+          seen[key] = true
+          table.insert(signals, endpoint)
+          if not endpoint.problem then table.insert(candidates, endpoint) end
+        end
+      end
     end
-  else
+  end
+  if not signals then
     for _, entity in pairs(server.surface.find_entities_filtered({
       area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
       name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
@@ -1714,12 +1726,12 @@ local function region_for(server, groups)
       min_x, max_x = math.min(min_x, endpoint.x), math.max(max_x, endpoint.x)
       min_y, max_y = math.min(min_y, endpoint.y), math.max(max_y, endpoint.y)
     elseif not endpoint.unit then
-      endpoint.problem = "not on or beside the paint"
+      endpoint.problem = "not on or beside the build region"
     end
   end
   local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
   if span_x > size or span_y > size then
-    return nil, string.format("the paint and its belts span %dx%d tiles, more " ..
+    return nil, string.format("the build region and its belts span %dx%d tiles, more " ..
       "than the model's %dx%d grid", span_x, span_y, size, size)
   end
   local fp = window or {
@@ -1767,10 +1779,10 @@ local function predictable_region(server)
   local region, reason = region_for(server)
   if not region then return nil, "Can't predict: " .. reason .. "." end
   if #region.sources == 0 then
-    return nil, "No source on or beside the painted area."
+    return nil, "No source on or beside the build region."
   end
   if #region.sinks == 0 then
-    return nil, "No sink on or beside the painted area."
+    return nil, "No sink on or beside the build region."
   end
   return region
 end
@@ -1787,18 +1799,18 @@ inference.describe = function(server)
   local speed = #on == 0 and "none powered" or string.format(
     "%d powered: %.2f s per denoising step of best of %d", #on, step_seconds(on), inference.config().best_of)
   local cluster_caption = #members == 1
-    and string.format("No other GPU server touches, shares paint or is cabled to this one; %s.", speed)
+    and string.format("No other GPU server touches, shares a build region with or is cabled to this one; %s.", speed)
     or string.format("Cluster of %d GPU servers predicting together, %s.", #members, speed)
   local region, reason = predictable_region(server)
   if not region then return reason, false, cluster_caption, (region_for(server)) end
-  local caption = string.format("Painted area of %d tiles, converting %s to %s.",
+  local caption = string.format("Build region of %d tiles, converting %s to %s.",
     region.tiles, icons(region.sources), icons(region.sinks))
   return caption, true, cluster_caption, region
 end
 
 local function gather_request(state, region, members)
   local existing = gather_existing_entities(state.entity.surface, region.fp, state.endpoint_tiles)
-  local description = string.format("converting %s to %s on %d painted tiles",
+  local description = string.format("converting %s to %s on a build region of %d tiles",
     icons(region.sources), icons(region.sinks), region.tiles)
   if #existing > 0 then
     description = description .. string.format(", starting from the %d already there", #existing)
@@ -1884,7 +1896,7 @@ end)
 -- Stops the cluster and marks every entity of the kinds the model builds on
 -- its paint for robots to deconstruct. Ghosts can't be marked, so they go, as
 -- under vanilla's deconstruction planner. Returns how many of each.
-local function deconstruct_region(server, player)
+local function deconstruct_region(server)
   if not storage.model then return 0, 0 end
   local members = cluster(server)
   for _, member in ipairs(members) do
@@ -1893,8 +1905,10 @@ local function deconstruct_region(server, player)
     state.model_entities = {}
   end
   local feeds = {}
-  for _, endpoint in pairs(server_state(server).virtual or {}) do
-    feeds[tile_key(endpoint.x, endpoint.y)] = true
+  for _, member in ipairs(members) do
+    for _, endpoint in pairs(server_state(member).virtual or {}) do
+      feeds[tile_key(endpoint.x, endpoint.y)] = true
+    end
   end
   local marked, removed = 0, 0
   for _, piece in ipairs(cluster_pieces(server, storage.model.grid_size) or {}) do
@@ -1915,7 +1929,7 @@ local function deconstruct_region(server, player)
           entity.destroy({ raise_destroy = true })
           removed = removed + 1
         elseif not entity.to_be_deconstructed() then
-          entity.order_deconstruction(entity.force, player)
+          entity.order_deconstruction(entity.force)
           marked = marked + 1
         end
       end
@@ -1924,9 +1938,9 @@ local function deconstruct_region(server, player)
   return marked, removed
 end
 
-inference.on_clear = function(player, server)
-  if not storage.model then return "No model is loaded yet, so the painted area isn't known." end
-  local marked, removed = deconstruct_region(server, player)
+inference.on_clear = function(_, server)
+  if not storage.model then return "No model is loaded yet, so the build region isn't known." end
+  local marked, removed = deconstruct_region(server)
   return string.format("Marked %d entities for deconstruction and removed %d unbuilt ghosts.", marked, removed)
 end
 
@@ -1958,7 +1972,8 @@ local function write_state_signals(state)
     local config = storage.endpoints[unit]
     if config then throughput = throughput + (config.throughput_rate or 0) end
   end
-  for _, endpoint in pairs(state.virtual or {}) do
+  local leader = storage.servers[state.leader] or state
+  for _, endpoint in pairs(leader.virtual or {}) do
     if endpoint.role == "sink" and not endpoint.problem then
       throughput = throughput + (endpoint.throughput_rate or 0)
     end
@@ -1998,14 +2013,16 @@ end
 
 local CIRCUIT_ACTIONS = {
   predict = function(server, player) inference.on_predict(player, server, true) end,
-  deconstruct = function(server, player) deconstruct_region(server, player) end,
+  deconstruct = function(server) deconstruct_region(server) end,
 }
 
 -- Every tick, so a one-tick pulse counts; each condition acts once each time
 -- it becomes true.
 local function check_circuit_conditions()
   for _, state in pairs(storage.servers or {}) do
-    if state.conditions and state.entity.valid then
+    -- Unwired servers in a cluster share its conditions but read nothing.
+    if state.conditions and state.entity.valid and (state.entity.get_circuit_network(WIRES[1])
+        or state.entity.get_circuit_network(WIRES[2])) then
       state.fired = state.fired or {}
       for key, action in pairs(CIRCUIT_ACTIONS) do
         local condition = state.conditions[key]
@@ -2054,7 +2071,7 @@ local function draw_virtual_endpoint(surface, endpoint)
     }).id)
   end
   table.insert(ids, rendering.draw_text({
-    text = ENDPOINT_LABELS[endpoint.role] .. (endpoint.problem and ", off the paint" or ""),
+    text = ENDPOINT_LABELS[endpoint.role] .. (endpoint.problem and ", outside the build region" or ""),
     surface = surface, target = { cx, cy + 0.55 }, color = color, scale = 0.7,
     alignment = "center", only_in_alt_mode = true,
   }).id)
@@ -2126,6 +2143,14 @@ local function set_alert(entity, kind, offset)
   } or nil
 end
 
+-- A cluster shares one set of circuit settings: every server keeps a copy,
+-- and the most recently edited wins.
+local SHARED_SETTINGS = { "conditions", "read_state", "circuit_endpoints", "circuit_player", "settings_tick" }
+
+local function copy_settings(from, to)
+  for _, key in ipairs(SHARED_SETTINGS) do to[key] = util.table.deepcopy(from[key]) end
+end
+
 -- Every second: each server's cluster size, sinks and readiness for its
 -- signals, and the warnings over servers and sources.
 local function survey()
@@ -2141,7 +2166,19 @@ local function survey()
       for _, endpoint in ipairs(region and region.endpoints or {}) do
         if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
       end
-      sync_virtual_endpoints(server, state, region and region.signals or {})
+      -- One server per cluster draws, measures and ghosts its wire-set endpoints.
+      local leader = server
+      for _, member in ipairs(groups[server.unit_number] or {}) do
+        if member.unit_number < leader.unit_number then leader = member end
+      end
+      state.leader = leader.unit_number
+      local latest = state
+      for _, member in ipairs(groups[server.unit_number] or {}) do
+        local other = server_state(member)
+        if (other.settings_tick or -1) > (latest.settings_tick or -1) then latest = other end
+      end
+      if latest ~= state then copy_settings(latest, state) end
+      sync_virtual_endpoints(server, state, leader == server and region and region.signals or {})
       state.ready = not state.computing and has_power(server) and server_alive()
         and region and #region.sources > 0 and #region.sinks > 0 or false
       local unlinked = size and not region and not cluster_pieces(server, size, groups)
@@ -2188,6 +2225,14 @@ inference.settings = function(server)
   local state = server_state(server)
   state.conditions = state.conditions or {}
   return state
+end
+
+inference.settings_changed = function(server)
+  local state = server_state(server)
+  state.settings_tick = game.tick
+  for _, member in ipairs(cluster(server)) do
+    if member ~= server then copy_settings(state, server_state(member)) end
+  end
 end
 
 local function describe_placement_failure(surface, fp, placement)
@@ -2432,7 +2477,7 @@ remote.add_interface("factorion", {
     for _, surface in pairs(game.surfaces) do draw_mask_outline(surface) end
     inference.refresh_all(true)
     game.print(string.format(
-      "[Factorion] Model %s (%s) ready: it builds painted areas up to %dx%d " ..
+      "[Factorion] Model %s (%s) ready: it builds on build regions up to %dx%d " ..
       "tiles. Plan a factory with the [item=factorion-planner].",
       model.checkpoint, tostring(model.name), model.grid_size, model.grid_size))
     return "ok"
