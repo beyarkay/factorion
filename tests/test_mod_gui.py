@@ -151,12 +151,12 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
     lua.execute(
         """
         inference = require("inference")
-        server = { valid = true, name = "factorion-gpu-server", unit_number = 7, energy = 100 }
+        server = { valid = true, name = "factorion-gpu-server", unit_number = 7 }
         settings_of = { conditions = {} }
         inference.settings = function() return settings_of end
         inference.describe = function() return "Painted area", true, "Cluster of 2" end
         inference.info = function()
-          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, network = "Not connected" }
+          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, network = "Not connected", powered = true }
         end
         inference.open(player, server)
         inference.refresh(player, true)

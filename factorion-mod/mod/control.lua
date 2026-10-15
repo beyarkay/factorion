@@ -40,8 +40,7 @@ local STOP_REASONS = {
 -- A cluster's denoising step takes the forward-pass time divided by its
 -- powered servers, counting at most this many.
 local MAX_CLUSTER_SPEEDUP = 8
-local FORWARD_PASS = "factorion-forward-pass"
-local GPU_SIGNALS = "factorion-gpu-signals"
+local GPU_POWER = { horizontal = "factorion-gpu-power-horizontal", vertical = "factorion-gpu-power-vertical" }
 local IDLE_KW, BUSY_KW = 0.9, 4.5
 -- Utilisation is a moving average with this time constant.
 local UTILISATION_TICKS = 2 * 60
@@ -166,6 +165,22 @@ local function server_state(server)
     storage.servers[server.unit_number] = state
   end
   return state
+end
+
+-- The hidden energy interface drawing the server's power, matching its
+-- orientation, which a placed server keeps: it only turns 180 degrees.
+local function server_power(server)
+  local state = server_state(server)
+  if state.power and state.power.valid then return state.power end
+  local vertical = server.direction == defines.direction.east or server.direction == defines.direction.west
+  state.power = server.surface.create_entity({
+    name = GPU_POWER[vertical and "vertical" or "horizontal"], position = server.position, force = server.force,
+  })
+  return state.power
+end
+
+local function has_power(server)
+  return server_power(server).energy > 0
 end
 
 -- The painted tiles connected to start, as tile keys; nil once they outgrow
@@ -388,7 +403,7 @@ end
 local function powered(servers)
   local result = {}
   for _, server in ipairs(servers) do
-    if server.energy > 0 then table.insert(result, server) end
+    if has_power(server) then table.insert(result, server) end
   end
   return result
 end
@@ -906,16 +921,9 @@ local function clear_predicted_entities(state, player)
   state.model_entities = {}
 end
 
--- The cluster computing request_id drops its unused forward-pass tokens and
--- idles once the current pass finishes.
 local function release_cluster(request_id)
   for _, state in pairs(storage.servers or {}) do
-    if state.computing == request_id then
-      state.computing = nil
-      if state.entity.valid then
-        state.entity.get_inventory(defines.inventory.crafter_input).clear()
-      end
-    end
+    if state.computing == request_id then state.computing = nil end
   end
 end
 
@@ -1404,7 +1412,7 @@ local function endpoint_entity_removed(event)
   local server = storage.servers and storage.servers[entity.unit_number]
   if server then
     cancel_pending(server)
-    if server.signals and server.signals.valid then server.signals.destroy() end
+    if server.power and server.power.valid then server.power.destroy() end
     for _, endpoint in pairs(server.virtual or {}) do destroy_ids(endpoint.render_ids) end
     storage.servers[entity.unit_number] = nil
   end
@@ -1421,15 +1429,6 @@ end
 
 script.on_event(defines.events.on_player_mined_entity, endpoint_entity_removed)
 
--- Mining a server would otherwise hand over its forward-pass tokens.
-local function gpu_pre_mined(event)
-  local entity = event.entity
-  if entity.valid and entity.name == inference.GPU_SERVER then
-    entity.get_inventory(defines.inventory.crafter_input).clear()
-  end
-end
-script.on_event(defines.events.on_pre_player_mined_item, gpu_pre_mined)
-script.on_event(defines.events.on_robot_pre_mined, gpu_pre_mined)
 script.on_event(defines.events.on_robot_mined_entity, endpoint_entity_removed)
 script.on_event(defines.events.on_entity_died, endpoint_entity_removed)
 script.on_event(defines.events.script_raised_destroy, endpoint_entity_removed)
@@ -1768,7 +1767,7 @@ local function predictable_region(server)
   if state.computing then
     return nil, "Building " .. computing_description(state) .. "…"
   end
-  if server.energy <= 0 then return nil, "This GPU server has no power." end
+  if not has_power(server) then return nil, "This GPU server has no power." end
   local region, reason = region_for(server)
   if not region then return nil, "Can't predict: " .. reason .. "." end
   if #region.sources == 0 then
@@ -1947,43 +1946,21 @@ end
 local WIRES = { defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }
 local UTILISATION_DECAY = math.exp(-10 / UTILISATION_TICKS)
 
--- A hidden constant combinator wired to the server writes its state onto
--- whatever networks the player wires to it.
-local function ensure_signals(state)
-  if state.signals and state.signals.valid then return state.signals end
-  local server = state.entity
-  local combinator = server.surface.create_entity({
-    name = GPU_SIGNALS, position = server.position, force = server.force,
-  })
-  for _, wire in ipairs(WIRES) do
-    combinator.get_wire_connector(wire, true).connect_to(
-      server.get_wire_connector(wire, true), false, defines.wire_origin.script)
-  end
-  state.signals = combinator
-  return combinator
-end
-
--- The hidden combinator's script wires put every server on a network, so only
--- a player's wire counts as connected.
 local function network_caption(server)
   local parts = {}
   for _, wire in ipairs(WIRES) do
-    local connector = server.get_wire_connector(wire, false)
-    for _, connection in ipairs(connector and connector.connections or {}) do
-      if connection.origin == defines.wire_origin.player then
-        local network = server.get_circuit_network(wire)
-        local red = wire == defines.wire_connector_id.circuit_red
-        table.insert(parts, string.format("[color=%s]%s network %d[/color]", red and "1,0.4,0.4" or "0.4,1,0.4",
-          red and "red" or "green", network and network.network_id or 0))
-        break
-      end
+    local network = server.get_circuit_network(wire)
+    if network then
+      local red = wire == defines.wire_connector_id.circuit_red
+      table.insert(parts, string.format("[color=%s]%s network %d[/color]", red and "1,0.4,0.4" or "0.4,1,0.4",
+        red and "red" or "green", network.network_id))
     end
   end
   return #parts == 0 and "Not connected" or "Connected to " .. table.concat(parts, " and ")
 end
 
 local function write_state_signals(state)
-  local behavior = ensure_signals(state).get_control_behavior()
+  local behavior = state.entity.get_control_behavior()
   local section = behavior.get_section(1) or behavior.add_section()
   local throughput = 0
   for _, unit in ipairs(state.sink_units or {}) do
@@ -2012,21 +1989,14 @@ local function write_state_signals(state)
   section.filters = filters
 end
 
--- Every 10 ticks: a server computing for its cluster always has its next
--- forward-pass token waiting, so it crafts, and draws full power, until the
--- prediction ends.
+-- Every 10 ticks: a server computing for its cluster draws full power until
+-- the prediction ends.
 local function service_gpu_servers()
   for _, state in pairs(storage.servers or {}) do
     local server = state.entity
     if server.valid then
-      if state.computing and server.energy > 0 then
-        local inventory = server.get_inventory(defines.inventory.crafter_input)
-        local short = 2 - inventory.get_item_count(FORWARD_PASS)
-        if short > 0 then inventory.insert({ name = FORWARD_PASS, count = short }) end
-      end
-      local status = server.status
-      local busy = (status == defines.entity_status.working
-        or status == defines.entity_status.low_power) and 1 or 0
+      local busy = state.computing and has_power(server) and 1 or 0
+      server_power(server).power_usage = (IDLE_KW + (BUSY_KW - IDLE_KW) * busy) * 1000 / 60
       state.utilisation = (state.utilisation or 0) * UTILISATION_DECAY + busy * (1 - UTILISATION_DECAY)
       write_state_signals(state)
     end
@@ -2150,7 +2120,7 @@ local function survey()
         if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
       end
       sync_virtual_endpoints(server, state, region and region.endpoints or {})
-      state.ready = not state.computing and server.energy > 0 and server_alive()
+      state.ready = not state.computing and has_power(server) and server_alive()
         and region and #region.sources > 0 and #region.sinks > 0 or false
       local unlinked = size and not region and not cluster_pieces(server, size, groups)
       set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or nil, { 0, -0.4 })
@@ -2173,7 +2143,8 @@ end
 inference.info = function(server)
   local state = server_state(server)
   local status, caption = "idle", "Idle"
-  if server.energy <= 0 then
+  local on = has_power(server)
+  if not on then
     status, caption = "broken", "No power"
   elseif storage.server_connected == false then
     status, caption = "broken", "Can't reach the model server"
@@ -2186,8 +2157,8 @@ inference.info = function(server)
   end
   local u = state.utilisation or 0
   return {
-    status = status, caption = caption, utilisation = u, network = network_caption(server),
-    power_kw = server.energy > 0 and IDLE_KW + (BUSY_KW - IDLE_KW) * u or 0,
+    status = status, caption = caption, utilisation = u, network = network_caption(server), powered = on,
+    power_kw = on and IDLE_KW + (BUSY_KW - IDLE_KW) * u or 0,
   }
 end
 

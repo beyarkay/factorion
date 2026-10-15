@@ -1,13 +1,10 @@
--- 4x2 GPU server. Draws a 4x H200 server's power: 4 x 700 W GPUs plus
--- ~1.7 kW of host at full load, and the host alone when idle. Mods can't add
--- engine types, so it borrows the assembling machine's: that type takes
--- circuit wires and has a working state. Everything else an assembler does
--- (recipes, modules, beacons, inserters, upgrades) is switched off. Script
--- hands it one forward-pass token per craft while its cluster predicts, and
--- it idles on its drain otherwise.
+-- 4x2 GPU server. Mods can't add engine types, so it is a constant
+-- combinator, the type that takes circuit wires and writes the server's state
+-- signals, and nothing else. A hidden electric energy interface under it
+-- draws a 4x H200 server's power, which script sets: 4 x 700 W GPUs plus
+-- ~1.7 kW of host while predicting, and the host alone when idle.
 
 local NAME = "factorion-gpu-server"
-local FORWARD_PASS = "factorion-forward-pass"
 -- Space Age is an optional dependency, so it has loaded before this file
 -- whenever it is enabled.
 local processor = data.raw.item["quantum-processor"] and "quantum-processor"
@@ -35,6 +32,67 @@ local function connector(x, y)
   }
 end
 
+local connectors = circuit_connector_definitions.create_vector(universal_connector_template, {
+  connector(-50, 12), connector(-12, 46), connector(-50, 12), connector(-12, 46),
+})
+
+local function sprite(orientation, i)
+  local parts = connectors[i].sprites
+  return { layers = { placeholder(orientation), parts.connector_main, parts.wire_pins, parts.connector_shadow } }
+end
+
+local server = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
+server.name = NAME
+server.icon = "__factorion__/graphics/icons/gpu-server.png"
+server.icon_size = 64
+server.flags = { "placeable-player", "player-creation", "not-upgradable" }
+server.minable = { mining_time = 0.5, result = NAME }
+server.max_health = 300
+server.collision_box = { { -1.9, -0.9 }, { 1.9, 0.9 } }
+server.selection_box = { { -2, -1 }, { 2, 1 } }
+server.fast_replaceable_group = nil
+server.next_upgrade = nil
+server.sprites = {
+  north = sprite("horizontal", 1), east = sprite("vertical", 2),
+  south = sprite("horizontal", 3), west = sprite("vertical", 4),
+}
+server.activity_led_sprites = nil
+server.activity_led_light = nil
+server.circuit_wire_connection_points = {
+  connectors[1].points, connectors[2].points, connectors[3].points, connectors[4].points,
+}
+server.circuit_wire_max_distance = assembler.circuit_wire_max_distance
+server.open_sound = assembler.open_sound
+server.close_sound = assembler.close_sound
+
+-- The power draw, one per orientation so poles reach it wherever they reach
+-- the server.
+local function power(orientation, box)
+  return {
+    type = "electric-energy-interface",
+    name = "factorion-gpu-power-" .. orientation,
+    localised_name = { "entity-name." .. NAME },
+    icon = "__factorion__/graphics/icons/gpu-server.png",
+    icon_size = 64,
+    hidden = true,
+    flags = { "not-on-map", "not-blueprintable", "not-deconstructable", "no-copy-paste", "placeable-off-grid" },
+    selectable_in_game = false,
+    collision_box = box,
+    collision_mask = { layers = {} },
+    energy_source = {
+      type = "electric",
+      usage_priority = "secondary-input",
+      buffer_capacity = "150J",
+      input_flow_limit = "5kW",
+      output_flow_limit = "0W",
+    },
+    energy_usage = "900W",
+    gui_mode = "none",
+    allow_copy_paste = false,
+    working_sound = data.raw.lab.lab.working_sound,
+  }
+end
+
 -- Signals the server writes to its circuit network: a GPU card with
 -- vanilla's glyph for what it reports.
 local function state_signal(name, glyph, order)
@@ -53,88 +111,10 @@ local function state_signal(name, glyph, order)
   }
 end
 
-local signals = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
-signals.name = "factorion-gpu-signals"
-signals.hidden = true
-signals.flags = { "not-on-map", "not-blueprintable", "not-deconstructable", "placeable-off-grid" }
-signals.selectable_in_game = false
-signals.minable = nil
-signals.collision_box = { { 0, 0 }, { 0, 0 } }
-signals.collision_mask = { layers = {} }
-signals.selection_box = nil
-signals.sprites = nil
-signals.activity_led_sprites = nil
-signals.activity_led_light = nil
-signals.draw_circuit_wires = false
-signals.created_smoke = nil
-
 data:extend({
-  { type = "recipe-category", name = "factorion-compute" },
-  {
-    type = "item",
-    name = FORWARD_PASS,
-    icon = "__factorion__/graphics/icons/gpu-glyph.png",
-    icon_size = 64,
-    hidden = true,
-    stack_size = 100,
-  },
-  {
-    type = "recipe",
-    name = FORWARD_PASS,
-    icon = "__factorion__/graphics/icons/gpu-glyph.png",
-    icon_size = 64,
-    category = "factorion-compute",
-    hidden = true,
-    enabled = true,
-    energy_required = 1,
-    ingredients = { { type = "item", name = FORWARD_PASS, amount = 1 } },
-    results = {},
-  },
-  {
-    type = "assembling-machine",
-    name = NAME,
-    icon = "__factorion__/graphics/icons/gpu-server.png",
-    icon_size = 64,
-    flags = {
-      "placeable-player", "player-creation", "not-upgradable",
-      "no-automated-item-insertion", "no-automated-item-removal",
-    },
-    minable = { mining_time = 0.5, result = NAME },
-    max_health = 300,
-    collision_box = { { -1.9, -0.9 }, { 1.9, 0.9 } },
-    selection_box = { { -2, -1 }, { 2, 1 } },
-    crafting_categories = { "factorion-compute" },
-    fixed_recipe = FORWARD_PASS,
-    crafting_speed = 1,
-    show_recipe_icon = false,
-    show_recipe_icon_on_map = false,
-    module_slots = 0,
-    allowed_effects = {},
-    effect_receiver = { uses_module_effects = false, uses_beacon_effects = false, uses_surface_effects = false },
-    energy_source = {
-      type = "electric",
-      usage_priority = "secondary-input",
-      drain = "900W",
-    },
-    energy_usage = "3.6kW",
-    circuit_wire_max_distance = assembler.circuit_wire_max_distance,
-    circuit_connector = circuit_connector_definitions.create_vector(universal_connector_template, {
-      connector(-50, 12), connector(-12, 46), connector(-50, 12), connector(-12, 46),
-    }),
-    alert_icon_shift = util.by_pixel(0, -12),
-    graphics_set = {
-      animation = {
-        north = placeholder("horizontal"),
-        east = placeholder("vertical"),
-        south = placeholder("horizontal"),
-        west = placeholder("vertical"),
-      },
-    },
-    open_sound = assembler.open_sound,
-    close_sound = assembler.close_sound,
-    working_sound = data.raw.lab.lab.working_sound,
-    impact_category = "metal",
-  },
+  server,
+  power("horizontal", { { -1.9, -0.9 }, { 1.9, 0.9 } }),
+  power("vertical", { { -0.9, -1.9 }, { 0.9, 1.9 } }),
   {
     type = "item",
     name = NAME,
@@ -158,7 +138,6 @@ data:extend({
     },
     results = { { type = "item", name = NAME, amount = 1 } },
   },
-  signals,
   state_signal("predicting", "signal-hourglass", "a"),
   state_signal("ready", "signal-checked-green", "b"),
   state_signal("utilisation", "signal-percent", "c"),
