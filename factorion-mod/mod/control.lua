@@ -1692,7 +1692,7 @@ local function region_for(server, groups)
   local origin = { x = min_x, y = min_y }
   -- A cluster takes its sources and sinks from the wires of every member set
   -- to read them, if any is, so they all agree.
-  local candidates, signals, seen = {}, nil, {}
+  local candidates, signals, seen, on_tile = {}, nil, {}, {}
   for _, member in ipairs(cluster(server, groups)) do
     if server_state(member).circuit_endpoints then
       signals = signals or {}
@@ -1701,7 +1701,15 @@ local function region_for(server, groups)
         if not seen[key] then
           seen[key] = true
           table.insert(signals, endpoint)
-          if not endpoint.problem then table.insert(candidates, endpoint) end
+          local tile = endpoint.x and tile_key(endpoint.x, endpoint.y)
+          local first = tile and on_tile[tile]
+          if first and not endpoint.problem then
+            endpoint.problem = string.format("on the same tile as the [item=%s] %s", first.item, first.role)
+            endpoint.stacked = true
+          elseif not endpoint.problem then
+            on_tile[tile] = endpoint
+            table.insert(candidates, endpoint)
+          end
         end
       end
     end
@@ -2125,7 +2133,7 @@ end
 local function sync_virtual_endpoints(server, state, endpoints)
   local kept = {}
   for _, endpoint in ipairs(endpoints) do
-    if endpoint.x then
+    if endpoint.x and not endpoint.stacked then
       local key = table.concat({ endpoint.role, endpoint.x, endpoint.y, endpoint.item, endpoint.direction,
         endpoint.problem and "off" or "on" }, ",")
       local entry = state.virtual and state.virtual[key]
