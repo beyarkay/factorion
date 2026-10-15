@@ -38,9 +38,6 @@ local STOP_REASONS = {
   max_steps = "it was still changing at the step limit",
   server_error = "the server hit an error",
 }
--- A cluster's denoising step takes the forward-pass time divided by its
--- powered servers, counting at most this many.
-local MAX_CLUSTER_SPEEDUP = 8
 local GPU_POWER = { horizontal = "factorion-gpu-power-horizontal", vertical = "factorion-gpu-power-vertical" }
 local IDLE_KW, BUSY_KW = 0.9, 4.5
 -- Utilisation is a moving average with this time constant.
@@ -304,7 +301,31 @@ end
 
 -- Every painted piece server reaches itself, { area, window }: the paint it
 -- touches and the paint its data links reach. Or nil and why.
-local function server_pieces(server, size)
+-- Within one survey or window refresh the map doesn't change, so a server's
+-- paint and a surface's clusters are worked out once instead of once per
+-- server that asks.
+local memo
+
+local function memoized(kind, key, compute)
+  if not memo then return compute() end
+  memo[kind] = memo[kind] or {}
+  local hit = memo[kind][key]
+  if not hit then
+    hit = { compute() }
+    memo[kind][key] = hit
+  end
+  return table.unpack(hit, 1, 2)
+end
+
+local function with_memo(fn)
+  if memo then return fn() end
+  memo = {}
+  local results = { fn() }
+  memo = nil
+  return table.unpack(results, 1, 4)
+end
+
+local function compute_server_pieces(server, size)
   local pieces = {}
   local area, window = touching_paint(server, size)
   if area then
@@ -318,6 +339,10 @@ local function server_pieces(server, size)
     table.insert(pieces, { area = cabled, window = cut })
   end
   return pieces
+end
+
+local function server_pieces(server, size)
+  return memoized("pieces", server.unit_number .. ":" .. size, function() return compute_server_pieces(server, size) end)
 end
 
 -- Blinks, like vanilla's alert icons.
@@ -337,7 +362,7 @@ end
 -- GPU servers predict together when they touch, share paint, or are joined
 -- by data links through any poles. Each server's cluster, by unit number;
 -- the members of one cluster share a list.
-local function clusters(surface)
+local function compute_clusters(surface)
   local size = storage.model and storage.model.grid_size
   local servers = surface.find_entities_filtered({ name = inference.GPU_SERVER })
   local parent = {}
@@ -375,6 +400,10 @@ local function clusters(surface)
     result[server.unit_number] = groups[root]
   end
   return result
+end
+
+local function clusters(surface)
+  return memoized("clusters", surface.index, function() return compute_clusters(surface) end)
 end
 
 -- server's cluster, server first; groups is clusters() of its surface when
@@ -1941,11 +1970,13 @@ local function predictable_region(server)
   return region
 end
 
--- Best of N runs N forward passes per step.
+-- Best of N runs N forward passes per step, shared out over the cluster's
+-- powered servers.
 local function step_seconds(servers)
-  return setting("factorion-forward-pass-time") * inference.config().best_of
-    / math.max(1, math.min(#servers, MAX_CLUSTER_SPEEDUP))
+  return setting("factorion-forward-pass-time") * inference.config().best_of / math.max(1, #servers)
 end
+
+local describe
 
 -- Mistakes in how the server is set up rather than in its region.
 local function setup_warnings(server, region)
@@ -1982,6 +2013,10 @@ local function setup_warnings(server, region)
 end
 
 inference.describe = function(server)
+  return with_memo(function() return describe(server) end)
+end
+
+function describe(server)
   local members = cluster(server)
   local on = powered(members)
   local speed = #on == 0 and "none powered" or string.format(
@@ -2370,19 +2405,23 @@ local function survey()
   local size = storage.model and storage.model.grid_size
   for _, surface in pairs(game.surfaces) do
     local groups = clusters(surface)
+    -- One region per cluster, worked out from its leader.
+    local regions = {}
     for _, server in ipairs(surface.find_entities_filtered({ name = inference.GPU_SERVER })) do
       local state = server_state(server)
-      state.cluster_size = #powered(groups[server.unit_number])
-      local region = size and region_for(server, groups)
+      local members = groups[server.unit_number] or { server }
+      state.cluster_size = #powered(members)
+      local leader = server
+      for _, member in ipairs(members) do
+        if member.unit_number < leader.unit_number then leader = member end
+      end
+      if regions[members] == nil then regions[members] = size and region_for(leader, groups) or false end
+      local region = regions[members] or nil
       state.sink_units = {}
       for _, endpoint in ipairs(region and region.endpoints or {}) do
         if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
       end
       -- One server per cluster draws, measures and ghosts its wire-set endpoints.
-      local leader = server
-      for _, member in ipairs(groups[server.unit_number] or {}) do
-        if member.unit_number < leader.unit_number then leader = member end
-      end
       state.leader = leader.unit_number
       local latest = state
       for _, member in ipairs(groups[server.unit_number] or {}) do
@@ -2794,7 +2833,7 @@ end)
 script.on_nth_tick(30, blink)
 script.on_nth_tick(60, function()
   check_server()
-  survey()
+  with_memo(survey)
   inference.refresh_all(true)
 end)
 
