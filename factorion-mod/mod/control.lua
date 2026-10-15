@@ -982,20 +982,23 @@ local PLAN_DIALOG = "factorion-plan-dialog"
 local PLAN_ITEM = "factorion-plan-item"
 
 -- The recipe an assembling machine 1 makes item with, preferring the one named
--- after it.
+-- after it; prototypes don't change while the game runs, so it's remembered.
+local recipes_for = {}
 local function recipe_for(item)
+  if recipes_for[item] ~= nil then return recipes_for[item] or nil end
   local categories = prototypes.entity["assembling-machine-1"].crafting_categories
   local fallback
   for name, recipe in pairs(prototypes.recipe) do
     if not recipe.hidden and categories[recipe.category] then
       for _, product in pairs(recipe.products) do
         if product.type == "item" and product.name == item then
-          if name == item then return recipe end
+          if name == item then fallback = recipe break end
           fallback = fallback or recipe
         end
       end
     end
   end
+  recipes_for[item] = fallback or false
   return fallback
 end
 
@@ -1660,6 +1663,35 @@ local function circuit_endpoints(server, min_x, min_y)
 end
 
 local FACING_STEP = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
+-- Trial factories chain up to three crafting stages.
+local MAX_STAGES = 3
+
+-- Whether assembling machine 1 recipes make item from the sources' items in
+-- at most stages crafts.
+local function makes(item, sources, stages)
+  if sources[item] then return true end
+  local recipe = stages > 0 and recipe_for(item)
+  if not recipe then return false end
+  for _, ingredient in pairs(recipe.ingredients) do
+    if ingredient.type ~= "item" or not makes(ingredient.name, sources, stages - 1) then return false end
+  end
+  return true
+end
+
+-- Why no chain of crafts makes item from the sources.
+local function unmakeable(item, sources)
+  if makes(item, sources, MAX_STAGES) then return nil end
+  local recipe = recipe_for(item)
+  if not recipe then return "no recipe an assembling machine 1 can craft makes it" end
+  local missing = {}
+  for _, ingredient in pairs(recipe.ingredients) do
+    if ingredient.type ~= "item" then return "its recipe needs a fluid, which belts can't supply" end
+    if not makes(ingredient.name, sources, MAX_STAGES - 1) then
+      table.insert(missing, "[item=" .. ingredient.name .. "]")
+    end
+  end
+  return "no source supplies " .. table.concat(missing, " ") .. ", or what it's made from"
+end
 
 -- Easy mistakes in a region's sources and sinks, for the player to fix.
 local function region_warnings(area, endpoints, signals)
@@ -1685,9 +1717,22 @@ local function region_warnings(area, endpoints, signals)
         endpoint.role, endpoint.role == "source" and "away from" or "into"))
     end
   end
+  local sources, known = {}, {}
+  for _, name in ipairs(storage.model and storage.model.items or {}) do known[name] = true end
   for item, item_roles in pairs(roles) do
+    if item_roles.source then sources[item] = true end
     if item_roles.source and item_roles.sink then
       table.insert(warnings, string.format("[item=%s] is both a source and a sink.", item))
+    end
+    if next(known) and not known[item] then
+      table.insert(warnings, string.format("The model doesn't know [item=%s], so it builds as if that %s " ..
+        "carried nothing.", item, item_roles.source and "source" or "sink"))
+    end
+  end
+  for item, item_roles in pairs(roles) do
+    local why = item_roles.sink and next(sources) and unmakeable(item, sources)
+    if why then
+      table.insert(warnings, string.format("The [item=%s] sink can't be made from these sources: %s.", item, why))
     end
   end
   return warnings

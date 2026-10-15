@@ -411,6 +411,7 @@ def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader, gri
         payload = {
             "checkpoint": checkpoint, "name": model.name, "grid_size": model.config.size,
             "gen_steps": model.config.gen_steps, "gen_refine": model.config.gen_refine,
+            "items": sorted(_hyphenate(i.name) for i in items.values() if i.name != "empty"),
         }
     except Exception as exc:
         log.exception("Could not load checkpoint %s", checkpoint)
