@@ -154,7 +154,7 @@ function M.open(player, server)
   })
   actions.add({
     type = "button", name = "clear_button", caption = "Clear",
-    tooltip = "Stop this cluster's prediction and remove what it built.",
+    tooltip = "Stop this cluster's prediction and mark everything on its painted area for deconstruction. Unbuilt ghosts vanish.",
     tags = { factorion_gpu = "clear" },
   })
 
