@@ -1349,6 +1349,7 @@ script.on_event("factorion-confirm-dialog", function(event)
 end)
 
 script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_changed)
+script.on_event(defines.events.on_gui_value_changed, inference.on_gui_value_changed)
 script.on_event(defines.events.on_gui_confirmed, inference.on_gui_confirmed)
 script.on_event(defines.events.on_gui_checked_state_changed, inference.on_gui_checked_state_changed)
 script.on_event(defines.events.on_gui_selection_state_changed, inference.on_gui_selection_state_changed)
@@ -1864,9 +1865,6 @@ local function region_warnings(area, endpoints, signals)
   for _, name in ipairs(storage.model and storage.model.items or {}) do known[name] = true end
   for item, item_roles in pairs(roles) do
     if item_roles.source then sources[item] = true end
-    if item_roles.source and item_roles.sink then
-      table.insert(warnings, string.format("[item=%s] is both a source and a sink.", item))
-    end
     if next(known) and not known[item] then
       table.insert(warnings, string.format("The model doesn't know [item=%s], so it builds as if that %s " ..
         "carried nothing.", item, item_roles.source and "source" or "sink"))
