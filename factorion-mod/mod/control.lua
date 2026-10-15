@@ -1011,7 +1011,7 @@ local function cancel_pending(state)
       table.remove(outbox, i)
     end
   end
-  state.pending = nil
+  state.pending, state.queue, state.finish = nil, nil, nil
 end
 
 local function close_marker_dialog(player, state)
@@ -2170,7 +2170,7 @@ local function gather_request(state, region, members)
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = region.fp.w,
-    step_delay_s  = step_seconds(members),
+    step_delay_s  = 0,
     temperature   = config.temperature,
     steps         = config.steps,
     refine        = config.refine,
@@ -2205,6 +2205,8 @@ inference.on_predict = function(player, server, quiet)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = server.unit_number
   state.footprint = region.fp
+  state.step_ticks = math.max(1, math.floor(step_seconds(members) * 60 + 0.5))
+  state.queue, state.finish, state.next_step_tick = {}, nil, nil
   state.player_index = player and player.index
   state.quiet = quiet
   state.pending = {
@@ -2731,6 +2733,87 @@ end
 -- Re-registration safety: remote.add_interface errors if the name already
 -- exists. On /c game.reload_script() the old interface is still bound, so
 -- the new methods (e.g. dump_state) would never get added. Remove first.
+-- Releases a finished request's cluster and reports how it went.
+local function finish_request(server, request_id, summary_json)
+  storage.pending_by_request[request_id] = nil
+  release_cluster(request_id)
+  if server == 0 then
+    log("[Factorion] (headless) prediction complete for " ..
+      tostring(request_id) .. ": " .. tostring(summary_json))
+    return
+  end
+
+  local state = storage.servers[server]
+  if not state then return end
+  local player = state.player_index and game.get_player(state.player_index)
+  local description = state.pending and state.pending.description
+    or "for an unknown request"
+  state.pending, state.finish = nil, nil
+  local ok, summary = pcall(
+    function() return helpers.json_to_table(summary_json) end)
+  summary = ok and summary or {}
+  local refused = state.refused_steps or 0
+  state.refused_steps = nil
+  if player and not state.quiet then
+    local stop = STOP_REASONS[summary.stop_reason]
+      or tostring(summary.stop_reason)
+    player.print(string.format(
+      "[Factorion] Finished %s after %s denoising steps, the best of %s " ..
+      "chains at %.2f items/s; %s. Seed %s.",
+      description,
+      tostring(summary.steps_taken or "?"),
+      tostring(summary.best_of or "?"),
+      tonumber(summary.thput) or 0,
+      stop,
+      tostring(summary.seed or "?")), { sound = defines.print_sound.never })
+    if refused > 0 then
+      player.print(string.format("[Factorion] Factorio refused part of %d step(s); first: %s",
+        refused, tostring(state.first_refusal)))
+    end
+    if summary.error then
+      player.print("[Factorion] Server error: " .. tostring(summary.error))
+    end
+  end
+  state.first_refusal = nil
+end
+
+-- The model server streams a prediction's steps as fast as it makes them;
+-- they're placed one per step interval in game time, so game speed and
+-- pausing apply.
+local function place_queued_steps()
+  for request_id, server in pairs(storage.pending_by_request or {}) do
+    local state = server ~= 0 and storage.servers[server]
+    if state and state.queue and #state.queue > 0 and game.tick >= (state.next_step_tick or 0) then
+      local step = table.remove(state.queue, 1)
+      state.next_step_tick = game.tick + (state.step_ticks or 60)
+      if state.entity.valid then
+        local player = state.player_index and game.get_player(state.player_index)
+        local refused = false
+        for _, placement in ipairs(step.placements) do
+          local err = place_one(player, state, state.footprint, placement)
+          if err then
+            refused = true
+            state.first_refusal = state.first_refusal or err
+          end
+        end
+        if refused then state.refused_steps = (state.refused_steps or 0) + 1 end
+        for _, endpoint in ipairs(state.wire_endpoints or {}) do
+          place_endpoint_belt(state.entity.surface, state.entity.force, endpoint)
+        end
+      end
+      for _, member in pairs(storage.servers) do
+        if member.computing == request_id then
+          member.steps = (member.steps or 0) + 1
+          member.steps_left = step.remaining
+        end
+      end
+      if #state.queue == 0 and state.finish then
+        finish_request(server, request_id, state.finish.summary_json)
+      end
+    end
+  end
+end
+
 if remote.interfaces["factorion"] then
   remote.remove_interface("factorion")
 end
@@ -2773,37 +2856,17 @@ remote.add_interface("factorion", {
 
     local state = storage.servers[server]
     if not (state and state.entity.valid) then return "cancelled" end
-    local player = state.player_index and game.get_player(state.player_index)
-    local fp = state.footprint
-    for _, member in pairs(storage.servers) do
-      if member.computing == request_id then
-        member.steps = (member.steps or 0) + 1
-        member.steps_left = tonumber(remaining)
-      end
-    end
-
     local ok, placements = pcall(
       function() return helpers.json_to_table(placements_json) end)
     if not ok or type(placements) ~= "table" then
       return "error: invalid placements JSON"
     end
-    local refused, first_error = 0, nil
-    for _, placement in ipairs(placements) do
-      local err = place_one(player, state, fp, placement)
-      if err then
-        refused = refused + 1
-        first_error = first_error or err
-      end
-    end
-    for _, endpoint in ipairs(state.wire_endpoints or {}) do
-      place_endpoint_belt(state.entity.surface, state.entity.force, endpoint)
-    end
-    if refused == 0 then return "ok" end
-    return string.format("error: %d of %d placements refused; first: %s",
-      refused, #placements, first_error)
+    state.queue = state.queue or {}
+    table.insert(state.queue, { placements = placements, remaining = tonumber(remaining) })
+    return "ok"
   end,
 
-  -- Complete the streamed request and release its pending state.
+  -- Complete the streamed request once its queued steps are placed.
   finish_prediction = function(request_id, summary_json)
     heard_from_server()
     ensure_pending_lookup()
@@ -2811,44 +2874,12 @@ remote.add_interface("factorion", {
     if not server then
       return "cancelled"
     end
-    storage.pending_by_request[request_id] = nil
-    release_cluster(request_id)
-    if server == 0 then
-      log("[Factorion] (headless) prediction complete for " ..
-        tostring(request_id) .. ": " .. tostring(summary_json))
+    local state = server ~= 0 and storage.servers[server]
+    if state and state.queue and #state.queue > 0 then
+      state.finish = { request_id = request_id, summary_json = summary_json }
       return "ok"
     end
-
-    local state = storage.servers[server]
-    if not state then return "cancelled" end
-    local player = state.player_index and game.get_player(state.player_index)
-    local description = state.pending and state.pending.description
-      or "for an unknown request"
-    state.pending = nil
-    local ok, summary = pcall(
-      function() return helpers.json_to_table(summary_json) end)
-    summary = ok and summary or {}
-    if player and not state.quiet then
-      local stop = STOP_REASONS[summary.stop_reason]
-        or tostring(summary.stop_reason)
-      player.print(string.format(
-        "[Factorion] Finished %s after %s denoising steps, the best of %s " ..
-        "chains at %.2f items/s; %s. Seed %s.",
-        description,
-        tostring(summary.steps_taken or "?"),
-        tostring(summary.best_of or "?"),
-        tonumber(summary.thput) or 0,
-        stop,
-        tostring(summary.seed or "?")), { sound = defines.print_sound.never })
-      if (summary.refused_steps or 0) > 0 then
-        player.print(string.format(
-          "[Factorion] Factorio refused part of %d step(s); see the server log.",
-          summary.refused_steps))
-      end
-      if summary.error then
-        player.print("[Factorion] Server error: " .. tostring(summary.error))
-      end
-    end
+    finish_request(server, request_id, summary_json)
     return "ok"
   end,
 
@@ -2948,6 +2979,7 @@ remote.add_interface("factorion", {
 script.on_event(defines.events.on_tick, function()
   service_endpoint_belts()
   check_circuit_conditions()
+  place_queued_steps()
   parity.on_tick()
 end)
 
