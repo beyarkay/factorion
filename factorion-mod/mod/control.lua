@@ -1667,7 +1667,7 @@ local function heard_from_server()
 end
 
 local function server_alive()
-  local timeout = (storage.model_loading and MODEL_LOAD_TIMEOUT_TICKS
+  local timeout = ((storage.model_loading or storage.server_computing) and MODEL_LOAD_TIMEOUT_TICKS
     or SERVER_TIMEOUT_TICKS) * math.max(1, game.speed)
   return storage.server_contact_tick ~= nil
     and game.tick - storage.server_contact_tick < timeout
@@ -2845,7 +2845,10 @@ remote.add_interface("factorion", {
     heard_from_server()
     storage.outbox = storage.outbox or {}
     if #storage.outbox == 0 then return "" end
-    return table.remove(storage.outbox, 1)
+    local message = table.remove(storage.outbox, 1)
+    -- The server is silent while it denoises, for many seconds at a large best of.
+    storage.server_computing = message:find('"type":"predict"', 1, true) ~= nil
+    return message
   end,
 
   -- Apply one denoising step: footprint-relative placements, each replacing
@@ -2853,6 +2856,7 @@ remote.add_interface("factorion", {
   -- Factorio refuses doesn't stop the rest of the step.
   place_predictions = function(request_id, remaining, placements_json)
     heard_from_server()
+    storage.server_computing = nil
     ensure_pending_lookup()
     local server = storage.pending_by_request[request_id]
     if not server then
@@ -2880,6 +2884,7 @@ remote.add_interface("factorion", {
   -- Complete the streamed request once its queued steps are placed.
   finish_prediction = function(request_id, summary_json)
     heard_from_server()
+    storage.server_computing = nil
     ensure_pending_lookup()
     local server = storage.pending_by_request[request_id]
     if not server then
