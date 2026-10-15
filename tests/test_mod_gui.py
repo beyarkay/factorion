@@ -259,6 +259,7 @@ def test_wire_signals_are_decoded_in_the_window(lua):
             used,
             { role = "sink", item = "copper-plate", value = 1001001, problem = "D must be 1, 2, 3 or 4" },
           },
+          warnings = { "The [item=copper-plate] sink signal (1001001) is unused: D must be 1, 2, 3 or 4." },
         }
         inference.describe = function() return "Painted area", true, "Cluster of 1", region end
         inference.open(player, server)
@@ -267,8 +268,9 @@ def test_wire_signals_are_decoded_in_the_window(lua):
     frame = lua.globals().player.gui.screen["factorion-gpu-gui"]
     decoded = [c.caption for c in frame.panels.circuit.inner.endpoints.signals.children.values()]
     assert decoded[0] == "[item=iron-plate] 20300: Source at X 0, Y 3, facing east"
-    assert decoded[1].startswith("[item=copper-plate] 1001001: Sink with X 1, Y 10, D 100")
+    assert decoded[1].startswith("[img=utility/warning_icon] [item=copper-plate] 1001001: Sink with X 1, Y 10, D 100")
     assert "D must be 1, 2, 3 or 4" in decoded[1]
     used = [c.caption for c in frame.panels.window.body.main.endpoints.children.values()]
     assert "[item=iron-plate] Source at X 0, Y 3, facing east" in used
-    assert any("1 wire signal unused" in line for line in used)
+    warnings = [c.caption for c in frame.panels.window.body.main.warnings.children.values()]
+    assert warnings and "[img=utility/warning_icon]" in warnings[0] and "1001001" in warnings[0]
