@@ -291,7 +291,7 @@ def test_load_model_reports_grid_size_or_error():
 
     loaded, failed = rcon.commands
     assert "'model_loaded'" in loaded and '"grid_size":13' in loaded
-    assert '"name":"sft-run"' in loaded
+    assert '"name":"sft-run"' in loaded and '"iron-gear-wheel"' in loaded
     assert "'model_failed'" in failed and "no such run" in failed
 
 
