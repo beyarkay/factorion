@@ -81,7 +81,9 @@ local function signal_line(signal)
   else
     line = line .. string.format(" with X %d, Y %d, D %d", x, y, d)
   end
-  if signal.problem then line = line .. ", [color=1,0.6,0.2]unused: " .. signal.problem .. "[/color]" end
+  if signal.problem then
+    line = "[img=utility/warning_icon] " .. line .. ", [color=1,0.6,0.2]unused: " .. signal.problem .. "[/color]"
+  end
   return line
 end
 
@@ -97,7 +99,7 @@ end
 -- The sources and sinks the model will get, in the main panel, and every
 -- wire signal decoded, in the circuit panel.
 local function show_endpoints(frame, region, from_wires)
-  local used, decoded, unused = {}, {}, 0
+  local used, decoded = {}, {}
   if region then
     table.insert(used, from_wires and "From the wires, green for sources and red for sinks:"
       or "From source and sink belts:")
@@ -106,19 +108,17 @@ local function show_endpoints(frame, region, from_wires)
         ROLE[endpoint.role], endpoint.x - region.origin.x + 1, endpoint.y - region.origin.y + 1,
         FACING[endpoint.direction]))
     end
-    for _, signal in ipairs(region.signals or {}) do
-      table.insert(decoded, signal_line(signal))
-      if signal.problem then unused = unused + 1 end
-    end
+    for _, signal in ipairs(region.signals or {}) do table.insert(decoded, signal_line(signal)) end
     if from_wires and #decoded == 0 then table.insert(decoded, "No item signals on the wires.") end
-    if unused > 0 then
-      table.insert(used, string.format("[color=1,0.6,0.2]%d wire %s unused; the circuit connection panel says why.[/color]",
-        unused, unused == 1 and "signal" or "signals"))
-    end
   elseif from_wires then
     table.insert(decoded, "Decoded once this server has a build region.")
   end
   fill(frame.panels.window.body.main.endpoints, used)
+  local warnings = {}
+  for _, warning in ipairs(region and region.warnings or {}) do
+    table.insert(warnings, "[img=utility/warning_icon] [color=1,0.75,0.3]" .. warning .. "[/color]")
+  end
+  fill(frame.panels.window.body.main.warnings, warnings)
   fill(frame.panels.circuit.inner.endpoints.signals, decoded)
 end
 
@@ -221,6 +221,7 @@ function M.open(player, server)
   cluster.style.maximal_width = 360
 
   gui.heading(main, "Factory")
+  main.add({ type = "flow", name = "warnings", direction = "vertical" })
   local region = main.add({ type = "label", name = "region" })
   region.style.single_line = false
   region.style.maximal_width = 360

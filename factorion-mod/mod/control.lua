@@ -321,9 +321,11 @@ local function server_pieces(server, size)
 end
 
 -- Blinks, like vanilla's alert icons.
+local ALERT_SPRITES = { warning = "utility/warning_icon" }
+
 local function draw_alert(kind, target, surface, offset)
   local object = rendering.draw_sprite({
-    sprite = "factorion-alert-" .. kind, target = target, surface = surface,
+    sprite = ALERT_SPRITES[kind] or "factorion-alert-" .. kind, target = target, surface = surface,
     target_offset = offset, x_scale = 0.8, y_scale = 0.8,
     render_layer = "entity-info-icon-above",
   })
@@ -1649,6 +1651,40 @@ local function circuit_endpoints(server, min_x, min_y)
   return endpoints
 end
 
+local FACING_STEP = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
+
+-- Easy mistakes in a region's sources and sinks, for the player to fix.
+local function region_warnings(area, endpoints, signals)
+  local warnings, roles = {}, {}
+  for _, signal in ipairs(signals or {}) do
+    if signal.problem then
+      table.insert(warnings, string.format("The [item=%s] %s signal (%d) is unused: %s.",
+        signal.item, signal.role, signal.value, signal.problem))
+    end
+  end
+  if signals and #signals == 0 then
+    table.insert(warnings, "Set sources and sinks is on, but no item signals reach the wires.")
+  end
+  for _, endpoint in ipairs(endpoints) do
+    roles[endpoint.item] = roles[endpoint.item] or {}
+    roles[endpoint.item][endpoint.role] = true
+    -- Beside the region, a source must face into it and a sink away from it.
+    local step = FACING_STEP[endpoint.direction]
+    local sign = endpoint.role == "source" and 1 or -1
+    if not area[tile_key(endpoint.x, endpoint.y)]
+        and not area[tile_key(endpoint.x + sign * step[1], endpoint.y + sign * step[2])] then
+      table.insert(warnings, string.format("The [item=%s] %s faces %s the build region.", endpoint.item,
+        endpoint.role, endpoint.role == "source" and "away from" or "into"))
+    end
+  end
+  for item, item_roles in pairs(roles) do
+    if item_roles.source and item_roles.sink then
+      table.insert(warnings, string.format("[item=%s] is both a source and a sink.", item))
+    end
+  end
+  return warnings
+end
+
 -- The server's painted areas, the sources and sinks on or beside them, and
 -- the model's grid around them all; or nil and why not.
 local function region_for(server, groups)
@@ -1760,6 +1796,7 @@ local function region_for(server, groups)
       direction = endpoint.direction, item = endpoint.item,
     })
   end
+  region.warnings = region_warnings(area, endpoints, signals)
   return region
 end
 
@@ -2204,7 +2241,9 @@ local function survey()
       if latest ~= state then copy_settings(latest, state) end
       sync_virtual_endpoints(server, state, leader == server and region and region.signals or {})
       local unlinked = size and not region and not cluster_pieces(server, size, groups)
-      set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or nil, { 0, -0.4 })
+      local warned = region and #region.warnings > 0
+      set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or (warned and "warning") or nil,
+        { 0, -0.4 })
     end
   end
 end
