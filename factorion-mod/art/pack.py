@@ -1,6 +1,6 @@
 """Turn gpu_server.py's renders into game sprites and a preview beside vanilla.
 
-    uv run --no-project --with pillow python pack.py RENDER_DIR SPRITE_DIR FACTORIO_DATA
+    uv run --no-project --with pillow python pack.py RENDER_DIR SPRITE_DIR horizontal|vertical
 
 Renders are at 128 px per tile with the footprint's ground centre at the
 canvas centre. Sprites are at 64 px per tile (scale = 0.5). Vanilla lines the
@@ -15,9 +15,8 @@ from pathlib import Path
 from PIL import Image, ImageFilter
 
 ELEVATION = math.radians(38)
-FOOTPRINT = (4, 2)
-
-render_dir, sprite_dir, data = (Path(a) for a in sys.argv[1:4])
+render_dir, sprite_dir, orientation = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+FOOTPRINT = (4, 2) if orientation == "horizontal" else (2, 4)
 sprite_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -55,11 +54,13 @@ shadow.putalpha(shadow_alpha)
 centre = (main.width / 2, main.height / 2)
 anchor = (centre[0], centre[1] - FOOTPRINT[1] / 2 * 64 * (1 - math.sin(ELEVATION)))
 
-lua = ["return", "{"]
-for name, im in (("gpu-server-horizontal", main), ("gpu-server-horizontal-shadow", shadow)):
+lua = ["return {"]
+for part, im in (("main", main), ("shadow", shadow)):
+    name = f"gpu-server-{orientation}" + ("-shadow" if part == "shadow" else "")
     sprite, shift = crop(im, anchor)
     sprite.save(sprite_dir / f"{name}.png")
-    lua.append(f"  [\"{name}\"] = {{ width = {sprite.width}, height = {sprite.height}, shift = util.by_pixel({shift[0] / 2:.1f}, {shift[1] / 2:.1f}) }},")
+    lua.append(f"  {part} = {{ filename = \"__factorion__/graphics/entity/{name}.png\", width = {sprite.width}, "
+               f"height = {sprite.height}, shift = {{ {shift[0] / 2 / 32:.3f}, {shift[1] / 2 / 32:.3f} }} }},")
 lua.append("}")
-(sprite_dir / "gpu-server-sprites.lua").write_text("\n".join(lua) + "\n")
+(sprite_dir / f"gpu-server-{orientation}.lua").write_text("\n".join(lua) + "\n")
 print("\n".join(lua))

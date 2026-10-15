@@ -22,14 +22,13 @@ def by_pixel(x, y):
 
 
 ours = {}
-for name, w, h, x, y in re.findall(
-    r'\["([\w-]+)"\] = \{ width = (\d+), height = (\d+), shift = util.by_pixel\(([-\d.]+), ([-\d.]+)\)',
-    (sprite_dir / "gpu-server-sprites.lua").read_text(),
-):
-    ours[name] = (sprite_dir / f"{name}.png", int(w), int(h), by_pixel(float(x), float(y)))
-
-server = ours["gpu-server-horizontal"]
-server_shadow = ours["gpu-server-horizontal-shadow"]
+for orientation in ("horizontal", "vertical"):
+    for part, name, w, h, x, y in re.findall(
+        r'(\w+) = \{ filename = "__factorion__/graphics/entity/([\w-]+).png", width = (\d+), height = (\d+), '
+        r'shift = \{ ([-\d.]+), ([-\d.]+) \} \}',
+        (sprite_dir / f"gpu-server-{orientation}.lua").read_text(),
+    ):
+        ours[(orientation, part)] = (sprite_dir / f"{name}.png", int(w), int(h), (float(x) * TILE, float(y) * TILE))
 vanilla = {
     "lab": ((base / "lab/lab.png", 194, 174, by_pixel(0, 1.5)), (base / "lab/lab-shadow.png", 242, 136, by_pixel(13, 11))),
     "assembler": (
@@ -44,14 +43,15 @@ vanilla = {
 }
 
 # (what, centre in tiles)
-placements = [(("server",), (2 + 4 * i, 2)) for i in range(4)]
+placements = [(("server", "horizontal"), (2 + 4 * i, 2)) for i in range(3)]
 placements += [
-    (("server",), (8, 7)),
+    (("server", "vertical"), (14, 3)),
+    (("server", "vertical"), (16, 3)),
+    (("server", "horizontal"), (8, 7)),
     (("vanilla", "lab"), (1.5, 6.5)),
     (("vanilla", "assembler"), (4.5, 6.5)),
     (("vanilla", "accumulator"), (12, 7)),
     (("vanilla", "chest"), (14.5, 7.5)),
-    (("server",), (16, 4)),
 ]
 
 ground_src = Image.open(data / "base/graphics/terrain/concrete/concrete.png").convert("RGBA").crop((0, 0, 256, 256))
@@ -66,7 +66,7 @@ def paste(layer, centre, onto):
 
 def layers(what):
     if what[0] == "server":
-        return server, server_shadow
+        return ours[(what[1], "main")], ours[(what[1], "shadow")]
     main, shadow = vanilla[what[1]]
     return main, shadow
 
@@ -95,5 +95,6 @@ img.save(out)
 big = img.resize((img.width * 2, img.height * 2), Image.Resampling.NEAREST)
 big.crop((0, 0, 9 * TILE * 2, 5 * TILE * 2)).save(out.with_name(out.stem + "-zoom.png"))
 # Rows of servers touching, two tiles apart, to check how they stack.
-stack = compose([(("server",), (3 + 4 * i, 2 + 2 * j)) for i in range(3) for j in range(4)], 14, 11)
+stack = compose([(("server", "horizontal"), (3 + 4 * i, 2 + 2 * j)) for i in range(3) for j in range(4)]
+                + [(("server", "vertical"), (2 + 2 * i, 13)) for i in range(6)], 14, 16)
 stack.resize((stack.width * 2, stack.height * 2), Image.Resampling.NEAREST).save(out.with_name(out.stem + "-stack.png"))

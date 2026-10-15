@@ -1,6 +1,6 @@
 """Model and render the GPU server sprites in Blender.
 
-    Blender --background --factory-startup --python gpu_server.py -- OUT_DIR
+    Blender --background --factory-startup --python gpu_server.py -- OUT_DIR [vertical]
 
 Writes main.png and shadow.png at twice the game's resolution into OUT_DIR,
 with the footprint's ground centre at the middle of the canvas. pack.py
@@ -531,6 +531,12 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     scene = setup_scene()
     build_horizontal()
+    if "vertical" in sys.argv:
+        # The east and west picture: turned so the I/O box is at the front.
+        turn = Matrix.Rotation(math.pi / 2, 4, "Z")
+        for obj in scene.objects:
+            if obj.type in {"MESH", "CURVE", "EMPTY"} and obj.parent is None:
+                obj.matrix_world = turn @ obj.matrix_world
     if "hero" in sys.argv:
         hero(scene)
         return
