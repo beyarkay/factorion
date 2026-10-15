@@ -156,7 +156,7 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
         inference.settings = function() return settings_of end
         inference.describe = function() return "Painted area", true, "Cluster of 2" end
         inference.info = function()
-          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, network = "Not connected", powered = true }
+          return { status = "working", caption = "Predicting", utilisation = 0.5, power_kw = 2.7, networks = { { wire = "red", id = 41 } }, powered = true }
         end
         inference.open(player, server)
         inference.refresh(player, true)
@@ -182,6 +182,14 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
     assert g.inference.on_gui_checked_state_changed(event(lua, section.active))
     condition = g.settings_of.conditions.predict
     assert condition.enabled and condition.signal.name == "signal-P" and condition.constant == 3
+
+    assert section.condition.signal.enabled
+    section.active.state = False
+    assert g.inference.on_gui_checked_state_changed(event(lua, section.active))
+    assert not section.condition.signal.enabled and not section.condition.constant.enabled
+
+    header = [child.caption for child in frame.panels.circuit.inner.header.children.values() if child.type == "label"]
+    assert header == ["Connected to:", "41"]
 
     read_state = next(
         element for element in g.mock.descendants(frame).values() if element.tags.factorion_gpu == "read_state"
@@ -233,3 +241,32 @@ def test_condition_matches_signals_like_vanilla(lua):
     item_only = lua.eval('wired({ { signal = { name = "iron-plate" }, count = 5 } })')
     anything = lua.eval('{ enabled = true, signal = { type = "virtual", name = "signal-anything" }, comparator = ">", constant = 1 }')
     assert g.gui.fulfilled(item_only, anything, True) is False
+
+
+def test_wire_signals_are_decoded_in_the_window(lua):
+    lua.execute(
+        """
+        inference = require("inference")
+        server = { valid = true, name = "factorion-gpu-server", unit_number = 7 }
+        settings_of = { conditions = {}, circuit_endpoints = true }
+        inference.settings = function() return settings_of end
+        local used = { role = "source", item = "iron-plate", value = 20300, x = 9, y = 22, direction = 2 }
+        local region = {
+          origin = { x = 10, y = 20 }, endpoints = { used },
+          signals = {
+            used,
+            { role = "sink", item = "copper-plate", value = 1001001, problem = "D must be 1, 2, 3 or 4" },
+          },
+        }
+        inference.describe = function() return "Painted area", true, "Cluster of 1", region end
+        inference.open(player, server)
+        """
+    )
+    frame = lua.globals().player.gui.screen["factorion-gpu-gui"]
+    decoded = [c.caption for c in frame.panels.circuit.inner.endpoints.signals.children.values()]
+    assert decoded[0] == "[item=iron-plate] 20300: Source at X 0, Y 3, facing east"
+    assert decoded[1].startswith("[item=copper-plate] 1001001: Sink with X 1, Y 10, D 100")
+    assert "D must be 1, 2, 3 or 4" in decoded[1]
+    used = [c.caption for c in frame.panels.window.body.main.endpoints.children.values()]
+    assert "[item=iron-plate] Source at X 0, Y 3, facing east" in used
+    assert any("1 wire signal unused" in line for line in used)

@@ -30,32 +30,95 @@ local NUMBER_FIELDS = {
     tooltip = "0 draws a fresh random seed each prediction; any other value replays that seed exactly." },
 }
 
-local STATE_SIGNALS = "[virtual-signal=factorion-predicting] 1 while predicting, " ..
-  "[virtual-signal=factorion-ready] 1 when a prediction could start, " ..
-  "[virtual-signal=factorion-utilisation] utilisation in percent, " ..
-  "[virtual-signal=factorion-cluster] powered GPU servers in the cluster, " ..
-  "[virtual-signal=factorion-step] denoising steps placed so far, " ..
-  "[virtual-signal=factorion-throughput] the sinks' throughput in items per minute."
+local TOOLTIPS = {
+  predict = "Start a prediction, as the Predict button does, each time this condition becomes true.",
+  deconstruct = "Each time this condition becomes true, stop the cluster and mark everything on its " ..
+    "painted area for deconstruction, as the Clear button does.",
+  read_state = "Write this server's state to its wires:\n" ..
+    "[virtual-signal=factorion-predicting] 1 while predicting\n" ..
+    "[virtual-signal=factorion-ready] 1 when a prediction could start\n" ..
+    "[virtual-signal=factorion-utilisation] utilisation in percent\n" ..
+    "[virtual-signal=factorion-cluster] powered GPU servers in the cluster\n" ..
+    "[virtual-signal=factorion-step] denoising steps placed so far\n" ..
+    "[virtual-signal=factorion-throughput] the sinks' throughput in items per minute",
+  endpoints = "Take the factory's sources and sinks from item signals on the wires instead of from " ..
+    "source and sink belts. Conditions then ignore item signals.",
+}
 
-local ENDPOINT_SIGNALS = "Instead of source and sink belts, each item signal on the red wire is " ..
-  "a source of that item and each on the green wire a sink, drawn on its tile. Its value is " ..
-  "X + 100 × Y + 10000 × D: D is 1, 2, 3 or 4 for a belt facing north, east, south or west, " ..
-  "and X and Y count tiles from the painted area's top-left corner, so 0 is the column or " ..
-  "row just outside it. For example 0 + 100 × 3 + 10000 × 2 = 20300 is a source entering " ..
-  "from the left, three rows down, facing east. Belt the items over those tiles as you would " ..
-  "into source belts. Conditions then ignore item signals."
+local ENDPOINT_HELP = "Each item signal on the green wire is a source and on the red wire a sink, " ..
+  "at X + 100 × Y + 10000 × D: X and Y count tiles from the painted area's top-left corner, " ..
+  "0 being just outside it, and D is 1, 2, 3 or 4 for facing north, east, south or west."
+
+local DEFAULT_CONDITIONS = {
+  predict = { signal = { type = "virtual", name = "signal-P" }, comparator = ">", constant = 0 },
+  deconstruct = { signal = { type = "virtual", name = "signal-D" }, comparator = ">", constant = 0 },
+}
+
+local FACING = { "north", "east", "south", "west" }
+local ROLE = { source = "Source", sink = "Sink" }
+
+-- A wire signal: its value, what that decodes to and, when unused, why.
+local function signal_line(signal)
+  local value = signal.value
+  local x, y, d = value % 100, math.floor(value / 100) % 100, math.floor(value / 10000)
+  local line = string.format("[item=%s] %d: %s", signal.item, value, ROLE[signal.role])
+  if signal.direction then
+    line = line .. string.format(" at X %d, Y %d, facing %s", x, y, FACING[d])
+  else
+    line = line .. string.format(" with X %d, Y %d, D %d", x, y, d)
+  end
+  if signal.problem then line = line .. ", [color=1,0.6,0.2]unused: " .. signal.problem .. "[/color]" end
+  return line
+end
+
+local function fill(flow, lines)
+  flow.clear()
+  for _, line in ipairs(lines) do
+    local label = flow.add({ type = "label", caption = line })
+    label.style.single_line = false
+    label.style.maximal_width = 360
+  end
+end
+
+-- The sources and sinks the model will get, in the main panel, and every
+-- wire signal decoded, in the circuit panel.
+local function show_endpoints(frame, region, from_wires)
+  local used, decoded, unused = {}, {}, 0
+  if region then
+    table.insert(used, from_wires and "From the wires, green for sources and red for sinks:"
+      or "From source and sink belts:")
+    for _, endpoint in ipairs(region.endpoints) do
+      table.insert(used, string.format("[item=%s] %s at X %d, Y %d, facing %s", endpoint.item,
+        ROLE[endpoint.role], endpoint.x - region.origin.x + 1, endpoint.y - region.origin.y + 1,
+        FACING[endpoint.direction]))
+    end
+    for _, signal in ipairs(region.signals or {}) do
+      table.insert(decoded, signal_line(signal))
+      if signal.problem then unused = unused + 1 end
+    end
+    if from_wires and #decoded == 0 then table.insert(decoded, "No item signals on the wires.") end
+    if unused > 0 then
+      table.insert(used, string.format("[color=1,0.6,0.2]%d wire %s unused; the circuit connection panel says why.[/color]",
+        unused, unused == 1 and "signal" or "signals"))
+    end
+  elseif from_wires then
+    table.insert(decoded, "Decoded once this server has a painted area.")
+  end
+  fill(frame.panels.window.body.main.endpoints, used)
+  fill(frame.panels.circuit.inner.endpoints.signals, decoded)
+end
 
 -- Set by control.lua: on_load gets the new checkpoint when the player presses
 -- Load; describe, on_predict and on_clear get the window's GPU server and
--- return a message (describe also returns whether Predict can run and its
--- cluster); info returns the server's live state; settings its circuit
+-- return a message (describe also returns whether Predict can run, its
+-- cluster and its region, if it has one); info returns the server's live state; settings its circuit
 -- settings.
 M.on_load = function(_) end
 M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
 M.on_clear = function(_, _) return "" end
 M.info = function(_)
-  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, network = "Not connected", powered = false }
+  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, networks = {}, powered = false }
 end
 M.settings = function(_) return { conditions = {} } end
 
@@ -106,10 +169,11 @@ function M.refresh(player, full)
   main.utilisation.value = info.utilisation
   main.utilisation_label.caption = string.format("Utilisation %d%%, drawing %.1f kW",
     math.floor(info.utilisation * 100 + 0.5), info.power_kw)
-  frame.panels.circuit.inner.header.network.caption = info.network
+  gui.set_networks(frame.panels.circuit.inner, info.networks)
   if not full then return end
   main.settings.model_status.caption = model_caption()
-  local caption, can_predict, cluster = M.describe(server)
+  local caption, can_predict, cluster, region = M.describe(server)
+  show_endpoints(frame, region, M.settings(server).circuit_endpoints)
   main.region.caption = caption
   main.cluster.caption = cluster
   main.action_row.predict_button.enabled = can_predict
@@ -145,6 +209,7 @@ function M.open(player, server)
   local region = main.add({ type = "label", name = "region" })
   region.style.single_line = false
   region.style.maximal_width = 360
+  main.add({ type = "flow", name = "endpoints", direction = "vertical" })
   local actions = main.add({ type = "flow", name = "action_row", direction = "horizontal" })
   actions.add({
     type = "button", name = "predict_button", caption = "Predict", style = "green_button",
@@ -180,16 +245,18 @@ function M.open(player, server)
   end
 
   local circuit = gui.circuit_panel(frame)
-  gui.condition_section(circuit, "predict", "Predict", settings.conditions.predict or {})
-  gui.condition_section(circuit, "deconstruct", "Deconstruct painted area",
-    settings.conditions.deconstruct or {})
+  for _, key in ipairs({ "predict", "deconstruct" }) do
+    gui.condition_section(circuit, key, key == "predict" and "Predict" or "Deconstruct painted area",
+      settings.conditions[key] or DEFAULT_CONDITIONS[key], TOOLTIPS[key])
+  end
   gui.circuit_section(circuit, "read_state", "Read state", settings.read_state ~= false,
-    { factorion_gpu = "read_state" }, STATE_SIGNALS)
+    { factorion_gpu = "read_state" }, TOOLTIPS.read_state)
   local endpoints = gui.circuit_section(circuit, "endpoints", "Set sources and sinks",
-    settings.circuit_endpoints or false, { factorion_gpu = "circuit_endpoints" }, ENDPOINT_SIGNALS)
-  local hint = endpoints.add({ type = "label", caption = "Sources on the red wire, sinks on the green." })
-  hint.style.single_line = false
-  hint.style.maximal_width = 240
+    settings.circuit_endpoints or false, { factorion_gpu = "circuit_endpoints" }, TOOLTIPS.endpoints)
+  local help = endpoints.add({ type = "label", caption = ENDPOINT_HELP })
+  help.style.single_line = false
+  help.style.maximal_width = 300
+  endpoints.add({ type = "flow", name = "signals", direction = "vertical" })
   show_circuit(player, frame)
 
   M.refresh(player, true)
@@ -217,6 +284,7 @@ local function condition_edited(event)
   local section = event.element.parent
   if section.name ~= key then section = section.parent end
   settings.conditions[key] = gui.read_condition_section(section)
+  gui.grey_condition(section)
   settings.circuit_player = player.index
   return true
 end
@@ -252,6 +320,7 @@ function M.on_gui_checked_state_changed(event)
   local tag = event.element.tags.factorion_gpu
   if not (server and (tag == "read_state" or tag == "circuit_endpoints")) then return false end
   M.settings(server)[tag] = event.element.state
+  M.refresh(player, true)
   return true
 end
 

@@ -1611,33 +1611,34 @@ local function gather_existing_entities(surface, fp, endpoint_tiles)
 end
 
 -- A server reading endpoints from its circuit takes each item signal on its
--- red wire as a source and on its green wire as a sink, valued
+-- green wire as a source and on its red wire as a sink, matching their
+-- outlines' colours, valued
 -- X + 100 Y + 10000 D, which combinators can compute: D is 1-4 for north,
 -- east, south or west, and X and Y count tiles from the painted area's
--- top-left corner, so 0 is just outside it. Returns the endpoints, in world
--- tiles, and the item signals that don't decode.
+-- top-left corner, so 0 is just outside it. Returns every item signal
+-- decoded; one that can't be used has a problem.
 local function circuit_endpoints(server, min_x, min_y)
-  local endpoints, ignored = {}, {}
+  local endpoints = {}
   for role, wire in pairs({
-    source = defines.wire_connector_id.circuit_red,
-    sink = defines.wire_connector_id.circuit_green,
+    source = defines.wire_connector_id.circuit_green,
+    sink = defines.wire_connector_id.circuit_red,
   }) do
     for _, signal in ipairs(server.get_signals(wire) or {}) do
       if (signal.signal.type or "item") == "item" then
         local value = signal.count
         local d = math.floor(value / 10000)
+        local endpoint = { role = role, item = signal.signal.name, value = value }
         if d >= 1 and d <= 4 then
-          table.insert(endpoints, {
-            x = min_x + value % 100 - 1, y = min_y + math.floor(value / 100) % 100 - 1,
-            role = role, item = signal.signal.name, direction = d,
-          })
+          endpoint.x, endpoint.y = min_x + value % 100 - 1, min_y + math.floor(value / 100) % 100 - 1
+          endpoint.direction = d
         else
-          table.insert(ignored, "[item=" .. signal.signal.name .. "]")
+          endpoint.problem = "D must be 1, 2, 3 or 4"
         end
+        table.insert(endpoints, endpoint)
       end
     end
   end
-  return endpoints, ignored
+  return endpoints
 end
 
 -- The server's painted areas, the sources and sinks on or beside them, and
@@ -1680,9 +1681,13 @@ local function region_for(server, groups)
     end
     return false
   end
-  local candidates, ignored = {}, {}
+  local origin = { x = min_x, y = min_y }
+  local candidates, signals = {}, nil
   if server_state(server).circuit_endpoints then
-    candidates, ignored = circuit_endpoints(server, min_x, min_y)
+    signals = circuit_endpoints(server, min_x, min_y)
+    for _, endpoint in ipairs(signals) do
+      if not endpoint.problem then table.insert(candidates, endpoint) end
+    end
   else
     for _, entity in pairs(server.surface.find_entities_filtered({
       area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
@@ -1703,7 +1708,7 @@ local function region_for(server, groups)
       min_x, max_x = math.min(min_x, endpoint.x), math.max(max_x, endpoint.x)
       min_y, max_y = math.min(min_y, endpoint.y), math.max(max_y, endpoint.y)
     elseif not endpoint.unit then
-      table.insert(ignored, "[item=" .. endpoint.item .. "]")
+      endpoint.problem = "not on or beside the paint"
     end
   end
   local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
@@ -1718,7 +1723,7 @@ local function region_for(server, groups)
   }
   local region = {
     fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {}, endpoints = endpoints,
-    ignored = ignored,
+    origin = origin, signals = signals,
   }
   for _, tile in pairs(area) do
     table.insert(region.allowed, { x = tile.x - fp.x, y = tile.y - fp.y })
@@ -1779,14 +1784,10 @@ inference.describe = function(server)
     and string.format("No other GPU server touches, shares paint or is cabled to this one; %s.", speed)
     or string.format("Cluster of %d GPU servers predicting together, %s.", #members, speed)
   local region, reason = predictable_region(server)
-  if not region then return reason, false, cluster_caption end
+  if not region then return reason, false, cluster_caption, (region_for(server)) end
   local caption = string.format("Painted area of %d tiles, converting %s to %s.",
     region.tiles, icons(region.sources), icons(region.sinks))
-  if #region.ignored > 0 then
-    caption = caption .. " Ignoring " .. table.concat(region.ignored, " ") ..
-      " on the wires: not X + 100 Y + 10000 D on or beside the paint."
-  end
-  return caption, true, cluster_caption
+  return caption, true, cluster_caption, region
 end
 
 local function gather_request(state, region, members)
@@ -1930,17 +1931,17 @@ end
 local WIRES = { defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }
 local UTILISATION_DECAY = math.exp(-10 / UTILISATION_TICKS)
 
-local function network_caption(server)
-  local parts = {}
+local function networks(server)
+  local result = {}
   for _, wire in ipairs(WIRES) do
     local network = server.get_circuit_network(wire)
     if network then
-      local red = wire == defines.wire_connector_id.circuit_red
-      table.insert(parts, string.format("[color=%s]%s network %d[/color]", red and "1,0.4,0.4" or "0.4,1,0.4",
-        red and "red" or "green", network.network_id))
+      table.insert(result, {
+        wire = wire == defines.wire_connector_id.circuit_red and "red" or "green", id = network.network_id,
+      })
     end
   end
-  return #parts == 0 and "Not connected" or "Connected to " .. table.concat(parts, " and ")
+  return result
 end
 
 local function write_state_signals(state)
@@ -1952,7 +1953,9 @@ local function write_state_signals(state)
     if config then throughput = throughput + (config.throughput_rate or 0) end
   end
   for _, endpoint in pairs(state.virtual or {}) do
-    if endpoint.role == "sink" then throughput = throughput + (endpoint.throughput_rate or 0) end
+    if endpoint.role == "sink" and not endpoint.problem then
+      throughput = throughput + (endpoint.throughput_rate or 0)
+    end
   end
   local filters = {}
   for _, entry in ipairs(state.read_state ~= false and {
@@ -2013,15 +2016,18 @@ end
 local ENDPOINT_COLORS = {
   source = { r = 0.2, g = 1.0, b = 0.25, a = 0.9 },
   sink = { r = 1.0, g = 0.32, b = 0.08, a = 0.9 },
+  problem = { r = 0.6, g = 0.6, b = 0.6, a = 0.6 },
 }
+local ENDPOINT_LABELS = { source = "Source", sink = "Sink" }
 local ARROWS = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
 local BELT_TYPES = { "transport-belt", "underground-belt", "splitter" }
 
--- An outline in the endpoint belt's colour, its item and its direction.
+-- An outline in the endpoint belt's colour, its item and its direction, and
+-- in alt-mode what it is; greyed out when it lies off the paint.
 local function draw_virtual_endpoint(surface, endpoint)
   local x, y = endpoint.x, endpoint.y
   local cx, cy = x + 0.5, y + 0.5
-  local color = ENDPOINT_COLORS[endpoint.role]
+  local color = ENDPOINT_COLORS[endpoint.problem and "problem" or endpoint.role]
   local d = ARROWS[endpoint.direction]
   local tip = { cx + d[1] * 0.42, cy + d[2] * 0.42 }
   local back = { cx + d[1] * 0.27, cy + d[2] * 0.27 }
@@ -2041,7 +2047,12 @@ local function draw_virtual_endpoint(surface, endpoint)
       to = { back[1] - d[2] * 0.14 * side, back[2] + d[1] * 0.14 * side },
     }).id)
   end
-  if endpoint.role == "sink" then
+  table.insert(ids, rendering.draw_text({
+    text = ENDPOINT_LABELS[endpoint.role] .. (endpoint.problem and ", off the paint" or ""),
+    surface = surface, target = { cx, cy + 0.55 }, color = color, scale = 0.7,
+    alignment = "center", only_in_alt_mode = true,
+  }).id)
+  if endpoint.role == "sink" and not endpoint.problem then
     endpoint.label = rendering.draw_text({
       text = "0.0/s", surface = surface, target = { cx, cy - 0.7 },
       color = { r = 1.0, g = 0.72, b = 0.2, a = 1.0 }, scale = 0.8,
@@ -2057,8 +2068,9 @@ end
 local function sync_virtual_endpoints(server, state, endpoints)
   local kept = {}
   for _, endpoint in ipairs(endpoints) do
-    if not endpoint.unit then
-      local key = table.concat({ endpoint.role, endpoint.x, endpoint.y, endpoint.item, endpoint.direction }, ",")
+    if endpoint.x then
+      local key = table.concat({ endpoint.role, endpoint.x, endpoint.y, endpoint.item, endpoint.direction,
+        endpoint.problem and "off" or "on" }, ",")
       local entry = state.virtual and state.virtual[key]
       if not entry then
         entry = endpoint
@@ -2103,7 +2115,7 @@ local function survey()
       for _, endpoint in ipairs(region and region.endpoints or {}) do
         if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
       end
-      sync_virtual_endpoints(server, state, region and region.endpoints or {})
+      sync_virtual_endpoints(server, state, region and region.signals or {})
       state.ready = not state.computing and has_power(server) and server_alive()
         and region and #region.sources > 0 and #region.sinks > 0 or false
       local unlinked = size and not region and not cluster_pieces(server, size, groups)
@@ -2141,7 +2153,7 @@ inference.info = function(server)
   end
   local u = state.utilisation or 0
   return {
-    status = status, caption = caption, utilisation = u, network = network_caption(server), powered = on,
+    status = status, caption = caption, utilisation = u, networks = networks(server), powered = on,
     power_kw = on and IDLE_KW + (BUSY_KW - IDLE_KW) * u or 0,
   }
 end

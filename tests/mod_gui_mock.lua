@@ -63,6 +63,11 @@ local function new_element(spec, parent)
     return child
   end
 
+  function element.clear()
+    for _, child in ipairs(element.children) do child.valid = false end
+    element.children = {}
+  end
+
   function element.destroy()
     element.valid = false
     if not parent then return end
