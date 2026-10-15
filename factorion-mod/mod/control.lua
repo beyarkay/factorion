@@ -403,6 +403,14 @@ local function draw_mask_outline(surface, removed)
     local object = rendering.get_object_by_id(id)
     if object then object.destroy() end
   end
+  -- Outlines nothing tracks, such as an older version's, are the only wide
+  -- lines the mod draws on the ground.
+  for _, object in pairs(rendering.get_all_objects(script.mod_name)) do
+    if object.surface.index == surface.index and object.type == "line"
+        and object.draw_on_ground and object.width == 5 then
+      object.destroy()
+    end
+  end
   local ids = {}
   storage.mask_outlines[surface.index] = ids
   if not prototypes.tile[MASK_TILE] then return end
@@ -1372,11 +1380,15 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
   end
 end)
 
-script.on_event(defines.events.on_player_toggled_alt_mode, function()
+-- Outlines show in alt-mode, so redrawing them as it turns on heals any that
+-- missed a paint change.
+script.on_event(defines.events.on_player_toggled_alt_mode, function(event)
   for _, config in pairs(storage.endpoints or {}) do
     local entity = config.entity
     if entity then refresh_endpoint_alt_icon(entity, config) end
   end
+  local player = game.get_player(event.player_index)
+  if player then draw_mask_outline(player.surface) end
 end)
 
 local function endpoint_entity_removed(event)
