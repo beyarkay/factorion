@@ -75,6 +75,10 @@ torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
 # extra path.
 extra-paths = ["tests", "scripts"]
 
+[tool.ty.src]
+# Runs inside Blender, whose bpy, bmesh and mathutils exist nowhere else.
+exclude = ["factorion-mod/art/gpu_server.py"]
+
 [tool.ruff]
 # Existing code has many pre-existing violations in the training script.
 # Ignoring rules that are pervasive but low-risk, while keeping rules

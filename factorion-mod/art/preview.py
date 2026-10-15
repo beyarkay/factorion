@@ -92,8 +92,8 @@ def compose(placements, width, height):
 
 img = compose(placements, W, H)
 img.save(out)
-big = img.resize((img.width * 2, img.height * 2), Image.NEAREST)
+big = img.resize((img.width * 2, img.height * 2), Image.Resampling.NEAREST)
 big.crop((0, 0, 9 * TILE * 2, 5 * TILE * 2)).save(out.with_name(out.stem + "-zoom.png"))
 # Rows of servers touching, two tiles apart, to check how they stack.
 stack = compose([(("server",), (3 + 4 * i, 2 + 2 * j)) for i in range(3) for j in range(4)], 14, 11)
-stack.resize((stack.width * 2, stack.height * 2), Image.NEAREST).save(out.with_name(out.stem + "-stack.png"))
+stack.resize((stack.width * 2, stack.height * 2), Image.Resampling.NEAREST).save(out.with_name(out.stem + "-stack.png"))
