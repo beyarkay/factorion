@@ -1569,10 +1569,9 @@ local function new_request_id()
     math.random(0, 2^30), math.random(0, 2^30))
 end
 
--- The entities wholly inside fp, as the model sees them: the player's, and
--- what this GPU server built before.
-local function gather_existing_entities(predicted, surface, fp, endpoint_tiles)
-  local result, previous = {}, {}
+-- The entities wholly inside fp, as the model sees them.
+local function gather_existing_entities(surface, fp, endpoint_tiles)
+  local result = {}
   local candidates = surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
     name = MODEL_ENTITY_NAMES,
@@ -1619,12 +1618,12 @@ local function gather_existing_entities(predicted, surface, fp, endpoint_tiles)
               entry.misc = 2
             end
           end
-          table.insert(predicted[entity.unit_number] and previous or result, entry)
+          table.insert(result, entry)
         end
       end
     end
   end
-  return result, previous
+  return result
 end
 
 -- A server reading endpoints from its circuit takes each item signal on its
@@ -1805,21 +1804,11 @@ inference.describe = function(server)
 end
 
 local function gather_request(state, region, members)
-  local predicted = {}
-  for _, member in ipairs(members) do
-    for unit, entity in pairs(server_state(member).model_entities or {}) do predicted[unit] = entity end
-  end
-  local model_entities, previous = gather_existing_entities(predicted, state.entity.surface,
-    region.fp, state.endpoint_tiles)
+  local existing = gather_existing_entities(state.entity.surface, region.fp, state.endpoint_tiles)
   local description = string.format("converting %s to %s on %d painted tiles",
     icons(region.sources), icons(region.sinks), region.tiles)
-  if #model_entities > 0 then
-    description = description .. string.format(
-      " around %d existing entities", #model_entities)
-  end
-  if #previous > 0 then
-    description = description .. string.format(
-      ", starting from the %d it built before", #previous)
+  if #existing > 0 then
+    description = description .. string.format(", starting from the %d already there", #existing)
   end
 
   local config = inference.config()
@@ -1834,8 +1823,7 @@ local function gather_request(state, region, members)
     refine        = config.refine,
     best_of       = config.best_of,
     seed          = config.seed,
-    entities      = model_entities,
-    start_entities = previous,
+    start_entities = existing,
     allowed       = region.allowed,
     sources       = region.sources,
     sinks         = region.sinks,
@@ -1844,7 +1832,7 @@ local function gather_request(state, region, members)
 end
 
 -- Rebuilds the factory in the painted area with every powered server of
--- server's cluster, starting from what they built before. Returns the
+-- server's cluster, starting from whatever is on it. Returns the
 -- message for the player and whether it started; player is nil when a
 -- circuit condition asked.
 inference.on_predict = function(player, server, quiet)

@@ -141,7 +141,7 @@ function M.open(player, server)
   actions.add({
     type = "button", name = "predict_button", caption = "Predict", style = "green_button",
     tooltip = "Build a factory on the painted area touching this server with " ..
-      "every GPU server sharing it, starting from what they built before.",
+      "every GPU server sharing it, starting from whatever is already on it.",
     tags = { factorion_gpu = "predict" },
   })
   actions.add({
