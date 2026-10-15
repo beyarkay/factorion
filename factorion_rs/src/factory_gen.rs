@@ -5373,9 +5373,9 @@ impl RouteGroup {
 }
 
 /// Up to [`ROUTE_MAX_MARKERS`] sinks and sources (one per group): matched
-/// groups until a drawn sink count is met, then sometimes a few unmatched
-/// sources (always last).
-fn draw_route_groups(rng: &mut Rng) -> Vec<RouteGroup> {
+/// groups until a drawn sink count is met, then, off a `bus`, sometimes a few
+/// unmatched sources (always last).
+fn draw_route_groups(rng: &mut Rng, bus: bool) -> Vec<RouteGroup> {
     let want_sinks = rng.randint(1, ROUTE_MAX_MARKERS as i64) as usize;
     let mut sinks = 0;
     let mut groups = Vec::new();
@@ -5386,7 +5386,7 @@ fn draw_route_groups(rng: &mut Rng) -> Vec<RouteGroup> {
             groups.push(g);
         }
     }
-    if groups.len() < ROUTE_MAX_MARKERS && rng.choice_index(2) == 0 {
+    if !bus && groups.len() < ROUTE_MAX_MARKERS && rng.choice_index(2) == 0 {
         let n = rng.randint(1, (ROUTE_MAX_MARKERS - groups.len()).min(2) as i64);
         groups.extend((0..n).map(|_| RouteGroup::Unmatched));
     }
@@ -5473,12 +5473,12 @@ fn nearest_port(cell: Cell, ports: [Cell; 2]) -> Cell {
 
 /// Build a ROUTE_BELTS lesson: belts only, no crafting. 1–8 sinks, each fed
 /// by a source of its item — directly, or as one of the two outputs of a
-/// splitter splitting one source — plus
-/// sometimes sources whose item no sink takes, which stay unconnected (the
-/// lesson's only orphans). Several groups may share an item. Every route is a
-/// randomly drawn shortest path that tunnels only where it must, hugging the
-/// belts already laid. A `bus` lines the sources up side by side, and the sinks
-/// likewise, and routes them in line order, so they run as a tidy bundle.
+/// splitter splitting one source. Off a `bus`, sometimes sources whose item no
+/// sink takes stay unconnected (the lesson's only orphans). Several groups may
+/// share an item. Every route is a randomly drawn shortest path that tunnels
+/// only where it must, hugging the belts already laid. A `bus` lines the
+/// sources up side by side, and the sinks likewise in the same order, and
+/// routes them in line order, so they run as a tidy bundle.
 fn build_route_belts(
     size: usize,
     rng: &mut Rng,
@@ -5495,7 +5495,7 @@ fn build_route_belts(
         // A plan keeps a batch of layout attempts, or the rejections would
         // leave mostly the small plans that fit at the first try.
         if count % 100 == 0 || groups.is_empty() {
-            groups = draw_route_groups(rng);
+            groups = draw_route_groups(rng, bus);
         }
         // Matched groups sometimes share an earlier group's item; an unmatched
         // source always gets one no sink takes.
@@ -5533,24 +5533,16 @@ fn build_route_belts(
             continue;
         };
 
-        // Each group takes consecutive slots (adjacent ones on a bus). A bus
-        // mostly keeps its sinks in its sources' order, one way or the other,
-        // so its belts can run side by side without all crossing.
-        let mut src_order: Vec<usize> = (0..groups.len()).collect();
-        rng.shuffle(&mut src_order);
-        let mut snk_order = src_order.clone();
-        match rng.choice_index(3) {
-            0 => snk_order.reverse(),
-            1 => rng.shuffle(&mut snk_order),
-            _ => {}
-        }
+        // Groups take their slots in one order along both lines (adjacent
+        // slots on a bus), which lets a bus's belts run side by side without
+        // crossing whether it runs on or turns either way.
+        let mut order: Vec<usize> = (0..groups.len()).collect();
+        rng.shuffle(&mut order);
         let mut srcs: Vec<Vec<(Cell, Direction, Cell)>> = vec![Vec::new(); groups.len()];
         let mut snks = srcs.clone();
         let (mut a, mut b) = (src_slots.into_iter(), snk_slots.into_iter());
-        for &g in &src_order {
+        for &g in &order {
             srcs[g].extend(a.next());
-        }
-        for &g in &snk_order {
             snks[g].extend(b.by_ref().take(groups[g].sinks()));
         }
 
@@ -5569,7 +5561,7 @@ fn build_route_belts(
         let mut segments: Vec<(Cell, Cell, Direction)> = Vec::new();
         let mut expected: HashMap<(usize, usize), f64> = HashMap::new();
         let mut splitters = 0;
-        for &g in &src_order {
+        for &g in &order {
             let (src, snk) = (&srcs[g], &snks[g]);
             match groups[g] {
                 RouteGroup::Unmatched => {}
@@ -7604,8 +7596,8 @@ mod tests {
     fn test_route_belts_smoke() {
         // Belts only: 1–8 sources and sinks, every sink's item has a source,
         // and across seeds both splitters and tunnels appear, as do small and
-        // large route counts. A bus lines its sources up side by side facing
-        // one way, and its sinks likewise.
+        // large route counts, and unmatched sources off the bus. A bus lines
+        // its sources up side by side facing one way, and its sinks likewise.
         for (kind, bus) in [
             (LessonKind::RouteBelts, false),
             (LessonKind::RouteBeltsBus, true),
@@ -7669,7 +7661,8 @@ mod tests {
                 assert!(lines[&Item::Source].len() - n_unmatched <= n_sinks);
                 assert!(world_throughput(w) > 0.0);
             }
-            assert!(splitters > 0 && tunnels > 0 && unmatched > 0, "{kind:?}");
+            assert!(splitters > 0 && tunnels > 0, "{kind:?}");
+            assert_eq!(unmatched > 0, !bus, "{kind:?}");
             assert!(
                 sink_counts.contains(&1) && sink_counts.iter().any(|&n| n >= 6),
                 "{kind:?}: sink counts {sink_counts:?}"
