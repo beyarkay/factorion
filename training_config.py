@@ -109,6 +109,10 @@ class SharedArgs:
     (and linkable from the PR) before the pod even boots. None = W&B mints one."""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    min_upload_minutes: float = 30.0
+    """No checkpoint goes to W&B before the run is this old (the pending best
+    uploads at the first eval after): short smoke/sweep runs are rarely
+    resumed from, and their checkpoints were half the storage quota."""
     eval_best_of: int = 8
     """sampled rollouts per held-out factory in the rollout eval (SFT val/,
     PPO eval/); each factory scores the best of them. Every metric that rollout

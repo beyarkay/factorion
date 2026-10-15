@@ -100,6 +100,8 @@ def run_compare(job: CompareJob) -> None:
     for seed in job.seeds:
         sub = _compare_subjob(job, seed)
         cmd = sft_command(sub) if isinstance(sub, SftJob) else ppo_command(sub)
+        # compare_renders rebuilds factories from both sides' W&B checkpoints.
+        cmd += ["--min-upload-minutes", "0"]
         print(f">>> Compare seed {seed}/{job.seeds[-1]}: {cmd}", flush=True)
         if subprocess.run(cmd, cwd=WORK_DIR).returncode != 0:
             failed.append(seed)

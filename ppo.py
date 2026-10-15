@@ -2158,7 +2158,7 @@ if __name__ == "__main__":
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     agent_name = f"agent-{run_name.replace('/', '-').replace(':', '-').replace(' ', '_')}"
     ckpt_path = f"artifacts/{agent_name}.pt"
-    best_eval_thput, uploaded = -1.0, None
+    best_eval_thput, uploaded, pending = -1.0, None, False
     if eval_seeds_to_kind:
         print(f"Held-out eval: {len(eval_seeds_to_kind)} held-out factories, "
               f"every {args.eval_every} iters")
@@ -2522,15 +2522,17 @@ if __name__ == "__main__":
                 best_eval_thput = eval_metrics[f"eval/thput@{args.eval_best_of}"]
                 os.makedirs("artifacts", exist_ok=True)
                 torch.save(agent.state_dict(), ckpt_path)
-                if run is not None:
-                    uploaded = _upload_replacing(
-                        run,
-                        agent_name,
-                        [ckpt_path],
-                        {"best_eval_thput": best_eval_thput, "global_step": global_step},
-                        ["latest", f"thp{best_eval_thput:.3f}"],
-                        uploaded,
-                    )
+                pending = True
+            if run is not None and pending and time.time() - start_time >= 60 * args.min_upload_minutes:
+                uploaded = _upload_replacing(
+                    run,
+                    agent_name,
+                    [ckpt_path],
+                    {"best_eval_thput": best_eval_thput, "global_step": global_step},
+                    ["latest", f"thp{best_eval_thput:.3f}"],
+                    uploaded,
+                )
+                pending = False
 
         # ── Per-iteration logging ──────────────────────────────────────
         n_steps = max(1, args.num_steps)
@@ -2712,7 +2714,7 @@ if __name__ == "__main__":
         print(f"Saving model to {ckpt_path}")
         os.makedirs("artifacts", exist_ok=True)
         torch.save(agent.state_dict(), ckpt_path)
-        if run is not None:
+        if run is not None and runtime >= 60 * args.min_upload_minutes:
             _upload_replacing(run, agent_name, [ckpt_path], {}, ["latest"], None)
     else:
         print(f'Not saving because: {time.time() - start_time:.2f} <= {60 * 5}')

@@ -148,6 +148,15 @@ class TestCompareRunner:
         run_compare(self._job(seeds=(1, 2, 3)))
         assert seen == ["1", "2", "3"]
 
+    def test_compare_runs_upload_checkpoints_however_short(self, monkeypatch):
+        import tyro
+        from training_config import SftArgs
+
+        seen = []
+        monkeypatch.setattr(ci_jobs.subprocess, "run", lambda cmd, cwd=None: seen.append(cmd) or _FakeProc(0))
+        run_compare(self._job(seeds=(1,)))
+        assert tyro.cli(SftArgs, args=seen[0][2:]).min_upload_minutes == 0
+
     def test_one_bad_seed_does_not_sink_the_side(self, monkeypatch):
         # seed 2 fails; 1 and 3 still run and the side succeeds overall.
         def fake_run(cmd, cwd=None):

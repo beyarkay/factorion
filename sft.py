@@ -862,7 +862,7 @@ def train_sft(args: SftArgs):
     if eval_every is None:
         eval_every = 250_000 if args.num_samples <= 2_000_000 else 1_000_000
     next_eval = eval_every
-    best_thput, uploaded = -1.0, None
+    best_thput, uploaded, pending = -1.0, None, False
     key = f"val/thput@{args.eval_best_of}"
     samples_seen = step = 0
     acc: dict[str, torch.Tensor] = {}
@@ -930,8 +930,10 @@ def train_sft(args: SftArgs):
             best_thput = metrics[key]
             torch.save({"arch": ema.arch, "model": ema.state_dict()}, args.checkpoint_path)
             pbar.write(f"  -> Saved best checkpoint ({key} {best_thput:.3f})")
-            if run is not None:
-                uploaded = _upload_checkpoint(run, args, best_thput, [args.checkpoint_path], uploaded)
+            pending = True
+        if run is not None and pending and time.time() - t0 >= 60 * args.min_upload_minutes:
+            uploaded = _upload_checkpoint(run, args, best_thput, [args.checkpoint_path], uploaded)
+            pending = False
         t_window, data_s, window_samples = time.time(), 0.0, 0
     pbar.close()
 
@@ -954,7 +956,8 @@ def train_sft(args: SftArgs):
     print(f"Checkpoint saved to: {args.checkpoint_path}")
     if run is not None:
         run.summary[f"best_val_throughput@{args.eval_best_of}"] = best_thput
-        _upload_checkpoint(run, args, best_thput, [args.checkpoint_path, summary_path], uploaded)
+        if time.time() - t0 >= 60 * args.min_upload_minutes:
+            _upload_checkpoint(run, args, best_thput, [args.checkpoint_path, summary_path], uploaded)
         run.finish()
     return ema
 
