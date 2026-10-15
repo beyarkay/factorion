@@ -68,8 +68,29 @@ function M.circuit_panel(root)
   })
   local header = inner.add({ type = "frame", name = "header", style = "subheader_frame" })
   header.style.horizontally_stretchable = true
-  header.add({ type = "label", name = "network" }).style.left_padding = 8
+  header.style.left_padding = 12
   return inner
+end
+
+local NETWORK_COLORS = { red = { 1, 0.35, 0.35 }, green = { 0.35, 1, 0.35 } }
+
+-- networks is a list of { wire = "red" or "green", id }; rebuilt only when it
+-- changes, so a hovered tooltip stays up.
+function M.set_networks(inner, networks)
+  local header = inner.header
+  local key = ""
+  for _, network in ipairs(networks) do key = key .. network.wire .. network.id .. " " end
+  if header.tags.networks == key and #header.children > 0 then return end
+  header.tags = { networks = key }
+  header.clear()
+  header.add({ type = "label", caption = #networks == 0 and "Not connected" or "Connected to:" })
+  for _, network in ipairs(networks) do
+    local tooltip = "Circuit network: " .. network.id
+    local id = header.add({ type = "label", caption = tostring(network.id), tooltip = tooltip })
+    id.style.font_color = NETWORK_COLORS[network.wire]
+    id.style.left_padding = 4
+    header.add({ type = "sprite", sprite = "info", tooltip = tooltip })
+  end
 end
 
 -- A section of a circuit panel headed by a checkbox.
@@ -142,11 +163,12 @@ function M.marker_status(root, role, item, receiving, rate)
   end
 end
 
--- A circuit section enabling a condition: signal, comparator and constant;
--- each carries tags.factorion_condition = key so an edit finds its condition.
-function M.condition_section(inner, key, caption, condition)
+-- A circuit section enabling a condition: signal, comparator and constant,
+-- greyed out while it's off; each carries tags.factorion_condition = key so
+-- an edit finds its condition.
+function M.condition_section(inner, key, caption, condition, tooltip)
   local tags = { factorion_condition = key }
-  local section = M.circuit_section(inner, key, caption, condition.enabled or false, tags)
+  local section = M.circuit_section(inner, key, caption, condition.enabled or false, tags, tooltip)
   local row = section.add({ type = "flow", name = "condition", direction = "horizontal" })
   row.style.vertical_align = "center"
   row.add({
@@ -165,6 +187,11 @@ function M.condition_section(inner, key, caption, condition)
     type = "textfield", name = "constant", text = tostring(condition.constant or 0),
     numeric = true, allow_negative = true, style = "short_number_textfield", tags = tags,
   })
+  M.grey_condition(section)
+end
+
+function M.grey_condition(section)
+  for _, child in pairs(section.condition.children) do child.enabled = section.active.state end
 end
 
 function M.read_condition_section(section)
