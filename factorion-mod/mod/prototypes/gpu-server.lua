@@ -45,7 +45,7 @@ local server = table.deepcopy(data.raw["constant-combinator"]["constant-combinat
 server.name = NAME
 server.icon = "__factorion__/graphics/icons/gpu-server.png"
 server.icon_size = 64
-server.flags = { "placeable-player", "player-creation", "not-upgradable" }
+server.flags = { "placeable-player", "player-creation", "not-upgradable", "hide-alt-info" }
 server.minable = { mining_time = 0.5, result = NAME }
 server.max_health = 300
 server.collision_box = { { -1.9, -0.9 }, { 1.9, 0.9 } }
