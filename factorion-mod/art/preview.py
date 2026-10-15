@@ -55,10 +55,6 @@ placements += [
 ]
 
 ground_src = Image.open(data / "base/graphics/terrain/concrete/concrete.png").convert("RGBA").crop((0, 0, 256, 256))
-img = Image.new("RGBA", (W * TILE, H * TILE))
-for gx in range(0, W * TILE, 256):
-    for gy in range(0, H * TILE, 256):
-        img.alpha_composite(ground_src, (gx, gy))
 
 
 def paste(layer, centre, onto):
@@ -75,18 +71,29 @@ def layers(what):
     return main, shadow
 
 
-# The game merges every shadow into one layer before darkening the ground,
-# so overlaps don't stack; the opacity is a guess, shared by all.
-shadows = Image.new("RGBA", img.size)
-for what, centre in placements:
-    shadow = layers(what)[1]
-    if shadow:
-        paste(shadow, centre, shadows)
-shadows.putalpha(shadows.getchannel("A").point(lambda a: int(a * SHADOW_OPACITY)))
-img.alpha_composite(shadows)
-for what, centre in sorted(placements, key=lambda p: p[1][1]):
-    paste(layers(what)[0], centre, img)
+def compose(placements, width, height):
+    img = Image.new("RGBA", (width * TILE, height * TILE))
+    for gx in range(0, width * TILE, 256):
+        for gy in range(0, height * TILE, 256):
+            img.alpha_composite(ground_src, (gx, gy))
+    # The game merges every shadow into one layer before darkening the ground,
+    # so overlaps don't stack; the opacity is a guess, shared by all.
+    shadows = Image.new("RGBA", img.size)
+    for what, centre in placements:
+        shadow = layers(what)[1]
+        if shadow:
+            paste(shadow, centre, shadows)
+    shadows.putalpha(shadows.getchannel("A").point(lambda a: int(a * SHADOW_OPACITY)))
+    img.alpha_composite(shadows)
+    for what, centre in sorted(placements, key=lambda p: p[1][1]):
+        paste(layers(what)[0], centre, img)
+    return img
 
+
+img = compose(placements, W, H)
 img.save(out)
 big = img.resize((img.width * 2, img.height * 2), Image.NEAREST)
 big.crop((0, 0, 9 * TILE * 2, 5 * TILE * 2)).save(out.with_name(out.stem + "-zoom.png"))
+# Rows of servers touching, two tiles apart, to check how they stack.
+stack = compose([(("server",), (3 + 4 * i, 2 + 2 * j)) for i in range(3) for j in range(4)], 14, 11)
+stack.resize((stack.width * 2, stack.height * 2), Image.NEAREST).save(out.with_name(out.stem + "-stack.png"))

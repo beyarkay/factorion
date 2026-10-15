@@ -109,7 +109,7 @@ def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, ch
     # Grime in the crevices.
     ao = node("ShaderNodeAmbientOcclusion", Distance=0.12)
     crevice = maths("MULTIPLY", maths("SUBTRACT", 1.0, ao.outputs["AO"]), 2.0 * grime)
-    dirty = mix(base, (0.01, 0.01, 0.01), maths("MINIMUM", crevice, 0.9))
+    dirty = mix(base, (0.02, 0.013, 0.008), maths("MINIMUM", crevice, 0.9))
 
     # Worn bright edges, where a bevelled normal departs from the true one.
     bevel = node("ShaderNodeBevel", Radius=radius)
@@ -142,10 +142,10 @@ def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, ch
     return mat
 
 
-BARE = (0.62, 0.62, 0.64)
-BLACK = material("black", (0.016, 0.016, 0.018), metallic=0.1, roughness=0.72, rust=0.1, wear=0.45, edge=BARE)
-GUNMETAL = material("gunmetal", (0.045, 0.045, 0.05), metallic=0.5, roughness=0.55, rust=0.25, wear=0.5, edge=BARE)
-SILVER = material("silver", (0.6, 0.6, 0.62), metallic=1.0, roughness=0.3, rust=0.05, wear=0.2, grime=0.6)
+BARE = (0.68, 0.63, 0.56)
+BLACK = material("black", (0.024, 0.019, 0.015), metallic=0.1, roughness=0.72, rust=0.2, wear=0.45, edge=BARE)
+GUNMETAL = material("gunmetal", (0.058, 0.05, 0.042), metallic=0.5, roughness=0.55, rust=0.25, wear=0.5, edge=BARE)
+SILVER = material("silver", (0.66, 0.62, 0.55), metallic=1.0, roughness=0.3, rust=0.05, wear=0.2, grime=0.6)
 DARK = material("dark", (0.012, 0.012, 0.014), metallic=0.3, roughness=0.6, rust=0.0, wear=0.0, grime=0.4)
 VOID = material("void", (0.004, 0.004, 0.005), metallic=0.0, roughness=0.9, rust=0.0, wear=0.0, grime=0.0, bump=0.0)
 # Bright fin tips come from the bevel term alone.
@@ -369,6 +369,28 @@ def build_horizontal():
     for x in (-0.4, 0.45, 1.25):
         box(x - 0.035, x + 0.035, 0.36, 0.6, 0.4, 0.5, SILVER, bevel=0.01)
 
+    # Coolant manifold on a raised back rail, branching to each card.
+    box(-1.36, 1.94, 0.64, 0.78, 0.4, 0.5, GUNMETAL, bevel=0.015)
+    for k, yy in enumerate((0.67, 0.74)):
+        tube((-1.38, yy, 0.54), (1.96, yy, 0.54), 0.03, COPPER, segments=16)
+    for x in (-1.1, -0.38, 0.43, 1.24, 1.85):
+        box(x - 0.04, x + 0.04, 0.62, 0.79, 0.5, 0.6, SILVER, bevel=0.01)
+        rivets([(x, 0.705, 0.6)], axis=(0, 0, 1), r=0.014)
+    for g, _ in cards:
+        port = world_point(g, (0.0, CARD_T, 0.45))
+        cable([Vector((port.x + 0.12, 0.67, 0.54)), Vector((port.x + 0.1, 0.45, 0.6)), port + Vector((0, 0.04, 0))], 0.022, COPPER)
+        tube(port, port + Vector((0, 0.06, 0)), 0.04, SILVER, segments=12)
+    # Voltage regulators and capacitors in the gaps behind the cards.
+    for left, right in zip(xs, xs[1:]):
+        x = (left + right) / 2
+        box(x - 0.1, x + 0.1, 0.12, 0.3, 0.43, 0.47, DARK, bevel=0.006)
+        for k in range(6):
+            xx = x - 0.08 + k * 0.032
+            box(xx - 0.008, xx + 0.008, 0.13, 0.29, 0.47, 0.56, FIN, bevel=0.002)
+        for dx in (-0.06, 0.06):
+            tube((x + dx, 0.36, 0.43), (x + dx, 0.36, 0.52), 0.032, BLUE, segments=12)
+            tube((x + dx, 0.36, 0.52), (x + dx, 0.36, 0.53), 0.028, SILVER, segments=12)
+
     build_io_box()
     return rotors
 
@@ -468,7 +490,7 @@ def setup_scene():
     sun_data = bpy.data.lights.new("sun", "SUN")
     sun_data.energy = 7.0
     sun_data.angle = math.radians(3)
-    sun_data.color = (1.0, 0.96, 0.9)
+    sun_data.color = (1.0, 0.9, 0.76)
     sun = bpy.data.objects.new("sun", sun_data)
     sun.rotation_euler = SUN.to_track_quat("-Z", "Y").to_euler()
     scene.collection.objects.link(sun)
@@ -477,13 +499,13 @@ def setup_scene():
     fill_data = bpy.data.lights.new("fill", "SUN")
     fill_data.energy = 1.6
     fill_data.use_shadow = False
-    fill_data.color = (0.85, 0.9, 1.0)
+    fill_data.color = (1.0, 0.94, 0.86)
     fill = bpy.data.objects.new("fill", fill_data)
     fill.rotation_euler = Vector((0.5, 1.0, -0.6)).normalized().to_track_quat("-Z", "Y").to_euler()
     scene.collection.objects.link(fill)
 
     world = bpy.data.worlds.new("world")
-    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.75, 0.8, 0.9, 1)
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.85, 0.82, 0.76, 1)
     world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.35
     scene.world = world
     return scene
