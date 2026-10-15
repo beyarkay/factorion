@@ -2013,22 +2013,6 @@ local function write_state_signals(state)
   section.filters = filters
 end
 
-local function draw_utilisation(state)
-  local u = state.utilisation or 0
-  local text = string.format("GPU %d%%", math.floor(u * 100 + 0.5))
-  local color = { r = 0.7 - 0.5 * u, g = 0.7 + 0.3 * u, b = 0.7 - 0.5 * u }
-  local label = state.utilisation_label and rendering.get_object_by_id(state.utilisation_label)
-  if label then
-    label.text, label.color = text, color
-    return
-  end
-  state.utilisation_label = rendering.draw_text({
-    text = text, surface = state.entity.surface, target = state.entity,
-    color = color, scale = 1.2, alignment = "center", vertical_alignment = "middle",
-    only_in_alt_mode = true,
-  }).id
-end
-
 -- Every 10 ticks: a server computing for its cluster always has its next
 -- forward-pass token waiting, so it crafts, and draws full power, until the
 -- prediction ends.
@@ -2046,7 +2030,6 @@ local function service_gpu_servers()
         or status == defines.entity_status.low_power) and 1 or 0
       state.utilisation = (state.utilisation or 0) * UTILISATION_DECAY + busy * (1 - UTILISATION_DECAY)
       write_state_signals(state)
-      draw_utilisation(state)
     end
   end
 end
@@ -2132,14 +2115,6 @@ local function sync_virtual_endpoints(server, state, endpoints)
       entry.belt = server.surface.find_entities_filtered({
         position = { entry.x + 0.5, entry.y + 0.5 }, type = BELT_TYPES,
       })[1]
-      local empty = entry.role == "source" and game.tick - entry.seen_tick >= SOURCE_EMPTY_TICKS
-      if empty and not (entry.alert and rendering.get_object_by_id(entry.alert)) then
-        entry.alert = draw_alert("source-empty", { entry.x + 0.5, entry.y + 0.5 }, server.surface)
-        entry.render_ids.alert = entry.alert
-      elseif not empty and entry.alert then
-        destroy_ids({ entry.alert })
-        entry.alert, entry.render_ids.alert = nil, nil
-      end
       kept[key] = entry
     end
   end
@@ -2180,12 +2155,6 @@ local function survey()
         and region and #region.sources > 0 and #region.sinks > 0 or false
       local unlinked = size and not region and not cluster_pieces(server, size, groups)
       set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or nil, { 0, -0.4 })
-    end
-  end
-  for _, config in pairs(storage.endpoints or {}) do
-    if config.entity.valid then
-      set_alert(config.entity,
-        config.role == "source" and not source_receiving(config) and "source-empty" or nil)
     end
   end
 end
@@ -2609,6 +2578,11 @@ script.on_configuration_changed(function()
       end
     end
     state.cables = nil
+    if state.utilisation_label then
+      local label = rendering.get_object_by_id(state.utilisation_label)
+      if label then label.destroy() end
+      state.utilisation_label = nil
+    end
     if not state.entity.valid then storage.servers[unit] = nil end
   end
   for _, player in pairs(game.players) do

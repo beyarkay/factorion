@@ -64,14 +64,6 @@ def save_alert(symbol, path):
     save(im, path)
 
 
-def chevrons(d, cx, cy, w, h, n, fill):
-    """Belt chevrons pointing up, n of them stacked."""
-    for k in range(n):
-        y = cy - (n - 1) * h * 0.55 + k * h * 1.1
-        d.line([tuple(s(cx - w, y + h / 2)), tuple(s(cx, y - h / 2)), tuple(s(cx + w, y + h / 2))],
-               fill=fill, width=int(3.5 * SS), joint="curve")
-
-
 def card(d, x0, y0, x1, y1, fill, hole):
     """A GPU card from the side: a slab with two fans and a bracket."""
     d.rounded_rectangle(s(x0, y0, x1, y1), radius=2 * SS, fill=fill)
@@ -87,17 +79,6 @@ def slash(d):
     d.line([tuple(s(15, 58)), tuple(s(49, 24))], fill=YELLOW, width=8 * SS)
     d.line([tuple(s(15, 58)), tuple(s(49, 24))], fill=INK, width=3 * SS)
 
-
-# A source with nothing arriving: a belt, and a dashed empty slot on it.
-im, d = glyph()
-for x in (21, 43):
-    d.line([tuple(s(x, 27)), tuple(s(x, 58))], fill=INK, width=3 * SS)
-chevrons(d, 32, 51, 6, 4, 2, INK)
-for k in range(4):
-    for side in ((25 + 4 * k, 25, 27 + 4 * k, 25), (25 + 4 * k, 39, 27 + 4 * k, 39),
-                 (25, 25 + 4 * k, 25, 27 + 4 * k), (39, 25 + 4 * k, 39, 27 + 4 * k)):
-        d.line([tuple(s(*side[:2])), tuple(s(*side[2:]))], fill=INK, width=int(2.5 * SS))
-save_alert(im, out / "alerts/source-empty.png")
 
 # A GPU server that can't reach its model: a card, struck out.
 im, d = glyph()
