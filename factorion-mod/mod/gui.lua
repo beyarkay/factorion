@@ -74,22 +74,49 @@ end
 
 local NETWORK_COLORS = { red = { 1, 0.35, 0.35 }, green = { 0.35, 1, 0.35 } }
 
--- networks is a list of { wire = "red" or "green", id }; rebuilt only when it
--- changes, so a hovered tooltip stays up.
+local SIGNAL_TAGS = { item = "item", fluid = "fluid", virtual = "virtual-signal", entity = "entity",
+  recipe = "recipe", quality = "quality", ["space-location"] = "space-location", ["asteroid-chunk"] = "asteroid-chunk" }
+
+-- Like vanilla's: the network's id, then each of its signals and count.
+local function network_tooltip(network)
+  local lines = { "[font=default-bold]Circuit network: " .. network.id .. "[/font]" }
+  local row = {}
+  for _, entry in ipairs(network.signals or {}) do
+    local signal = entry.signal
+    table.insert(row, string.format("[%s=%s] %d", SIGNAL_TAGS[signal.type or "item"], signal.name, entry.count))
+    if #row == 6 then
+      table.insert(lines, table.concat(row, "   "))
+      row = {}
+    end
+  end
+  if #row > 0 then table.insert(lines, table.concat(row, "   ")) end
+  if #lines > 1 then table.insert(lines, 2, "Signals") end
+  return table.concat(lines, "\n")
+end
+
+-- networks is a list of { wire = "red" or "green", id, signals }; the header
+-- is rebuilt only when the networks change, so a hovered tooltip stays up.
 function M.set_networks(inner, networks)
   local header = inner.header
   local key = ""
   for _, network in ipairs(networks) do key = key .. network.wire .. network.id .. " " end
-  if header.tags.networks == key and #header.children > 0 then return end
-  header.tags = { networks = key }
-  header.clear()
-  header.add({ type = "label", caption = #networks == 0 and "Not connected" or "Connected to:" })
+  if header.tags.networks ~= key or #header.children == 0 then
+    header.tags = { networks = key }
+    header.clear()
+    header.add({ type = "label", caption = #networks == 0 and "Not connected" or "Connected to:" })
+    for _, network in ipairs(networks) do
+      local id = header.add({ type = "label", name = "id_" .. network.wire, caption = tostring(network.id) })
+      id.style.font_color = NETWORK_COLORS[network.wire]
+      id.style.left_padding = 4
+      local info = header.add({ type = "sprite", name = "info_" .. network.wire, sprite = "info_no_border" })
+      info.style.stretch_image_to_widget_size = true
+      info.style.size = 14
+    end
+  end
   for _, network in ipairs(networks) do
-    local tooltip = "Circuit network: " .. network.id
-    local id = header.add({ type = "label", caption = tostring(network.id), tooltip = tooltip })
-    id.style.font_color = NETWORK_COLORS[network.wire]
-    id.style.left_padding = 4
-    header.add({ type = "sprite", sprite = "info", tooltip = tooltip })
+    local tooltip = network_tooltip(network)
+    header["id_" .. network.wire].tooltip = tooltip
+    header["info_" .. network.wire].tooltip = tooltip
   end
 end
 
