@@ -34,13 +34,7 @@ local TOOLTIPS = {
   predict = "Start a prediction, as the Predict button does, each time this condition becomes true.",
   deconstruct = "Each time this condition becomes true, stop the cluster and mark everything on its " ..
     "build region for deconstruction, as the Clear button does.",
-  read_state = "Write this server's state to its wires:\n" ..
-    "[virtual-signal=factorion-predicting] 1 while predicting\n" ..
-    "[virtual-signal=factorion-ready] 1 when a prediction could start\n" ..
-    "[virtual-signal=factorion-utilisation] utilisation in percent\n" ..
-    "[virtual-signal=factorion-cluster] powered GPU servers in the cluster\n" ..
-    "[virtual-signal=factorion-step] denoising steps placed so far\n" ..
-    "[virtual-signal=factorion-throughput] the sinks' throughput in items per minute",
+  read_state = "Write this server's state to its wires, each reading on the signal chosen below.",
   endpoints = "Take the factory's sources and sinks from item signals on the wires instead of from " ..
     "source and sink belts. Conditions then ignore item signals.",
 }
@@ -48,6 +42,26 @@ local TOOLTIPS = {
 local ENDPOINT_HELP = "Each item signal on the green wire is a source and on the red wire a sink, " ..
   "at X + 100 × Y + 10000 × D: X and Y count tiles from the build region's top-left corner, " ..
   "0 being just outside it, and D is 1, 2, 3 or 4 for facing north, east, south or west."
+
+-- What Read state writes, each on a signal the player can change.
+M.STATE_SIGNALS = {
+  { key = "predicting", caption = "Denoising steps left",
+    tooltip = "Counts down to 0 as a prediction places its steps; 0 when idle or done." },
+  { key = "utilisation", caption = "Utilisation (%)", tooltip = "How busy this server has been lately." },
+  { key = "cluster", caption = "Powered servers in cluster", tooltip = "How many servers predict together." },
+  { key = "throughput", caption = "Sink throughput (per minute)", tooltip = "Items per minute reaching the sinks." },
+}
+
+-- The signal a reading goes out on, or nil when the player cleared it.
+function M.state_signal(settings, key)
+  local chosen = (settings.state_signals or {})[key]
+  if chosen == false then return nil end
+  return chosen or { type = "virtual", name = "factorion-" .. key }
+end
+
+local function grey_state_rows(section)
+  for _, row in ipairs(M.STATE_SIGNALS) do section["row_" .. row.key].signal.enabled = section.active.state end
+end
 
 local DEFAULT_CONDITIONS = {
   predict = { signal = { type = "virtual", name = "signal-P" }, comparator = ">", constant = 0 },
@@ -250,8 +264,20 @@ function M.open(player, server)
     gui.condition_section(circuit, key, key == "predict" and "Predict" or "Deconstruct build region",
       settings.conditions[key] or DEFAULT_CONDITIONS[key], TOOLTIPS[key])
   end
-  gui.circuit_section(circuit, "read_state", "Read state", settings.read_state ~= false,
+  local read_state = gui.circuit_section(circuit, "read_state", "Read state", settings.read_state ~= false,
     { factorion_gpu = "read_state" }, TOOLTIPS.read_state)
+  for _, row in ipairs(M.STATE_SIGNALS) do
+    local flow = read_state.add({ type = "flow", name = "row_" .. row.key, direction = "horizontal" })
+    flow.style.vertical_align = "center"
+    flow.add({ type = "label", caption = row.caption, tooltip = row.tooltip })
+    flow.add({ type = "empty-widget" }).style.horizontally_stretchable = true
+    flow.add({
+      type = "choose-elem-button", name = "signal", elem_type = "signal",
+      signal = M.state_signal(settings, row.key), style = "slot_button_in_shallow_frame",
+      tags = { factorion_state = row.key },
+    })
+  end
+  grey_state_rows(read_state)
   local endpoints = gui.circuit_section(circuit, "endpoints", "Set sources and sinks",
     settings.circuit_endpoints or false, { factorion_gpu = "circuit_endpoints" }, TOOLTIPS.endpoints)
   local help = endpoints.add({ type = "label", caption = ENDPOINT_HELP })
@@ -323,11 +349,23 @@ function M.on_gui_checked_state_changed(event)
   if not (server and (tag == "read_state" or tag == "circuit_endpoints")) then return false end
   M.settings(server)[tag] = event.element.state
   M.settings_changed(server)
+  if tag == "read_state" then grey_state_rows(event.element.parent) end
   M.refresh(player, true)
   return true
 end
 
-M.on_gui_elem_changed = condition_edited
+function M.on_gui_elem_changed(event)
+  if condition_edited(event) then return true end
+  local key = event.element.valid and event.element.tags.factorion_state
+  local player = game.get_player(event.player_index)
+  local server = player and window_server(player)
+  if not (key and server) then return false end
+  local settings = M.settings(server)
+  settings.state_signals = settings.state_signals or {}
+  settings.state_signals[key] = event.element.elem_value or false
+  M.settings_changed(server)
+  return true
+end
 M.on_gui_selection_state_changed = condition_edited
 
 function M.on_gui_confirmed(event)

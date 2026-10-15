@@ -139,9 +139,7 @@ data:extend({
     results = { { type = "item", name = NAME, amount = 1 } },
   },
   state_signal("predicting", "signal-hourglass", "a"),
-  state_signal("ready", "signal-checked-green", "b"),
   state_signal("utilisation", "signal-percent", "c"),
   state_signal("cluster", "signal-multiplication", "d"),
-  state_signal("step", "signal-number-sign", "e"),
   state_signal("throughput", "signal-speed", "f"),
 })

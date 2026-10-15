@@ -36,7 +36,7 @@ from training_config import SftArgs
 from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
 
 log = logging.getLogger("factorion-server")
-MOD_PROTOCOL_VERSION = "11"
+MOD_PROTOCOL_VERSION = "12"
 RELEASES_URL = "https://api.github.com/repos/beyarkay/factorion/releases"
 CHECKPOINT_CACHE = Path.home() / ".cache" / "factorion"
 
@@ -333,11 +333,11 @@ class PredictionCancelled(Exception):
     """The player cancelled the request in game (CTRL+R or a region clear)."""
 
 
-def _stream_step(rcon: RconClient, request_id: str, placements: list[dict]) -> bool:
-    """Apply one denoising step's placements in game; False if Factorio
-    refused any of them."""
+def _stream_step(rcon: RconClient, request_id: str, remaining: int, placements: list[dict]) -> bool:
+    """Apply one denoising step's placements in game, with how many steps
+    follow it; False if Factorio refused any of them."""
     payload = json.dumps(placements, separators=(",", ":"))
-    response = _call_mod(rcon, "place_predictions", request_id, payload)
+    response = _call_mod(rcon, "place_predictions", request_id, str(remaining), payload)
     if response == "ok":
         return True
     if response == "cancelled":
@@ -408,7 +408,10 @@ def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader, gri
     try:
         model = get_model(checkpoint)
         method = "model_loaded"
-        payload = {"checkpoint": checkpoint, "name": model.name, "grid_size": model.config.size}
+        payload = {
+            "checkpoint": checkpoint, "name": model.name, "grid_size": model.config.size,
+            "gen_steps": model.config.gen_steps, "gen_refine": model.config.gen_refine,
+        }
     except Exception as exc:
         log.exception("Could not load checkpoint %s", checkpoint)
         method = "model_failed"
@@ -524,12 +527,14 @@ def handle_request(
             "Denoised %d chain(s) in %.2fs; the best takes %d step(s) to %.3f items/s (%s)",
             gen.best_of, time.time() - t0, result["steps_taken"], result["thput"], result["stop_reason"],
         )
+        steps = []
         for frame in frames:
             placements = frame_placements(world, frame)
             world = frame
-            if not placements:
-                continue
-            if not _stream_step(rcon, req["request_id"], placements):
+            if placements:
+                steps.append(placements)
+        for i, placements in enumerate(steps):
+            if not _stream_step(rcon, req["request_id"], len(steps) - i - 1, placements):
                 stats["refused_steps"] += 1
             time.sleep(float(req.get("step_delay_s", 0.0)))
         stats.update(result)

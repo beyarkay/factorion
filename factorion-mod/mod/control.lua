@@ -28,7 +28,7 @@ local inference = require("inference")
 local gui = require("gui")
 local util = require("util")
 
-local PROTOCOL_VERSION = "11"
+local PROTOCOL_VERSION = "12"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
 -- Loading a checkpoint (often a W&B download) blocks the server's polls.
@@ -615,12 +615,6 @@ local function destroy_ids(ids)
   end
 end
 
--- Removes what an endpoint drew, and its belt ghost if nobody built it.
-local function drop_virtual_endpoint(entry)
-  destroy_ids(entry.render_ids)
-  if entry.ghost and entry.ghost.valid and entry.ghost.type == "entity-ghost" then entry.ghost.destroy() end
-end
-
 -- Removes every link cut(link) picks; returns how many.
 local function remove_links(cut)
   local removed, surfaces = 0, {}
@@ -917,7 +911,7 @@ end
 
 local function release_cluster(request_id)
   for _, state in pairs(storage.servers or {}) do
-    if state.computing == request_id then state.computing = nil end
+    if state.computing == request_id then state.computing, state.steps_left = nil, nil end
   end
 end
 
@@ -1406,7 +1400,7 @@ local function endpoint_entity_removed(event)
   if server then
     cancel_pending(server)
     if server.power and server.power.valid then server.power.destroy() end
-    for _, endpoint in pairs(server.virtual or {}) do drop_virtual_endpoint(endpoint) end
+    for _, endpoint in pairs(server.virtual or {}) do destroy_ids(endpoint.render_ids) end
     storage.servers[entity.unit_number] = nil
   end
   if storage.entity_alerts then storage.entity_alerts[entity.unit_number] = nil end
@@ -1847,9 +1841,10 @@ inference.on_predict = function(player, server, quiet)
   local state = server_state(server)
   local members = powered(cluster(server))
   -- The player's own belts feed circuit endpoints, so the model leaves them.
-  state.endpoint_tiles = {}
+  state.endpoint_tiles, state.wire_endpoints = {}, {}
   for _, endpoint in ipairs(region.endpoints) do
     state.endpoint_tiles[tile_key(endpoint.x, endpoint.y)] = true
+    if not endpoint.unit then table.insert(state.wire_endpoints, endpoint) end
   end
   local request, description = gather_request(state, region, members)
   local request_json = helpers.table_to_json(request)
@@ -1861,10 +1856,15 @@ inference.on_predict = function(player, server, quiet)
   state.pending = {
     request_id = request.request_id, tick = game.tick, description = description,
   }
+  -- Until the server streams the first step, the most it could take.
+  local config = inference.config()
+  local most = (config.steps > 0 and config.steps or storage.model.gen_steps or 0)
+    + (config.refine > 0 and config.refine or storage.model.gen_refine or 0)
   for _, member in ipairs(members) do
     local member_state = server_state(member)
     member_state.computing = request.request_id
     member_state.steps = 0
+    member_state.steps_left = most
   end
   log("[Factorion] enqueued request " .. request.request_id ..
       " json=" .. request_json)
@@ -1979,20 +1979,27 @@ local function write_state_signals(state)
       throughput = throughput + (endpoint.throughput_rate or 0)
     end
   end
-  local filters = {}
-  for _, entry in ipairs(state.read_state ~= false and {
-    { "predicting", state.computing and 1 or 0 },
-    { "ready", state.ready and 1 or 0 },
-    { "utilisation", math.floor((state.utilisation or 0) * 100 + 0.5) },
-    { "cluster", state.cluster_size or 0 },
-    { "step", state.steps or 0 },
-    { "throughput", math.floor(throughput * 60 + 0.5) },
-  } or {}) do
-    if entry[2] ~= 0 then
-      table.insert(filters, {
-        value = { type = "virtual", name = "factorion-" .. entry[1], quality = "normal" },
-        min = entry[2],
-      })
+  local values = {
+    predicting = state.computing and state.steps_left or 0,
+    utilisation = math.floor((state.utilisation or 0) * 100 + 0.5),
+    cluster = state.cluster_size or 0,
+    throughput = math.floor(throughput * 60 + 0.5),
+  }
+  -- Two readings set to one signal add up, as on a wire.
+  local filters, by_signal = {}, {}
+  for _, row in ipairs(state.read_state ~= false and inference.STATE_SIGNALS or {}) do
+    local signal = inference.state_signal(state, row.key)
+    local count = values[row.key]
+    if signal and count ~= 0 then
+      local key = (signal.type or "item") .. "/" .. signal.name
+      if by_signal[key] then
+        by_signal[key].min = by_signal[key].min + count
+      else
+        by_signal[key] = {
+          value = { type = signal.type or "item", name = signal.name, quality = "normal" }, min = count,
+        }
+        table.insert(filters, by_signal[key])
+      end
     end
   end
   section.filters = filters
@@ -2093,19 +2100,20 @@ local DIRECTION_TO_FACTORIO = {
   defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west,
 }
 
--- A belt ghost on the endpoint's tile, facing its way, to belt into or out
--- of; only where nothing is in the way.
-local function ghost_endpoint_belt(surface, force, entry)
+-- A belt on a wire-set endpoint's tile, facing its way, to belt into or out
+-- of, placed as the model's entities are; only where nothing is in the way.
+local function place_endpoint_belt(surface, force, endpoint)
+  local ghost = setting("factorion-placement-mode") == "ghost"
   local spec = {
-    name = "transport-belt", position = { entry.x + 0.5, entry.y + 0.5 },
-    direction = DIRECTION_TO_FACTORIO[entry.direction], force = force,
+    name = "transport-belt", position = { endpoint.x + 0.5, endpoint.y + 0.5 },
+    direction = DIRECTION_TO_FACTORIO[endpoint.direction], force = force, raise_built = true,
   }
   if not surface.can_place_entity({
     name = spec.name, position = spec.position, direction = spec.direction, force = force,
-    build_check_type = defines.build_check_type.manual_ghost,
+    build_check_type = ghost and defines.build_check_type.manual_ghost or defines.build_check_type.manual,
   }) then return end
-  spec.inner_name, spec.name = spec.name, "entity-ghost"
-  return surface.create_entity(spec)
+  if ghost then spec.inner_name, spec.name = spec.name, "entity-ghost" end
+  surface.create_entity(spec)
 end
 
 local function sync_virtual_endpoints(server, state, endpoints)
@@ -2119,7 +2127,6 @@ local function sync_virtual_endpoints(server, state, endpoints)
         entry = endpoint
         entry.seen_tick = game.tick
         entry.render_ids = draw_virtual_endpoint(server.surface, entry)
-        if not entry.problem then entry.ghost = ghost_endpoint_belt(server.surface, server.force, entry) end
       end
       entry.belt = server.surface.find_entities_filtered({
         position = { entry.x + 0.5, entry.y + 0.5 }, type = BELT_TYPES,
@@ -2128,7 +2135,7 @@ local function sync_virtual_endpoints(server, state, endpoints)
     end
   end
   for key, entry in pairs(state.virtual or {}) do
-    if not kept[key] then drop_virtual_endpoint(entry) end
+    if not kept[key] then destroy_ids(entry.render_ids) end
   end
   state.virtual = kept
 end
@@ -2146,7 +2153,9 @@ end
 
 -- A cluster shares one set of circuit settings: every server keeps a copy,
 -- and the most recently edited wins.
-local SHARED_SETTINGS = { "conditions", "read_state", "circuit_endpoints", "circuit_player", "settings_tick" }
+local SHARED_SETTINGS = {
+  "conditions", "read_state", "state_signals", "circuit_endpoints", "circuit_player", "settings_tick",
+}
 
 local function copy_settings(from, to)
   for _, key in ipairs(SHARED_SETTINGS) do to[key] = util.table.deepcopy(from[key]) end
@@ -2180,8 +2189,6 @@ local function survey()
       end
       if latest ~= state then copy_settings(latest, state) end
       sync_virtual_endpoints(server, state, leader == server and region and region.signals or {})
-      state.ready = not state.computing and has_power(server) and server_alive()
-        and region and #region.sources > 0 and #region.sinks > 0 or false
       local unlinked = size and not region and not cluster_pieces(server, size, groups)
       set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or nil, { 0, -0.4 })
     end
@@ -2377,7 +2384,7 @@ remote.add_interface("factorion", {
   -- Apply one denoising step: footprint-relative placements, each replacing
   -- whatever it overlaps (one without a name only deletes). A placement
   -- Factorio refuses doesn't stop the rest of the step.
-  place_predictions = function(request_id, placements_json)
+  place_predictions = function(request_id, remaining, placements_json)
     heard_from_server()
     ensure_pending_lookup()
     local server = storage.pending_by_request[request_id]
@@ -2396,7 +2403,10 @@ remote.add_interface("factorion", {
     local player = state.player_index and game.get_player(state.player_index)
     local fp = state.footprint
     for _, member in pairs(storage.servers) do
-      if member.computing == request_id then member.steps = (member.steps or 0) + 1 end
+      if member.computing == request_id then
+        member.steps = (member.steps or 0) + 1
+        member.steps_left = tonumber(remaining)
+      end
     end
 
     local ok, placements = pcall(
@@ -2411,6 +2421,9 @@ remote.add_interface("factorion", {
         refused = refused + 1
         first_error = first_error or err
       end
+    end
+    for _, endpoint in ipairs(state.wire_endpoints or {}) do
+      place_endpoint_belt(state.entity.surface, state.entity.force, endpoint)
     end
     if refused == 0 then return "ok" end
     return string.format("error: %d of %d placements refused; first: %s",

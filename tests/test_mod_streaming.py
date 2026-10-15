@@ -253,6 +253,7 @@ def test_each_denoising_step_streams_as_one_batch(monkeypatch):
 
     *steps, finish = rcon.commands
     assert steps and all("'place_predictions','r'" in c for c in steps)
+    assert [int(c.split("','")[3]) for c in steps] == list(range(len(steps) - 1, -1, -1))
     assert all(isinstance(_payload(c), list) and _payload(c) for c in steps)
     summary = _payload(finish)
     assert "'finish_prediction','r'" in finish
