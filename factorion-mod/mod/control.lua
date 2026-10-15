@@ -1578,10 +1578,11 @@ local function gather_existing_entities(predicted, surface, fp, endpoint_tiles)
 end
 
 -- A server reading endpoints from its circuit takes each item signal on its
--- red wire as a source and on its green wire as a sink, valued D YYY XXX:
--- D is 1-4 for north, east, south or west, and X and Y count tiles from
--- the painted area's top-left corner, so 0 is just outside it. Returns the
--- endpoints, in world tiles, and the item signals that don't decode.
+-- red wire as a source and on its green wire as a sink, valued
+-- X + 100 Y + 10000 D, which combinators can compute: D is 1-4 for north,
+-- east, south or west, and X and Y count tiles from the painted area's
+-- top-left corner, so 0 is just outside it. Returns the endpoints, in world
+-- tiles, and the item signals that don't decode.
 local function circuit_endpoints(server, min_x, min_y)
   local endpoints, ignored = {}, {}
   for role, wire in pairs({
@@ -1591,10 +1592,10 @@ local function circuit_endpoints(server, min_x, min_y)
     for _, signal in ipairs(server.get_signals(wire) or {}) do
       if (signal.signal.type or "item") == "item" then
         local value = signal.count
-        local d = math.floor(value / 1000000)
+        local d = math.floor(value / 10000)
         if d >= 1 and d <= 4 then
           table.insert(endpoints, {
-            x = min_x + value % 1000 - 1, y = min_y + math.floor(value / 1000) % 1000 - 1,
+            x = min_x + value % 100 - 1, y = min_y + math.floor(value / 100) % 100 - 1,
             role = role, item = signal.signal.name, direction = d,
           })
         else
@@ -1741,7 +1742,7 @@ inference.describe = function(server)
     region.tiles, icons(region.sources), icons(region.sinks))
   if #region.ignored > 0 then
     caption = caption .. " Ignoring " .. table.concat(region.ignored, " ") ..
-      " on the wires: not a D YYY XXX value on or beside the paint."
+      " on the wires: not X + 100 Y + 10000 D on or beside the paint."
   end
   return caption, true, cluster_caption
 end
