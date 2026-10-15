@@ -60,6 +60,8 @@ pub enum LessonKind {
     IntermediateBelt2In = 29,
     Mirrored1In = 30,
     Mirrored2In = 31,
+    RouteBelts = 32,
+    RouteBeltsBus = 33,
 }
 
 impl LessonKind {
@@ -95,6 +97,8 @@ impl LessonKind {
             29 => Some(LessonKind::IntermediateBelt2In),
             30 => Some(LessonKind::Mirrored1In),
             31 => Some(LessonKind::Mirrored2In),
+            32 => Some(LessonKind::RouteBelts),
+            33 => Some(LessonKind::RouteBeltsBus),
             _ => None,
         }
     }
@@ -132,6 +136,8 @@ impl LessonKind {
             LessonKind::Memorise4IngredientRecipes => "MEMORISE_4_INGREDIENT_RECIPES",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
+            LessonKind::RouteBelts => "ROUTE_BELTS",
+            LessonKind::RouteBeltsBus => "ROUTE_BELTS_BUS",
             LessonKind::OppositeSides1In => "OPPOSITE_SIDES_1IN",
             LessonKind::ReachOver3In => "REACH_OVER_3IN",
             LessonKind::ReachOver4In => "REACH_OVER_4IN",
@@ -156,8 +162,15 @@ impl LessonKind {
     /// `SPLITTER_MERGE_SIDELOADED` deliberately places protected empty "decoy"
     /// belts whose only job is to force a source to side-load; a decoy carries
     /// nothing and lies on no source→sink path, so it is an intended orphan.
+    /// The ROUTE_BELTS lessons leave sources whose item no sink takes
+    /// unconnected.
     pub fn allows_orphans(self) -> bool {
-        matches!(self, LessonKind::SplitterMergeSideloaded)
+        matches!(
+            self,
+            LessonKind::SplitterMergeSideloaded
+                | LessonKind::RouteBelts
+                | LessonKind::RouteBeltsBus
+        )
     }
 }
 
@@ -177,6 +190,8 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::Memorise4IngredientRecipes,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
+        LessonKind::RouteBelts,
+        LessonKind::RouteBeltsBus,
         LessonKind::OppositeSides1In,
         LessonKind::SameSide1In,
         LessonKind::Splitter1In,
@@ -282,16 +297,25 @@ enum Routes<'a> {
     Sampled(&'a mut Rng),
 }
 
+/// Tie-breaks among routes of equal length, against a belt step's 16: each 90°
+/// turn costs `TURN_COST` and each belt orthogonally beside a `hug` cell saves
+/// `HUG_DISCOUNT`, so routes come out straight and laid side by side. Hugging
+/// outweighs a turn, so a route may turn to stay beside a belt, while a
+/// two-tile detour still needs 16 more hugging tiles to pay for itself.
+const TURN_COST: u64 = 1;
+const HUG_DISCOUNT: u64 = 2;
+
 /// Minimal-cost routes from `start` to `end` as selected by `routes`, each a
 /// `Vec<UgPlacement>` laying exactly one entity per cell from `start` through
 /// `end` (which faces `end_dir`).
 ///
-/// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 4 and
-/// a `span`-tile tunnel costs `5 * (span + 1)` (an integral 1.25×/tile penalty),
-/// so tunnels only ever clear blocked cells, with minimal span. Tunnels run
-/// straight; 180° reversals and self-overlapping routes are rejected. See
-/// [`Underground`] for the tunnel options; `Underground::Off` reduces this to a
-/// plain uniform-cost belt search.
+/// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 16 and
+/// a `span`-tile tunnel costs `20 * (span + 1)` (an integral 1.25×/tile penalty),
+/// so tunnels only ever clear blocked cells, with minimal span, and [`TURN_COST`]
+/// and [`HUG_DISCOUNT`] break ties. Tunnels run straight; 180° reversals and
+/// self-overlapping routes are rejected. See [`Underground`] for the tunnel
+/// options; `Underground::Off` reduces this to a plain uniform-cost belt search.
+#[allow(clippy::too_many_arguments)]
 fn find_belt_paths(
     start: Cell,
     end: Cell,
@@ -300,11 +324,20 @@ fn find_belt_paths(
     blocked: &HashSet<Cell>,
     underground: Underground,
     routes: Routes,
+    hug: &HashSet<Cell>,
 ) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
     if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
         return vec![];
     }
+
+    let turn_cost = |from: i64, to: Direction| {
+        if from != 0 && from != to as i64 {
+            TURN_COST
+        } else {
+            0
+        }
+    };
 
     // Whether tunnels are allowed, and the direction (if any) the route opens a
     // tunnel toward on `start` itself.
@@ -365,11 +398,14 @@ fn find_belt_paths(
         let (cx, cy, adir) = state;
         if (cx, cy) == end {
             // Reached on the surface: `end` becomes a belt facing `end_dir`.
-            if d_so_far < goal_cost {
-                goal_cost = d_so_far;
+            let cost = d_so_far + turn_cost(adir, end_dir);
+            if cost < goal_cost {
+                goal_cost = cost;
                 goal_arrivals.clear();
             }
-            goal_arrivals.push((state, vec![(end.0, end.1, end_dir, Misc::None)]));
+            if cost == goal_cost {
+                goal_arrivals.push((state, vec![(end.0, end.1, end_dir, Misc::None)]));
+            }
             continue;
         }
 
@@ -391,7 +427,10 @@ fn find_belt_paths(
                 continue;
             }
             let ns: State = (n.0, n.1, d as i64);
-            let nd = d_so_far + 4;
+            let hugging = BFS_DELTAS
+                .iter()
+                .any(|&(hx, hy)| hug.contains(&(cx + hx, cy + hy)));
+            let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
             relax(
                 &mut dist,
                 &mut preds,
@@ -416,7 +455,7 @@ fn find_belt_paths(
                 // Charged like a normal tunnel, so used only when the obstruction
                 // reaches the sink.
                 if exit_cell == end && d == end_dir {
-                    let cost = d_so_far + 5 * (span as u64 + 1);
+                    let cost = d_so_far + 20 * (span as u64 + 1);
                     if cost < goal_cost {
                         goal_cost = cost;
                         goal_arrivals.clear();
@@ -437,7 +476,7 @@ fn find_belt_paths(
                     continue;
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
-                let nd = d_so_far + 5 * (span as u64 + 1);
+                let nd = d_so_far + 20 * (span as u64 + 1);
                 relax(
                     &mut dist,
                     &mut preds,
@@ -574,9 +613,18 @@ fn find_belt_path(
     underground: Underground,
 ) -> Option<Vec<UgPlacement>> {
     let one = Routes::First(NonZeroUsize::MIN);
-    find_belt_paths(start, end, end_dir, size, blocked, underground, one)
-        .into_iter()
-        .next()
+    find_belt_paths(
+        start,
+        end,
+        end_dir,
+        size,
+        blocked,
+        underground,
+        one,
+        &HashSet::new(),
+    )
+    .into_iter()
+    .next()
 }
 
 /// The `(x, y)` cells of a belt run (dropping directions).
@@ -665,6 +713,8 @@ pub fn build_factory(
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
+        LessonKind::RouteBelts => build_route_belts(size, &mut rng, max_entities, false),
+        LessonKind::RouteBeltsBus => build_route_belts(size, &mut rng, max_entities, true),
         LessonKind::OppositeSides1In => {
             build_factory_1_ingredient(size, &mut rng, max_entities, false)
         }
@@ -916,7 +966,16 @@ fn build_move_one_item(
         blocked.insert(source_wh);
         blocked.insert(sink_wh);
         let sampled = Routes::Sampled(rng);
-        let paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, sampled);
+        let paths = find_belt_paths(
+            start,
+            end,
+            sink_dir,
+            s,
+            &blocked,
+            Underground::Off,
+            sampled,
+            &HashSet::new(),
+        );
         let Some(chosen) = paths.into_iter().next() else {
             continue;
         };
@@ -5287,6 +5346,350 @@ fn build_cross_under_belt(
     None
 }
 
+/// Most sources, and most sinks, a ROUTE_BELTS lesson places.
+const ROUTE_MAX_MARKERS: usize = 8;
+
+/// How a ROUTE_BELTS group of same-item markers is wired. There is no merge: one
+/// source already fills the belt a merge would feed, so a second arm would
+/// carry nothing the sink needs.
+#[derive(Clone, Copy)]
+enum RouteGroup {
+    /// One source belted straight to one sink.
+    Direct,
+    /// One source into a splitter, each output to its own sink.
+    Split,
+    /// A source whose item no sink takes, left unconnected.
+    Unmatched,
+}
+
+impl RouteGroup {
+    fn sinks(self) -> usize {
+        match self {
+            RouteGroup::Direct => 1,
+            RouteGroup::Split => 2,
+            RouteGroup::Unmatched => 0,
+        }
+    }
+}
+
+/// Up to [`ROUTE_MAX_MARKERS`] sinks and sources (one per group): matched
+/// groups until a drawn sink count is met, then, off a `bus`, sometimes a few
+/// unmatched sources (always last).
+fn draw_route_groups(rng: &mut Rng, bus: bool) -> Vec<RouteGroup> {
+    let want_sinks = rng.randint(1, ROUTE_MAX_MARKERS as i64) as usize;
+    let mut sinks = 0;
+    let mut groups = Vec::new();
+    while sinks < want_sinks {
+        let g = [RouteGroup::Direct, RouteGroup::Direct, RouteGroup::Split][rng.choice_index(3)];
+        if sinks + g.sinks() <= want_sinks {
+            sinks += g.sinks();
+            groups.push(g);
+        }
+    }
+    if !bus && groups.len() < ROUTE_MAX_MARKERS && rng.choice_index(2) == 0 {
+        let n = rng.randint(1, (ROUTE_MAX_MARKERS - groups.len()).min(2) as i64);
+        groups.extend((0..n).map(|_| RouteGroup::Unmatched));
+    }
+    groups
+}
+
+/// `n` marker slots `(pos, facing, port)` whose markers and ports (the tile a
+/// source feeds, or a `sink` pulls from) avoid `reserved`, which then claims
+/// them. Scattered slots are random; a `bus` facing is one contiguous line of
+/// markers all facing that way, across their facing.
+fn draw_marker_slots(
+    rng: &mut Rng,
+    s: i64,
+    n: usize,
+    bus: Option<Direction>,
+    sink: bool,
+    reserved: &mut HashSet<Cell>,
+) -> Option<Vec<(Cell, Direction, Cell)>> {
+    let n = n as i64;
+    // A line's first marker sits where the whole line still fits the grid.
+    let first = |rng: &mut Rng, axis: i64| match axis {
+        0 => rng.randint(0, s - 1),
+        1 => rng.randint(0, s - n),
+        _ => rng.randint(n - 1, s - 1),
+    };
+    let line = bus.map(|dir| {
+        let (ax, ay) = rotate_dir_cw(dir).delta();
+        (dir, (first(rng, ax), first(rng, ay)))
+    });
+    let mut slots = Vec::new();
+    for i in 0..n {
+        let (pos, dir) = match line {
+            Some((dir, (x0, y0))) => {
+                let (ax, ay) = rotate_dir_cw(dir).delta();
+                ((x0 + ax * i, y0 + ay * i), dir)
+            }
+            None => (
+                (rng.randint(0, s - 1), rng.randint(0, s - 1)),
+                DIRS[rng.choice_index(4)],
+            ),
+        };
+        let (dx, dy) = dir.delta();
+        let port = if sink {
+            (pos.0 - dx, pos.1 - dy)
+        } else {
+            (pos.0 + dx, pos.1 + dy)
+        };
+        if [pos, port]
+            .iter()
+            .any(|&c| !in_grid(c, s) || reserved.contains(&c))
+        {
+            return None;
+        }
+        reserved.extend([pos, port]);
+        slots.push((pos, dir, port));
+    }
+    Some(slots)
+}
+
+fn manhattan(a: Cell, b: Cell) -> i64 {
+    (a.0 - b.0).abs() + (a.1 - b.1).abs()
+}
+
+/// The order of a splitter's two `ports` that pairs them with `cells` in the
+/// least total Manhattan distance, which keeps the two arms from crossing.
+fn pair_nearest(cells: [Cell; 2], ports: [Cell; 2]) -> [Cell; 2] {
+    let straight = manhattan(cells[0], ports[0]) + manhattan(cells[1], ports[1]);
+    let crossed = manhattan(cells[0], ports[1]) + manhattan(cells[1], ports[0]);
+    if straight <= crossed {
+        ports
+    } else {
+        [ports[1], ports[0]]
+    }
+}
+
+/// Whichever of a splitter's two `ports` is nearer `cell`.
+fn nearest_port(cell: Cell, ports: [Cell; 2]) -> Cell {
+    if manhattan(cell, ports[0]) <= manhattan(cell, ports[1]) {
+        ports[0]
+    } else {
+        ports[1]
+    }
+}
+
+/// Build a ROUTE_BELTS lesson: belts only, no crafting. 1–8 sinks, each fed
+/// by a source of its item — directly, or as one of the two outputs of a
+/// splitter splitting one source. Off a `bus`, sometimes sources whose item no
+/// sink takes stay unconnected (the lesson's only orphans). Several groups may
+/// share an item. Every route is a randomly drawn shortest path that tunnels
+/// only where it must, hugging the belts already laid. A `bus` lines the
+/// sources up side by side, and the sinks likewise in the same order, and
+/// routes them in line order, so they run as a tidy bundle.
+fn build_route_belts(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+    bus: bool,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let pool = item_pool();
+    let full = Item::TransportBelt.flow_rate();
+    let mut count = (500).max(size * size * 4);
+    let mut groups = Vec::new();
+    'attempt: while count > 0 {
+        count -= 1;
+        // A plan keeps a batch of layout attempts, or the rejections would
+        // leave mostly the small plans that fit at the first try.
+        if count % 100 == 0 || groups.is_empty() {
+            groups = draw_route_groups(rng, bus);
+        }
+        // Matched groups sometimes share an earlier group's item; an unmatched
+        // source always gets one no sink takes.
+        let mut items: Vec<i64> = Vec::new();
+        for (i, g) in groups.iter().enumerate() {
+            let shared = !matches!(g, RouteGroup::Unmatched) && i > 0 && rng.choice_index(4) == 0;
+            let item = if shared {
+                items[rng.choice_index(i)]
+            } else {
+                loop {
+                    let v = pool[rng.choice_index(pool.len())];
+                    if !items.contains(&v) {
+                        break v;
+                    }
+                }
+            };
+            items.push(item);
+        }
+
+        let mut reserved: HashSet<Cell> = HashSet::new();
+        let n_sources = groups.len();
+        let n_sinks = groups.iter().map(|g| g.sinks()).sum();
+        // A bus runs on in its sources' facing or turns one corner, never back.
+        let src_bus = bus.then(|| DIRS[rng.choice_index(4)]);
+        let snk_bus = src_bus.map(|d| {
+            let cw = rotate_dir_cw(d);
+            [d, cw, cw.opposite()][rng.choice_index(3)]
+        });
+        let Some(src_slots) = draw_marker_slots(rng, s, n_sources, src_bus, false, &mut reserved)
+        else {
+            continue;
+        };
+        let Some(snk_slots) = draw_marker_slots(rng, s, n_sinks, snk_bus, true, &mut reserved)
+        else {
+            continue;
+        };
+
+        // Groups take their slots in one order along both lines (adjacent
+        // slots on a bus), which lets a bus's belts run side by side without
+        // crossing whether it runs on or turns either way.
+        let mut order: Vec<usize> = (0..groups.len()).collect();
+        rng.shuffle(&mut order);
+        let mut srcs: Vec<Vec<(Cell, Direction, Cell)>> = vec![Vec::new(); groups.len()];
+        let mut snks = srcs.clone();
+        let (mut a, mut b) = (src_slots.into_iter(), snk_slots.into_iter());
+        for &g in &order {
+            srcs[g].extend(a.next());
+            snks[g].extend(b.by_ref().take(groups[g].sinks()));
+        }
+
+        let mut world = World::empty(size, size);
+        for (g, &item) in items.iter().enumerate() {
+            for &(pos, dir, _) in &srcs[g] {
+                place_marker(&mut world, pos, Item::Source, dir, item);
+            }
+            for &(pos, dir, _) in &snks[g] {
+                place_marker(&mut world, pos, Item::Sink, dir, item);
+            }
+        }
+
+        // Every route as `(start, end, end_dir)`, in source-line order, and
+        // the delivery each sink must then see.
+        let mut segments: Vec<(Cell, Cell, Direction)> = Vec::new();
+        let mut expected: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut splitters = 0;
+        for &g in &order {
+            let (src, snk) = (&srcs[g], &snks[g]);
+            match groups[g] {
+                RouteGroup::Unmatched => {}
+                RouteGroup::Direct => segments.push((src[0].2, snk[0].2, snk[0].1)),
+                RouteGroup::Split => {
+                    // Splitter somewhere in the group's bounding box, facing
+                    // from its sources toward its sinks along the major axis.
+                    let markers: Vec<Cell> = src.iter().chain(snk).map(|m| m.0).collect();
+                    let (x0, x1) = markers
+                        .iter()
+                        .map(|c| c.0)
+                        .fold((s, 0), |(lo, hi), x| (lo.min(x), hi.max(x)));
+                    let (y0, y1) = markers
+                        .iter()
+                        .map(|c| c.1)
+                        .fold((s, 0), |(lo, hi), y| (lo.min(y), hi.max(y)));
+                    let mean = |ms: &[(Cell, Direction, Cell)]| {
+                        let n = ms.len() as i64;
+                        let (sx, sy) = ms
+                            .iter()
+                            .fold((0, 0), |(sx, sy), m| (sx + m.0 .0, sy + m.0 .1));
+                        (sx * 2 / n, sy * 2 / n)
+                    };
+                    let (from, to) = (mean(src), mean(snk));
+                    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                    let dir = match (dx.abs() >= dy.abs(), dx >= 0, dy >= 0) {
+                        (true, true, _) => Direction::East,
+                        (true, false, _) => Direction::West,
+                        (false, _, true) => Direction::South,
+                        (false, _, false) => Direction::North,
+                    };
+                    let (fx, fy) = dir.delta();
+                    let (px, py) = rotate_dir_cw(dir).delta();
+                    let mut placed = None;
+                    for _ in 0..20 {
+                        let (ax, ay) = (rng.randint(x0, x1), rng.randint(y0, y1));
+                        let tiles = [(ax, ay), (ax + px, ay + py)];
+                        let ins = tiles.map(|(x, y)| (x - fx, y - fy));
+                        let outs = tiles.map(|(x, y)| (x + fx, y + fy));
+                        let cells: Vec<Cell> =
+                            tiles.iter().chain(&ins).chain(&outs).copied().collect();
+                        if cells
+                            .iter()
+                            .all(|&c| in_grid(c, s) && !reserved.contains(&c))
+                        {
+                            reserved.extend(cells);
+                            placed = Some((tiles, ins, outs));
+                            break;
+                        }
+                    }
+                    let Some((tiles, ins, outs)) = placed else {
+                        continue 'attempt;
+                    };
+                    place_splitter(&mut world, &tiles, dir);
+                    splitters += 1;
+                    segments.push((src[0].2, nearest_port(src[0].2, ins), dir));
+                    let from = pair_nearest([snk[0].2, snk[1].2], outs);
+                    segments.push((from[0], snk[0].2, snk[0].1));
+                    segments.push((from[1], snk[1].2, snk[1].1));
+                }
+            }
+            let rate = match groups[g] {
+                RouteGroup::Split => full / 2.0,
+                _ => full,
+            };
+            for &(pos, ..) in snk {
+                expected.insert((pos.0 as usize, pos.1 as usize), rate);
+            }
+        }
+        if !bus {
+            rng.shuffle(&mut segments);
+        }
+
+        let mut laid: HashSet<Cell> = HashSet::new();
+        let mut routes: Vec<Vec<UgPlacement>> = Vec::new();
+        for (start, end, end_dir) in segments {
+            let mut blocked: HashSet<Cell> = reserved.union(&laid).copied().collect();
+            blocked.remove(&start);
+            blocked.remove(&end);
+            let Some(route) = find_belt_paths(
+                start,
+                end,
+                end_dir,
+                s,
+                &blocked,
+                Underground::On(None),
+                Routes::Sampled(&mut *rng),
+                &laid,
+            )
+            .pop() else {
+                continue 'attempt;
+            };
+            laid.extend(belt_cells(&route));
+            routes.push(route);
+        }
+        let refs: Vec<&[UgPlacement]> = routes.iter().map(|r| r.as_slice()).collect();
+        if tunnels_crossed(&refs, &[]) {
+            continue;
+        }
+        let total_entities = laid.len() + splitters;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+        for route in &routes {
+            place_belts(&mut world, route);
+        }
+
+        // Every sink gets exactly its group's rate (so no route leaks into
+        // another), and only the unmatched sources are orphans.
+        let n_unmatched = groups
+            .iter()
+            .filter(|g| matches!(g, RouteGroup::Unmatched))
+            .count();
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let exact = deliveries.len() == expected.len()
+            && deliveries.iter().all(|d| {
+                expected
+                    .get(&d.anchor)
+                    .is_some_and(|&e| (e - d.achieved).abs() < 1e-9)
+            });
+        if !exact || unreachable != n_unmatched {
+            continue;
+        }
+        return finish(world, total_entities, Vec::new(), count);
+    }
+    None
+}
+
 /// Longest expandable chain below `item`: 0 when `item` has no recipe
 /// (nothing to expand), else 1 + the deepest of its ingredients. A
 /// sink can yield a depth-`d` frontier iff its chain is at least `d` long.
@@ -6591,57 +6994,36 @@ mod tests {
 
     #[test]
     fn test_shortest_n_caps_and_enumerates() {
-        // Open grid, (0,0) → (2,2): the 6 monotone Manhattan routes are the only
-        // shortest ones, so a cap above 6 returns exactly those 6.
+        // (0,1) → (2,1) facing East with (1,1) blocked: the detours over and
+        // under the block are the only shortest, fewest-turn routes, so a cap
+        // above 2 returns exactly those 2.
         let free = HashSet::new();
-        let all = find_belt_paths(
-            (0, 0),
-            (2, 2),
-            Direction::East,
-            5,
-            &free,
-            Underground::Off,
-            Routes::First(NonZeroUsize::new(50).unwrap()),
-        );
-        assert_eq!(all.len(), 6);
+        let block: HashSet<Cell> = [(1, 1)].into_iter().collect();
+        let routes = |cap: usize| {
+            let cap = Routes::First(NonZeroUsize::new(cap).unwrap());
+            find_belt_paths(
+                (0, 1),
+                (2, 1),
+                Direction::East,
+                3,
+                &block,
+                Underground::Off,
+                cap,
+                &free,
+            )
+        };
+        let all = routes(50);
+        assert_eq!(all.len(), 2);
         for p in &all {
-            // 5 cells (0,0)..=(2,2), all plain belts, no tile reused.
             assert_eq!(p.len(), 5);
             assert!(p.iter().all(|&(_, _, _, m)| m == Misc::None));
-            let cells: HashSet<Cell> = p.iter().map(|&(x, y, _, _)| (x, y)).collect();
-            assert_eq!(cells.len(), 5);
             assert_eq!(
                 p.last().map(|&(x, y, d, _)| (x, y, d)),
-                Some((2, 2, Direction::East))
+                Some((2, 1, Direction::East))
             );
         }
         // A positive cap returns exactly that many; 1 matches `find_belt_path`.
-        assert_eq!(
-            find_belt_paths(
-                (0, 0),
-                (2, 2),
-                Direction::East,
-                5,
-                &free,
-                Underground::Off,
-                Routes::First(NonZeroUsize::new(2).unwrap()),
-            )
-            .len(),
-            2
-        );
-        assert_eq!(
-            find_belt_paths(
-                (0, 0),
-                (2, 2),
-                Direction::East,
-                5,
-                &free,
-                Underground::Off,
-                Routes::First(NonZeroUsize::MIN),
-            )
-            .len(),
-            1
-        );
+        assert_eq!(routes(1).len(), 1);
         // Unreachable target → no routes, whatever the cap.
         let blocked = wall(1, 5);
         assert!(find_belt_paths(
@@ -6652,6 +7034,7 @@ mod tests {
             &blocked,
             Underground::Off,
             Routes::First(NonZeroUsize::new(50).unwrap()),
+            &free,
         )
         .is_empty());
     }
@@ -6660,29 +7043,43 @@ mod tests {
     fn test_sampled_route_is_cheap_and_varied() {
         // Corner to corner of a 20x20 grid there are C(38,19) ~ 1.7e10 shortest
         // routes — enumerating them to pick one is what OOM-killed the
-        // generator. Sampling must stay valid without collapsing onto one route.
+        // generator. The fewest-turn one is the single L whose last leg runs
+        // the way the end faces; where routes do tie, sampling visits them all.
         let free = HashSet::new();
+        let mut rng = Rng::seeded(0);
+        let paths = find_belt_paths(
+            (0, 0),
+            (19, 19),
+            Direction::East,
+            20,
+            &free,
+            Underground::Off,
+            Routes::Sampled(&mut rng),
+            &free,
+        );
+        let want: Vec<Cell> = (0..20)
+            .map(|y| (0, y))
+            .chain((1..20).map(|x| (x, 19)))
+            .collect();
+        assert_eq!(belt_cells(&paths[0]), want);
+
+        let block: HashSet<Cell> = [(1, 1)].into_iter().collect();
         let mut seen: HashSet<Vec<Cell>> = HashSet::new();
         for seed in 0..20u64 {
             let mut rng = Rng::seeded(seed);
             let paths = find_belt_paths(
-                (0, 0),
-                (19, 19),
+                (0, 1),
+                (2, 1),
                 Direction::East,
-                20,
-                &free,
+                3,
+                &block,
                 Underground::Off,
                 Routes::Sampled(&mut rng),
+                &free,
             );
-            assert_eq!(paths.len(), 1);
-            assert_eq!(paths[0].len(), 39, "every shortest route is 39 tiles");
             seen.insert(belt_cells(&paths[0]));
         }
-        assert!(
-            seen.len() > 10,
-            "sampling collapsed onto {} routes",
-            seen.len()
-        );
+        assert_eq!(seen.len(), 2, "sampling collapsed onto one route");
     }
 
     #[test]
@@ -7148,7 +7545,8 @@ mod tests {
         // No lesson's solved factory may contain orphan tiles (unreachable ==
         // 0), except lessons that opt in via `allows_orphans` — there every
         // orphan must be an intentional protected tile (e.g. a side-load
-        // decoy), so the orphan count equals the protected-position count.
+        // decoy) or a source whose item no sink takes, so the orphan count
+        // equals their count.
         for &kind in all_lesson_kinds() {
             // A trial's built world is only the unconnected markers — every
             // marker is off any source→sink path until the agent builds.
@@ -7163,7 +7561,7 @@ mod tests {
                 checked += 1;
                 let (_, unreachable) = tp_unreachable(&f.world);
                 let allowed = if kind.allows_orphans() {
-                    f.protected_positions.len()
+                    f.protected_positions.len() + unmatched_sources(&f.world)
                 } else {
                     0
                 };
@@ -7175,6 +7573,127 @@ mod tests {
                 );
             }
             assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    /// Sources whose item no sink takes.
+    fn unmatched_sources(world: &World) -> usize {
+        let markers = |kind: Item| -> Vec<Option<Item>> {
+            (0..world.width())
+                .flat_map(|x| (0..world.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| world.entity_at(x, y) == Some(kind))
+                .map(|(x, y)| world.item_at(x, y))
+                .collect()
+        };
+        let sink_items = markers(Item::Sink);
+        markers(Item::Source)
+            .iter()
+            .filter(|item| !sink_items.contains(item))
+            .count()
+    }
+
+    #[test]
+    fn test_route_belts_smoke() {
+        // Belts only: 1–8 sources and sinks, every sink's item has a source,
+        // and across seeds both splitters and tunnels appear, as do small and
+        // large route counts, and unmatched sources off the bus. A bus lines
+        // its sources up side by side facing one way, and its sinks likewise.
+        for (kind, bus) in [
+            (LessonKind::RouteBelts, false),
+            (LessonKind::RouteBeltsBus, true),
+        ] {
+            let (mut splitters, mut tunnels, mut unmatched) = (0, 0, 0);
+            let mut sink_counts: HashSet<usize> = HashSet::new();
+            for seed in 0..60u64 {
+                let f = build_factory(15, kind, seed, true, f64::INFINITY)
+                    .unwrap_or_else(|| panic!("{kind:?} seed={seed}: not built"));
+                let w = &f.world;
+                let mut lines: HashMap<Item, Vec<(Cell, Direction)>> = HashMap::new();
+                for x in 0..w.width() {
+                    for y in 0..w.height() {
+                        let Some(e) = w.entity_at(x, y) else { continue };
+                        assert!(
+                            matches!(
+                                e,
+                                Item::TransportBelt
+                                    | Item::UndergroundBelt
+                                    | Item::Splitter
+                                    | Item::Source
+                                    | Item::Sink
+                            ),
+                            "{kind:?} seed={seed}: {e:?} placed"
+                        );
+                        splitters += usize::from(e == Item::Splitter);
+                        tunnels += usize::from(e == Item::UndergroundBelt);
+                        if matches!(e, Item::Source | Item::Sink) {
+                            let cell = (x as i64, y as i64);
+                            lines
+                                .entry(e)
+                                .or_default()
+                                .push((cell, w.direction_at(x, y)));
+                        }
+                    }
+                }
+                for (e, markers) in &lines {
+                    assert!((1..=ROUTE_MAX_MARKERS).contains(&markers.len()));
+                    if !bus {
+                        continue;
+                    }
+                    let dir = markers[0].1;
+                    assert!(markers.iter().all(|m| m.1 == dir), "{kind:?} seed={seed}");
+                    // Markers are collected x-outer/y-inner, so a line across
+                    // the facing comes out in order, one tile apart.
+                    let (ax, ay) = rotate_dir_cw(dir).delta();
+                    assert!(
+                        markers.windows(2).all(|p| {
+                            manhattan(p[0].0, p[1].0) == 1
+                                && (p[1].0 .0 - p[0].0 .0).abs() == ax.abs()
+                                && (p[1].0 .1 - p[0].0 .1).abs() == ay.abs()
+                        }),
+                        "{kind:?} seed={seed}: {e:?} not one line: {markers:?}"
+                    );
+                }
+                let n_sinks = lines[&Item::Sink].len();
+                sink_counts.insert(n_sinks);
+                let n_unmatched = unmatched_sources(w);
+                unmatched += n_unmatched;
+                // No merges: every matched source feeds at least one sink.
+                assert!(lines[&Item::Source].len() - n_unmatched <= n_sinks);
+                assert!(world_throughput(w) > 0.0);
+            }
+            assert!(splitters > 0 && tunnels > 0, "{kind:?}");
+            assert_eq!(unmatched > 0, !bus, "{kind:?}");
+            assert!(
+                sink_counts.contains(&1) && sink_counts.iter().any(|&n| n >= 6),
+                "{kind:?}: sink counts {sink_counts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hug_picks_the_shortest_route_beside_laid_belts() {
+        // A belt row along y = 3 makes y = 2 the hugging lane: of the many
+        // shortest (0, 0) → (5, 2) routes, every sample drops straight to it,
+        // and the discount never buys a detour.
+        let free = HashSet::new();
+        let hug: HashSet<Cell> = (0..10).map(|x| (x, 3)).collect();
+        let want: Vec<Cell> = [(0, 0), (0, 1)]
+            .into_iter()
+            .chain((0..=5).map(|x| (x, 2)))
+            .collect();
+        for seed in 0..20u64 {
+            let mut rng = Rng::seeded(seed);
+            let route = find_belt_paths(
+                (0, 0),
+                (5, 2),
+                Direction::East,
+                10,
+                &free,
+                Underground::Off,
+                Routes::Sampled(&mut rng),
+                &hug,
+            );
+            assert_eq!(belt_cells(&route[0]), want, "seed={seed}");
         }
     }
 
