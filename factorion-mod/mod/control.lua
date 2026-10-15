@@ -906,21 +906,6 @@ local function remove_entity(entity, player, is_predicted)
   end
 end
 
--- Keyed by unit number, holding the entity itself: get_entity_by_unit_number
--- can't find belts, inserters, assemblers or ghosts.
--- Clearing leaves the removal to robots whatever the placement mode; ghosts
--- vanish, as under vanilla's deconstruction planner.
-local function clear_predicted_entities(state, player)
-  for _, entity in pairs(state.model_entities or {}) do
-    if entity.valid and entity.type == "entity-ghost" then
-      entity.destroy({ raise_destroy = true })
-    elseif entity.valid then
-      entity.order_deconstruction(entity.force, player)
-    end
-  end
-  state.model_entities = {}
-end
-
 local function release_cluster(request_id)
   for _, state in pairs(storage.servers or {}) do
     if state.computing == request_id then state.computing = nil end
@@ -1889,19 +1874,11 @@ script.on_event("factorion-predict", function(event)
 end)
 
 -- Stops the cluster's prediction and removes everything it built.
-inference.on_clear = function(player, server)
-  for _, member in ipairs(cluster(server)) do
-    local state = server_state(member)
-    cancel_pending(state)
-    clear_predicted_entities(state, player)
-  end
-  return "Cleared this cluster's factory."
-end
-
--- Marks every entity of the kinds the model builds on the server's paint
--- for robots to deconstruct, and drops unbuilt ghosts; returns how many.
+-- Stops the cluster and marks every entity of the kinds the model builds on
+-- its paint for robots to deconstruct. Ghosts can't be marked, so they go, as
+-- under vanilla's deconstruction planner. Returns how many of each.
 local function deconstruct_region(server, player)
-  if not storage.model then return 0 end
+  if not storage.model then return 0, 0 end
   local members = cluster(server)
   for _, member in ipairs(members) do
     local state = server_state(member)
@@ -1912,7 +1889,7 @@ local function deconstruct_region(server, player)
   for _, endpoint in pairs(server_state(server).virtual or {}) do
     feeds[tile_key(endpoint.x, endpoint.y)] = true
   end
-  local marked = 0
+  local marked, removed = 0, 0
   for _, piece in ipairs(cluster_pieces(server, storage.model.grid_size) or {}) do
     local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
     for _, tile in pairs(piece.area) do
@@ -1929,6 +1906,7 @@ local function deconstruct_region(server, player)
       if piece.area[at] and not feeds[at] then
         if entity.type == "entity-ghost" then
           entity.destroy({ raise_destroy = true })
+          removed = removed + 1
         elseif not entity.to_be_deconstructed() then
           entity.order_deconstruction(entity.force, player)
           marked = marked + 1
@@ -1936,7 +1914,13 @@ local function deconstruct_region(server, player)
       end
     end
   end
-  return marked
+  return marked, removed
+end
+
+inference.on_clear = function(player, server)
+  if not storage.model then return "No model is loaded yet, so the painted area isn't known." end
+  local marked, removed = deconstruct_region(server, player)
+  return string.format("Marked %d entities for deconstruction and removed %d unbuilt ghosts.", marked, removed)
 end
 
 -- ----------------------------------------------------------------------------
