@@ -787,6 +787,12 @@ local MODEL_ENTITY_NAMES = {
   "medium-electric-pole",
   "substation",
 }
+-- Entities that may sit on the paint without taking it from the model.
+local OWN_ENTITIES = {
+  [inference.GPU_SERVER] = true, [GPU_POWER.horizontal] = true, [GPU_POWER.vertical] = true,
+  [ENDPOINT_ENTITY_NAMES.source] = true, [ENDPOINT_ENTITY_NAMES.sink] = true,
+}
+for _, name in ipairs(MODEL_ENTITY_NAMES) do OWN_ENTITIES[name] = true end
 local SINK_LABEL_REFRESH_TICKS = 30
 
 local function endpoint_role(entity)
@@ -1753,8 +1759,9 @@ local function region_for(server, groups)
     end
   end
   if not signals then
+    -- Two tiles out, so belts that just miss the region can be pointed out.
     for _, entity in pairs(server.surface.find_entities_filtered({
-      area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
+      area = { { min_x - 2, min_y - 2 }, { max_x + 3, max_y + 3 } },
       name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
     })) do
       local config = register_endpoint(entity)
@@ -1765,7 +1772,7 @@ local function region_for(server, groups)
       })
     end
   end
-  local endpoints = {}
+  local endpoints, notes = {}, {}
   for _, endpoint in ipairs(candidates) do
     if touches(endpoint.x, endpoint.y) then
       table.insert(endpoints, endpoint)
@@ -1773,7 +1780,37 @@ local function region_for(server, groups)
       min_y, max_y = math.min(min_y, endpoint.y), math.max(max_y, endpoint.y)
     elseif not endpoint.unit then
       endpoint.problem = "not on or beside the build region"
+    else
+      table.insert(notes, string.format("The [item=%s] %s belt at %d, %d is ignored: only the four tiles " ..
+        "beside a painted tile count, not diagonals or tiles further out.", endpoint.item, endpoint.role,
+        endpoint.x, endpoint.y))
     end
+  end
+  if window then
+    table.insert(notes, string.format("The build region is bigger than the model's %dx%d grid; only the " ..
+      "square around this server is used. Mine the paint outside it to make that clear.", size, size))
+  end
+  local separate, seen_tiles = 0, {}
+  for key in pairs(area) do
+    if not seen_tiles[key] then
+      separate = separate + 1
+      local queue = { area[key] }
+      seen_tiles[key] = true
+      while #queue > 0 do
+        local tile = table.remove(queue)
+        for _, step in ipairs(NEIGHBOURS) do
+          local next_key = tile_key(tile.x + step[1], tile.y + step[2])
+          if area[next_key] and not seen_tiles[next_key] then
+            seen_tiles[next_key] = true
+            table.insert(queue, area[next_key])
+          end
+        end
+      end
+    end
+  end
+  if separate > 1 then
+    table.insert(notes, string.format("This cluster reaches %d separate build regions and builds them as " ..
+      "one factory; give each its own GPU servers, not touching or cabled to the others.", separate))
   end
   local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
   if span_x > size or span_y > size then
@@ -1789,8 +1826,33 @@ local function region_for(server, groups)
     fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {}, endpoints = endpoints,
     origin = origin, signals = signals,
   }
-  for _, tile in pairs(area) do
-    table.insert(region.allowed, { x = tile.x - fp.x, y = tile.y - fp.y })
+  -- Poles, chests, trees and the like on the paint are built around.
+  local blocked, blockers = {}, {}
+  for _, entity in pairs(server.surface.find_entities_filtered({
+    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+  })) do
+    local name = entity.name
+    if entity.prototype.collision_mask.layers.object and not OWN_ENTITIES[name] then
+      local box = entity.bounding_box
+      for x = math.floor(box.left_top.x), math.ceil(box.right_bottom.x) - 1 do
+        for y = math.floor(box.left_top.y), math.ceil(box.right_bottom.y) - 1 do
+          local key = tile_key(x, y)
+          if area[key] and not blocked[key] then
+            blocked[key] = true
+            blockers[name] = (blockers[name] or 0) + 1
+          end
+        end
+      end
+    end
+  end
+  for key, tile in pairs(area) do
+    if not blocked[key] then table.insert(region.allowed, { x = tile.x - fp.x, y = tile.y - fp.y }) end
+  end
+  local taken = {}
+  for name, count in pairs(blockers) do table.insert(taken, string.format("[entity=%s] %d", name, count)) end
+  if #taken > 0 then
+    table.insert(notes, "Painted tiles taken by other entities, which the model builds around: " ..
+      table.concat(taken, ", ") .. ".")
   end
   for _, endpoint in ipairs(endpoints) do
     table.insert(endpoint.role == "source" and region.sources or region.sinks, {
@@ -1799,6 +1861,7 @@ local function region_for(server, groups)
     })
   end
   region.warnings = region_warnings(area, endpoints, signals)
+  for _, note in ipairs(notes) do table.insert(region.warnings, note) end
   return region
 end
 
