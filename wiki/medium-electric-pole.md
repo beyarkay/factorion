@@ -43,6 +43,9 @@ Placeable. Every pole within reach (centre-to-centre distance at most 9, or
 connection cap. Each of the 49 tiles in its 7x7 supply area is a powered tile
 when the pole's network is powered (see [[electric-network]]).
 
+It is the pole the lesson generators place: every generated factory powers
+its inserters and assemblers with medium poles on otherwise free tiles.
+
 ## Interactions
 
 | Entity | Interaction |

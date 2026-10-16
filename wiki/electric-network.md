@@ -40,6 +40,13 @@ So two poles A and B can be wired iff
 dist(A, B) <= min(reach_A, reach_B)
 ```
 
+Checked in a headless Factorio 2.0.77: the distance is Euclidean between
+the two poles' centres and compared with `<=` (small poles 7 apart in a row
+wire, 8 apart don't; (5, 5) on a diagonal wires, (6, 6) doesn't), a mixed
+pair uses the smaller reach (small–medium at 8 doesn't wire), and each
+supply area covers exactly the tiles below. The wiki sources that led there
+follow.
+
 The wiki page itself **does not say how the distance is measured**. The
 prototype docs define `maximum_wire_distance` as "the maximum distance
 between this pole and any other connected pole", and a Factorio developer
@@ -79,7 +86,8 @@ its 2x2 body).
 > area." — Electric system wiki page
 
 So a 3x3 [[assembling-machine]] is powered if any one of its nine tiles lies
-in the supply area. Supply area and wire reach are independent: there is no
+in the supply area. (Confirmed in-game: an assembler with one corner tile in
+the area crafts; shifted one tile out, it has no power.) Supply area and wire reach are independent: there is no
 rule tying one to the other (Twinsen, same thread).
 
 ### What needs electricity
