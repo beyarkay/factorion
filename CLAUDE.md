@@ -207,8 +207,7 @@ All 7 must pass before the work is considered complete.
 
 ## Code Conventions
 
-- CLI arguments are defined via the `PpoArgs`/`SftArgs` dataclasses (in `training_config.py`) parsed by `tyro`.
-- The RL environment follows the Gymnasium API (`reset`, `step`, `render`).
+- CLI arguments are defined via the `RlArgs`/`SftArgs` dataclasses (in `training_config.py`) parsed by `tyro`.
 - Factory state is represented as 3D tensors with semantic channels.
 - Experiment runs are tracked with Weights & Biases.
 - Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`; set up the env with `uv sync`.
