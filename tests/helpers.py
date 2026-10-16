@@ -26,8 +26,6 @@ from factorion import (  # noqa: E402
     build_factory,
     build_graph_nx,
     entities,
-    find_belt_path,
-    find_belt_paths_with_source_sink_orient,
     items,
     recipes,
     render_factory,
