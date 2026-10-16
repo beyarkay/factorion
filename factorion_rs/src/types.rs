@@ -262,7 +262,7 @@ pub enum Item {
     FluidWagon = 81,
     LightArmor = 82,
     DischargeDefenseRemote = 83,
-    PersonalRoboport = 84,
+    PersonalRoboportEquipment = 84,
     FlamethrowerTurret = 85,
     AssemblingMachine3 = 86,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
@@ -360,7 +360,7 @@ impl Item {
             81 => Some(Item::FluidWagon),
             82 => Some(Item::LightArmor),
             83 => Some(Item::DischargeDefenseRemote),
-            84 => Some(Item::PersonalRoboport),
+            84 => Some(Item::PersonalRoboportEquipment),
             85 => Some(Item::FlamethrowerTurret),
             86 => Some(Item::AssemblingMachine3),
             87 => Some(Item::Sink),
@@ -467,7 +467,7 @@ impl Item {
             Item::FluidWagon => "fluid_wagon",
             Item::LightArmor => "light_armor",
             Item::DischargeDefenseRemote => "discharge_defense_remote",
-            Item::PersonalRoboport => "personal_roboport",
+            Item::PersonalRoboportEquipment => "personal_roboport_equipment",
             Item::FlamethrowerTurret => "flamethrower_turret",
             Item::AssemblingMachine3 => "assembling_machine_3",
         }
@@ -597,7 +597,7 @@ impl Item {
             | Item::FluidWagon
             | Item::LightArmor
             | Item::DischargeDefenseRemote
-            | Item::PersonalRoboport
+            | Item::PersonalRoboportEquipment
             | Item::FlamethrowerTurret
             | Item::AssemblingMachine3 => 0.0,
         }
@@ -1597,7 +1597,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
             },
         ),
         (
-            Item::PersonalRoboport,
+            Item::PersonalRoboportEquipment,
             Recipe {
                 consumes: nonempty![
                     (Item::AdvancedCircuit, 10.0),
@@ -1605,7 +1605,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                     (Item::IronGearWheel, 40.0),
                     (Item::SteelPlate, 20.0)
                 ],
-                produces: nonempty![(Item::PersonalRoboport, 1.0)],
+                produces: nonempty![(Item::PersonalRoboportEquipment, 1.0)],
                 crafting_time: 10.0,
                 produced_by: ASSEMBLING_MACHINES,
             },
