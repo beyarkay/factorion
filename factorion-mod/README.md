@@ -160,7 +160,7 @@ same factory inside the game, and compares measured per-sink items/s.
    build_factory(lesson, seed)
    world → spec JSON        ──ᴿᶜᴼᴺ──►      parity_start(spec):
    py_sink_deliveries(world)                 lab-tiles surface, own force,
-                                             EEI+substation power, entities
+                                             off-map power ring, entities
    poll parity_poll()       ◄──ᴿᶜᴼᴺ──       warmup → measure at game.speed≫1
    compare per-sink rates                    per-sink counts + diagnostics
 ```
@@ -235,7 +235,9 @@ To check on the first live run (in rough order):
 3. `create_entity` direction semantics for inserters match blueprint
    import (the +8 flip) — MEMORISE lessons stall at 0/s if wrong.
 4. Power: machines/inserters show `working`, not `no_power`, in
-   `status_counts` (substation ring + electric-energy-interface).
+   `status_counts` — powered only by the factory's own poles, which wire
+   to the ring of off-map poles around its grid exactly when the engine
+   says they reach off the map.
 5. AM1 accepts 3-5-ingredient recipes on the all-recipes force
    (MEMORISE_3..\_5 lessons).
 6. `game.speed` actually reached (wall-clock per run ≈

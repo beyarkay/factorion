@@ -39,17 +39,15 @@
 --
 -- Batch spec (many factories measured in parallel): instead of top-level
 -- entities/sources/sinks, pass a `factories` list, each with its own
--- run_id, grid_size and (offset_x, offset_y) tile offset on the shared
--- surface, plus `substations` (list of {x,y} tile centres to power the
--- field) and `extent_x`/`extent_y` (tiles to generate). The whole batch
--- shares one warmup→measure→convergence cycle; the result then reports one
--- bucket per factory. A single-factory spec is just the one-factory case
--- (normalise_factories wraps it, and place_power falls back to a ring).
+-- run_id, grid_size, width/height and (offset_x, offset_y) tile offset on
+-- the shared surface, plus `extent_x`/`extent_y` (tiles to generate). The
+-- whole batch shares one warmup→measure→convergence cycle; the result then
+-- reports one bucket per factory. A single-factory spec is just the
+-- one-factory case (normalise_factories wraps it).
 --   { ..timing.., extent_x=90, extent_y=72,
---     substations = { {0,0}, {18,0}, ... },
---     factories = { { run_id="MOVE_ONE_ITEM-s0", grid_size=15,
---                     offset_x=3, offset_y=3, entities={..}, sources={..},
---                     sinks={..} }, ... } }
+--     factories = { { run_id="MOVE_ONE_ITEM-s0", grid_size=15, width=15,
+--                     height=15, offset_x=3, offset_y=3, entities={..},
+--                     sources={..}, sinks={..} }, ... } }
 --
 -- Source/sink representation: the Factorion engine models a source as an
 -- infinite item provider and a sink as an infinite consumer, each occupying
@@ -68,8 +66,8 @@
 --
 -- The run happens on a dedicated lab-tiles surface ("factorion-parity")
 -- with its own force ("factorion-parity", all recipes enabled, no
--- research so inserter stack size stays 1), powered by an
--- electric-energy-interface + substations placed outside the grid.
+-- research so inserter stack size stays 1). Power comes from off the map as
+-- in the engine (see place_power): only a factory's own poles power it.
 
 local M = {}
 
@@ -184,43 +182,56 @@ local function clear_surface(surface)
   end
 end
 
-local function place_power(surface, force, spec, width, height)
-  -- A substation's supply area is 18x18 and its wire reach connects to
-  -- neighbours 18 tiles away, so an 18-tile pitch tiles power coverage
-  -- edge-to-edge. For a batch the Python side already knows the layout, so
-  -- it hands us the exact substation tile positions (chosen to fall in the
-  -- gaps between factories); we just place them. A single-factory spec has
-  -- no such list, so we fall back to a ring around its grid.
-  local placed = {}
-  local spots = spec.substations
-  if not spots then
-    local grid_size = spec.grid_size or width or 16
-    local margin = 3
-    local lo, hi = -margin, grid_size + margin
-    local mid = math.floor(grid_size / 2)
-    spots = {
-      { lo, lo }, { hi, lo }, { lo, hi }, { hi, hi },
-      { mid, lo }, { mid, hi }, { lo, mid }, { hi, mid },
-    }
-  end
-  for _, s in ipairs(spots) do
-    local e = surface.create_entity({
-      name = "substation",
-      position = { ORIGIN_X + s[1], ORIGIN_Y + s[2] },
+local function copper(pole)
+  return pole.get_wire_connector(defines.wire_connector_id.pole_copper, true)
+end
+
+-- Power from off the map, as the engine models it: an off-map pole on every
+-- tile just outside each factory's grid, all wired to a substation fed by
+-- an electric-energy-interface well clear of the field.
+local function place_power(surface, force, factories)
+  local function place(name, x, y)
+    return surface.create_entity({
+      name = name,
+      position = { ORIGIN_X + x, ORIGIN_Y + y },
       force = force,
       raise_built = false,
       create_build_effect_smoke = false,
     })
-    if e then table.insert(placed, e) end
   end
-  surface.create_entity({
-    name = "electric-energy-interface",
-    position = { ORIGIN_X - 6, ORIGIN_Y - 6 },
-    force = force,
-    raise_built = false,
-    create_build_effect_smoke = false,
-  })
-  return placed
+  local feed = place("substation", -11, -11)
+  place("electric-energy-interface", -6, -6)
+  for _, fac in ipairs(factories) do
+    local ox, oy = fac.offset_x or 0, fac.offset_y or 0
+    local w, h = fac.width, fac.height
+    local ring = {}
+    for x = -1, w do
+      table.insert(ring, { x, -1 })
+      table.insert(ring, { x, h })
+    end
+    for y = 0, h - 1 do
+      table.insert(ring, { -1, y })
+      table.insert(ring, { w, y })
+    end
+    for _, t in ipairs(ring) do
+      local pole = place("factorion-offmap-pole", ox + t[1] + 0.5, oy + t[2] + 0.5)
+      if pole then copper(pole).connect_to(copper(feed), false) end
+    end
+  end
+end
+
+-- Wire each factory pole to every pole in reach, as the engine connects
+-- them: placement alone auto-connects only a few nearest neighbours.
+local function wire_poles(surface, watched)
+  for _, w in ipairs(watched) do
+    if w.entity.type == "electric-pole" then
+      for _, other in ipairs(surface.find_entities_filtered({
+        type = "electric-pole", position = w.entity.position, radius = 18,
+      })) do
+        if other ~= w.entity then copper(w.entity).connect_to(copper(other)) end
+      end
+    end
+  end
 end
 
 -- ----------------------------------------------------------------------------
@@ -265,6 +276,8 @@ local function normalise_factories(spec)
   return { {
     run_id = spec.run_id,
     grid_size = spec.grid_size,
+    width = spec.width,
+    height = spec.height,
     offset_x = 0,
     offset_y = 0,
     entities = spec.entities,
@@ -769,10 +782,11 @@ function M.start(spec_json)
   generate_area(surface, width, height)
   clear_surface(surface)
   rendering.clear(script.mod_name)
-  place_power(surface, force, spec, width, height)
+  place_power(surface, force, normalise_factories(spec))
 
   local watched, sources, sinks, errors, factories =
     build_all(surface, force, spec)
+  wire_poles(surface, watched)
   if #errors > 0 then
     for _, err in ipairs(errors) do
       announce("BUILD FAILED: " .. err, COLOR_ERR)
