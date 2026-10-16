@@ -377,9 +377,11 @@ fn find_belt_paths(
             let (dx, dy) = d.delta();
             let back = |k: i64| (c.0 - dx * k, c.1 - dy * k);
             // A tunnel entering `k` tiles back surfaces past its exit at
-            // `back(1)`, or exits straight onto `end`.
+            // `back(1)`, or exits straight onto `end`. Its entrance was itself
+            // arrived at along `d`, unless it is the start.
             let tunnels = (2..=UNDERGROUND_MAX_OFFSET + 1).filter(|&k| {
                 allow_underground
+                    && (open(back(k + 1)) || back(k) == start)
                     && ((k > 2 && open(back(1)))
                         || (k <= UNDERGROUND_MAX_OFFSET && c == end && d == end_dir))
             });
