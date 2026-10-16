@@ -27,8 +27,7 @@ local SERVER_TIMEOUT_TICKS = 5 * 60
 -- Loading a checkpoint (often a W&B download) blocks the server's polls.
 local MODEL_LOAD_TIMEOUT_TICKS = 60 * 60
 local STOP_REASONS = {
-  eot = "the model chose to stop",
-  max_steps = "hit the %s-step limit",
+  eot = "the build is complete",
   placement_error = "Factorio refused a placement",
   server_error = "the server hit an error",
 }
@@ -49,11 +48,6 @@ end
 -- Sampling settings named in the request message when not at their default.
 local SAMPLING_SUMMARY = {
   { "temperature", "temperature %g" },
-  { "top_k", "top-k %d" },
-  { "top_p", "top-p %g" },
-  { "stop_rule", "stop rule: %s" },
-  { "stop_threshold", "stop threshold %g" },
-  { "max_steps", "max %d steps" },
   { "seed", "seed %d" },
 }
 
@@ -820,8 +814,6 @@ end)
 
 script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_changed)
 script.on_event(defines.events.on_gui_confirmed, inference.on_gui_confirmed)
-script.on_event(defines.events.on_gui_selection_state_changed,
-  inference.on_gui_selection_state_changed)
 
 -- The server keeps its built-in window only so clicking it raises this event;
 -- the shared inference window replaces it straight away.
@@ -1132,11 +1124,6 @@ local function gather_request(state, player_index)
     grid_size     = fp.w,
     placement_delay_s = setting("factorion-placement-delay"),
     temperature   = config.temperature,
-    top_k         = config.top_k,
-    top_p         = config.top_p,
-    stop_rule     = config.stop_rule,
-    stop_threshold = config.stop_threshold,
-    max_steps     = config.max_steps,
     seed          = config.seed,
     entities      = model_entities,
     sources       = sources,
