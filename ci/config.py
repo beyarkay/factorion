@@ -4,7 +4,7 @@ This module is the single source of truth for *infrastructure* knobs (docker
 image, GPU lineup, pod naming, time budgets). Training hyperparameters are NOT
 here — they live in `training_config.py` and flow into jobs untouched: a job
 spec only carries the handful of fields the CLI is allowed to override
-(commitish, SFT num_samples, PPO start_from/total_timesteps, compare seeds).
+(commitish, SFT num_samples, RL start_from/total_timesteps, compare seeds).
 Anything a spec leaves as None is simply not passed on the training command
 line, so the `training_config.py` default applies.
 
@@ -21,7 +21,7 @@ import dataclasses
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar, Optional
 
-from training_config import PpoArgs, SftArgs
+from training_config import RlArgs, SftArgs
 
 DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
@@ -29,9 +29,8 @@ REPO_URL = "https://github.com/beyarkay/factorion"
 WANDB_PROJECT = SftArgs().wandb_project_name
 
 # Preferred first, then availability fallbacks (each pricier/bigger). The
-# head is the default for PPO, whose rollout is single-core-CPU-bound, so a
-# bigger GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md). A requested
-# card falls back only to the entries after it. GeForce cards
+# head is RL's default. A requested card falls back only to the entries after
+# it. GeForce cards
 # (3090/4090) omitted: their community hosts hand out busy GPUs → the job
 # crashes at its first .to(device) with cudaErrorDevicesUnavailable (PR #290).
 GPU_FALLBACKS = [
@@ -43,7 +42,7 @@ GPU_FALLBACKS = [
     "NVIDIA RTX A6000",
 ]
 
-# SFT's transformer is GPU-bound, unlike PPO: the 6000 Ada trains it ~2.7x
+# SFT is GPU-bound: the 6000 Ada trains it ~2.7x
 # faster than the A4000 for ~1.6x the cost per sample (ci/HELP.md has the table).
 SFT_DEFAULT_GPU = "NVIDIA RTX 6000 Ada Generation"
 
@@ -132,7 +131,7 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
 
 
 # ── Time budgets ───────────────────────────────────────────────────
-# Calibration: SFT streams ~1000 sample-epochs/sec, PPO ~200 env-steps/sec,
+# Calibration: SFT streams ~1000 sample-epochs/sec, RL ~200 timesteps/sec,
 # both CPU-bound so the rates hold across the GPU lineup. 1.5-2x safety margin
 # so the watchdog never kills a legitimate run, plus slack for pod boot +
 # clone + rust build — cold hosts have been observed to take ~20 min just to
@@ -151,7 +150,7 @@ def sft_budget_seconds(num_samples: int) -> int:
     return int(num_samples / 1000 * 3.0) + SETUP_SLACK_SECONDS
 
 
-def ppo_budget_seconds(total_timesteps: int) -> int:
+def rl_budget_seconds(total_timesteps: int) -> int:
     return int(total_timesteps / 200 * 2) + SETUP_SLACK_SECONDS
 
 
@@ -191,25 +190,25 @@ class SftJob:
 
 
 @dataclass
-class PpoJob:
-    """PPO run at a commit, starting from an SFT checkpoint (W&B run id)."""
+class RlJob:
+    """RL run at a commit, starting from an SFT checkpoint (W&B run id)."""
 
     sha: str
     start_from: str
-    total_timesteps: Optional[int] = None  # None = PpoArgs default
-    seed: Optional[int] = None  # None = PpoArgs default
+    total_timesteps: Optional[int] = None  # None = RlArgs default
+    seed: Optional[int] = None  # None = RlArgs default
     group: Optional[str] = None  # W&B group
     extra_tags: list[str] = field(default_factory=list)
 
-    KIND: ClassVar[str] = "ppo"
+    KIND: ClassVar[str] = "rl"
 
     def budget_seconds(self) -> int:
         t = (
             self.total_timesteps
             if self.total_timesteps is not None
-            else PpoArgs().total_timesteps
+            else RlArgs().total_timesteps
         )
-        return ppo_budget_seconds(t)
+        return rl_budget_seconds(t)
 
 
 @dataclass
@@ -217,7 +216,7 @@ class SweepJob:
     """One pod's worth of W&B sweep agents (sweep created at launch time)."""
 
     sha: str
-    algo: str  # "sft" | "ppo"
+    algo: str  # "sft" | "rl"
     sweep_path: str  # entity/project/sweep_id
     agents_per_pod: int = AGENTS_PER_POD_DEFAULT
     extra_tags: list[str] = field(default_factory=list)  # e.g. pr:<N>, for boot-failure reporting
@@ -236,17 +235,17 @@ class CompareJob:
     Pods are the scarce resource — six at once often can't be scheduled — so
     the seeds share one pod and run sequentially. Each seed is still its own
     W&B run (distinct `seed` in the same `group`), so the seed-paired report is
-    unchanged. `algo` picks which per-seed command runs; the sft/ppo fields are
+    unchanged. `algo` picks which per-seed command runs; the sft/rl fields are
     the same whitelisted overrides the single-run jobs carry.
     """
 
     sha: str
-    algo: str  # "sft" | "ppo"
+    algo: str  # "sft" | "rl"
     seeds: list[int]
     group: str  # W&B group (one per side)
     num_samples: Optional[int] = None  # sft; None = SftArgs default
-    start_from: Optional[str] = None  # ppo
-    total_timesteps: Optional[int] = None  # ppo; None = PpoArgs default
+    start_from: Optional[str] = None  # rl
+    total_timesteps: Optional[int] = None  # rl; None = RlArgs default
     extra_tags: list[str] = field(default_factory=list)
 
     KIND: ClassVar[str] = "compare"
@@ -260,15 +259,15 @@ class CompareJob:
             t = (
                 self.total_timesteps
                 if self.total_timesteps is not None
-                else PpoArgs().total_timesteps
+                else RlArgs().total_timesteps
             )
-            per = ppo_budget_seconds(t)
+            per = rl_budget_seconds(t)
         # Seeds run sequentially and share a single pod setup, so charge the
         # setup slack once and the per-seed training time once per seed.
         return SETUP_SLACK_SECONDS + len(self.seeds) * (per - SETUP_SLACK_SECONDS)
 
 
-Job = SftJob | PpoJob | SweepJob | CompareJob
+Job = SftJob | RlJob | SweepJob | CompareJob
 
 
 def job_to_dict(job: Job) -> dict:
@@ -276,7 +275,7 @@ def job_to_dict(job: Job) -> dict:
 
 
 def job_from_dict(d: dict) -> Job:
-    kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob, CompareJob)}
+    kinds = {cls.KIND: cls for cls in (SftJob, RlJob, SweepJob, CompareJob)}
     d = dict(d)
     cls = kinds[d.pop("kind")]
     known = {f.name for f in dataclasses.fields(cls)}
@@ -324,7 +323,7 @@ def compare_group(sha: str, algo: str, nonce: str, side: str) -> str:
     The algo and a per-launch nonce are part of the name because groups must
     be unique per compare LAUNCH: two compares at the same commit (or a rerun)
     would otherwise share groups, and the stale runs would pollute the new
-    report — seen live when an sft and a ppo compare on one PR head fed each
+    report — seen live when an sft and an rl compare on one PR head fed each
     other's runs into both reports.
     """
     return f"cmp-{sha[:7]}-{algo}-{nonce}-{side}"
@@ -344,13 +343,13 @@ def compare_fanout(
     """Build the 2 job specs for a compare — one per side, each running all
     `seeds` seeds sequentially on its own pod.
 
-    algo "sft" compares from-scratch SFT; algo "ppo" compares PPO finetuning
+    algo "sft" compares from-scratch SFT; algo "rl" compares RL finetuning
     from the same start_from checkpoint on both commits.
     """
-    if algo not in ("sft", "ppo"):
-        raise ValueError(f"algo must be 'sft' or 'ppo', got {algo!r}")
-    if algo == "ppo" and not start_from:
-        raise ValueError("PPO compare needs --start-from (a W&B SFT run id)")
+    if algo not in ("sft", "rl"):
+        raise ValueError(f"algo must be 'sft' or 'rl', got {algo!r}")
+    if algo == "rl" and not start_from:
+        raise ValueError("RL compare needs --start-from (a W&B SFT run id)")
 
     seed_list = list(range(1, seeds + 1))
     jobs: list[CompareJob] = []

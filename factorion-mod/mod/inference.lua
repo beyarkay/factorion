@@ -8,7 +8,7 @@ local FRAME = "factorion-gpu-gui"
 local SERVER_KW = 4.5
 
 M.DEFAULTS = {
-  checkpoint = "mvbipbr0",
+  checkpoint = "dr17bmik",
   temperature = 1,
   top_k = 0,
   top_p = 1,

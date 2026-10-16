@@ -1,11 +1,6 @@
-"""Tests for the `--start-from` checkpoint resolver in ppo.py.
-
-`--start-from` accepts either a local .pt path or a W&B run id (e.g. an SFT run
-like 'j0s5y2mc'). `_resolve_start_from` picks the branch; `_resolve_wandb_checkpoint`
-(shared with scripts/factory_builder.py) does the artifact download. These cover
-both, so the "download the SFT checkpoint from a run id" contract documented on
-the flag (and relied on by ci/jobs.py) stays wired up.
-"""
+"""`sft.resolve_checkpoint`: a checkpoint given as a local .pt path or a W&B
+run id, whose model artifact is downloaded (`--start-from`, the factory
+builder, the mod server and `ci compare-renders` all take either)."""
 
 import os
 import sys
@@ -18,42 +13,18 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import ppo  # noqa: E402
-from ppo import _resolve_start_from, _resolve_wandb_checkpoint  # noqa: E402
-
-
-# ── _resolve_start_from: local-path vs run-id branch ────────────────────────
+from sft import resolve_checkpoint  # noqa: E402
 
 
 def test_existing_local_path_returned_unchanged(tmp_path):
     ckpt = tmp_path / "sft_checkpoint.pt"
     torch.save({"x": 1}, ckpt)
-    assert _resolve_start_from(str(ckpt), "factorion") == str(ckpt)
+    assert resolve_checkpoint(str(ckpt), "factorion") == (str(ckpt), {"kind": "local", "path": str(ckpt)})
 
 
 def test_missing_pt_path_raises_filenotfound(tmp_path):
-    missing = tmp_path / "nope.pt"
     with pytest.raises(FileNotFoundError):
-        _resolve_start_from(str(missing), "factorion")
-
-
-def test_run_id_delegates_to_wandb_resolver(monkeypatch, tmp_path):
-    """A value that is neither an existing path nor a *.pt is treated as a W&B
-    run id and routed through the shared _resolve_wandb_checkpoint."""
-    pt = tmp_path / "sft_checkpoint.pt"
-    torch.save({"x": 1}, pt)
-    captured = {}
-
-    def fake_resolve(run_spec, project, entity):
-        captured["args"] = (run_spec, project, entity)
-        return str(pt), {"kind": "wandb", "run_id": run_spec}
-
-    monkeypatch.setattr(ppo, "_resolve_wandb_checkpoint", fake_resolve)
-    assert _resolve_start_from("j0s5y2mc", "factorion", entity="t") == str(pt)
-    assert captured["args"] == ("j0s5y2mc", "factorion", "t")
-
-
-# ── _resolve_wandb_checkpoint: artifact download ────────────────────────────
+        resolve_checkpoint(str(tmp_path / "nope.pt"), "factorion")
 
 
 class _FakeArtifact:
@@ -105,7 +76,7 @@ def test_run_id_downloads_model_artifact_pt(tmp_path, monkeypatch):
     run = _FakeRun([_FakeArtifact("model", str(tmp_path))])
     captured = _patch_api(monkeypatch, run)
 
-    path, source = _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
+    path, source = resolve_checkpoint("j0s5y2mc", "factorion", None)
     assert path == str(pt)
     # bare id -> "<default_entity>/<project>/<run_id>"
     assert captured["run_path"] == "myteam/factorion/j0s5y2mc"
@@ -127,7 +98,7 @@ def test_newest_committed_version_wins_over_an_unfinished_upload(tmp_path, monke
     ])
     _patch_api(monkeypatch, run)
 
-    path, source = _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
+    path, source = resolve_checkpoint("j0s5y2mc", "factorion", None)
     assert path == str(done / "ckpt.pt")
     assert source["artifact"] == "art:v3"
 
@@ -137,7 +108,7 @@ def test_full_path_bypasses_default_entity(tmp_path, monkeypatch):
     run = _FakeRun([_FakeArtifact("model", str(tmp_path))])
     captured = _patch_api(monkeypatch, run)
 
-    _resolve_wandb_checkpoint("user/factorion/abc123", "factorion", None)
+    resolve_checkpoint("user/factorion/abc123", "factorion", None)
     assert captured["run_path"] == "user/factorion/abc123"
 
 
@@ -146,15 +117,15 @@ def test_explicit_entity_used(tmp_path, monkeypatch):
     run = _FakeRun([_FakeArtifact("model", str(tmp_path))])
     captured = _patch_api(monkeypatch, run)
 
-    _resolve_wandb_checkpoint("abc123", "factorion", "myteam")
+    resolve_checkpoint("abc123", "factorion", "myteam")
     assert captured["run_path"] == "myteam/factorion/abc123"
 
 
 def test_run_with_no_model_artifact_raises(tmp_path, monkeypatch):
     run = _FakeRun([_FakeArtifact("dataset", str(tmp_path))])
     _patch_api(monkeypatch, run)
-    with pytest.raises(RuntimeError, match="no artifacts of type=model"):
-        _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
+    with pytest.raises(RuntimeError, match="no committed model artifact"):
+        resolve_checkpoint("j0s5y2mc", "factorion", None)
 
 
 def test_model_artifact_without_pt_raises(tmp_path, monkeypatch):
@@ -162,29 +133,4 @@ def test_model_artifact_without_pt_raises(tmp_path, monkeypatch):
     run = _FakeRun([_FakeArtifact("model", str(tmp_path))])
     _patch_api(monkeypatch, run)
     with pytest.raises(RuntimeError, match="no .pt file"):
-        _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
-
-
-def test_ppo_saves_its_best_eval_checkpoint(tmp_path):
-    """An untracked PPO run with held-out evals keeps its best-eval/thput weights
-    in artifacts/ — the file `--start-from` consumers load."""
-    import subprocess
-    from pathlib import Path
-
-    from helpers import TINY_ARCH_ARGS
-
-    arch = [f"--{k.replace('_', '-')}={v}" for k, v in TINY_ARCH_ARGS.items()]
-    out = subprocess.run(
-        [sys.executable, str(Path(ppo.__file__)), "--size", "15", "--num-envs", "2",
-         "--num-steps", "16", "--total-timesteps", "96", "--num-minibatches", "1",
-         "--update-epochs", "1", "--eval-every", "1", "--eval-seeds-per-kind", "1",
-         "--summary-path", str(tmp_path / "summary.json"), *arch],
-        cwd=tmp_path,
-        env={**os.environ, "WANDB_MODE": "disabled", "WANDB_DISABLED": "true"},
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "Best checkpoint (eval/thput" in out.stdout
-    (ckpt,) = (tmp_path / "artifacts").glob("agent-*.pt")
-    assert "critic_head.weight" in torch.load(ckpt, weights_only=True)
+        resolve_checkpoint("j0s5y2mc", "factorion", None)

@@ -32,24 +32,41 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import factorion_rs
-from factorion import Direction, Factory, LESSON_IS_TRIAL, LessonKind, Misc, count_dangling_inserters, entities, items
-from ppo import (
-    _ASM_MACHINE_ENT_ID,
-    _CH_DIR,
-    _CH_ENT,
-    _CH_FOOTPRINT,
-    _CH_ITEMS,
-    _CH_MISC,
-    _EMPTY_ENT_ID,
-    _ENTITY_FOOTPRINT_AREAS,
-    _ENTITY_UNIT_COSTS,
-    _FOOTPRINT_UNAVAILABLE,
-    _SINK_ENT_ID,
-    _SOURCE_ENT_ID,
-    _UG_BELT_ENT_ID,
-    _VALID_ENTITY_ACTION_IDS,
-    _ASM_RECIPE_ITEM_IDS,
+from factorion import (
+    LESSON_IS_TRIAL,
+    Channel,
+    Direction,
+    Factory,
+    Footprint,
+    LessonKind,
+    Misc,
+    count_dangling_inserters,
+    entities,
+    items,
+    recipes,
+    str2ent,
 )
+
+_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC, _CH_FOOTPRINT = (c.value for c in Channel)
+_FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
+_EMPTY_ENT_ID = str2ent("empty").value
+_ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
+_UG_BELT_ENT_ID = str2ent("underground_belt").value
+_SOURCE_ENT_ID = str2ent("source").value
+_SINK_ENT_ID = str2ent("sink").value
+# Everything the model may build; the bulk/stack inserters are the sink/source markers.
+_BUILDABLE = [e for e in entities.values() if e.is_placeable and e.name not in ("bulk_inserter", "stack_inserter")]
+_ASM_RECIPE_ITEM_IDS = tuple(
+    item.value for item in items.values() if item.name in recipes and "assembling_machine_1" in recipes[item.name].produced_by
+)
+# Per-output recursively-expanded raw-item quantity plus craft time; zero for
+# the markers and empty, whose cost no build decision can change.
+_ENTITY_UNIT_COSTS = np.zeros(len(entities))
+_ENTITY_FOOTPRINT_AREAS = np.ones(len(entities))
+for _p in _BUILDABLE:
+    _r = recipes[_p.name]
+    _ENTITY_UNIT_COSTS[_p.value] = (sum(_r.total_raw.values()) + _r.total_raw_time) / _r.produces[_p.name]
+    _ENTITY_FOOTPRINT_AREAS[_p.value] = _p.width * _p.height
 
 # The model's state is the world's channels plus the part map.
 CH_PART = _CH_FOOTPRINT + 1
@@ -59,8 +76,7 @@ TYPES: tuple[tuple[int, int, int], ...] = (
     (_EMPTY_ENT_ID, Direction.NONE.value, Misc.NONE.value),
     *(
         (e, d, m)
-        for e in _VALID_ENTITY_ACTION_IDS
-        if e != _EMPTY_ENT_ID
+        for e in (p.value for p in _BUILDABLE)
         # Generators store a facing on assemblers; NONE is what a placement
         # action writes. Both are legal worlds.
         for d in (range(len(Direction)) if e == _ASM_MACHINE_ENT_ID else range(1, len(Direction)))
@@ -540,7 +556,8 @@ def _raster_parts(typ: np.ndarray) -> np.ndarray:
 
 
 def entity_cost(world_CWH: np.ndarray, cost_scale: float) -> tuple[float, float]:
-    """(entity_cost, cost_efficiency), as `FactorioEnv._world_cost` scores it."""
+    """(entity_cost, cost_efficiency): each entity's unit cost summed over the
+    world, and the multiplicative discount the reward applies for it."""
     counts = np.bincount(world_CWH[_CH_ENT].ravel(), minlength=len(entities))[: len(entities)]
     cost = float(np.dot(counts / _ENTITY_FOOTPRINT_AREAS, _ENTITY_UNIT_COSTS))
     return cost, 1.0 / (1.0 + cost_scale * cost)
@@ -552,7 +569,7 @@ def score_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float)
     return {
         "thput_raw": raw,
         "thput": raw / max_throughput if max_throughput > 0 else 0.0,
-        # PPO's reward: uncapped, discounted by entity cost.
+        # RL's reward: uncapped, discounted by entity cost.
         "score": raw * eff / max_throughput if max_throughput > 0 else 0.0,
         "entity_cost": cost,
     }

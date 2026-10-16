@@ -20,13 +20,11 @@ import random
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Optional, TypedDict
+from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import tqdm
 import tyro
@@ -50,26 +48,13 @@ from denoise import (  # noqa: E402
 )
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
-    Channel,
+    Factory,
     TRAINING_KINDS,
     LessonKind,
     build_factory,
-    count_dangling_inserters,
-    render_factory,
 )
 
-from ppo import (  # noqa: E402
-    FactorioEnv,
-    assert_device_ok,
-    cuda_env_info,
-    _build_eval_set,
-    _resolve_start_from,
-    _upload_replacing,
-    _CH_ENT,
-    _CH_ITEMS,
-    _ASM_MACHINE_ENT_ID,
-)
-from training_config import PpoArgs, SftArgs, wsd_multiplier  # noqa: E402
+from training_config import RlArgs, SftArgs, wsd_multiplier  # noqa: E402
 
 # Training factories come from far above the held-out eval seeds (9M-11M).
 _TRAIN_SEED_BASE = 1_000_000_000
@@ -134,7 +119,7 @@ def _iter_factories(size, base_seed, worker_id, num_workers):
     concurrent workers never share a factory. Kinds are drawn uniformly.
     """
     # Trial kinds have no known solution, so there is no clean factory to
-    # denoise towards. Trials are RL-only; PPO samples them directly.
+    # denoise towards. Trials are RL-only.
     kinds = [k for k in TRAINING_KINDS if not LESSON_IS_TRIAL[k]]
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
@@ -202,390 +187,89 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
     )
 
 
-class RolloutEval(TypedDict):
-    """Return shape of :func:`run_rollout_eval`."""
-
-    # The overall means pool lessons only. Trials measure a different thing —
-    # inventing a factory with nothing to imitate, versus reproducing a known
-    # one — and pooling them would silently move the headline number that the
-    # SFT baseline and every historical run are quoted in.
-    overall: float  # mean lesson throughput at the moment the model stopped
-    trial_overall: float  # overall over trial kinds only (0.0 when none ran)
-    trial_n: int  # number of trial factories the eval scored
-    per_kind: dict[str, float]  # overall, keyed by LessonKind.name
-    per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
-    asm_item_acc: float  # frac of placed assemblers given the correct recipe
-    per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
-    per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
-    eot_acc: float  # frac of rollout steps whose EOT prediction matches "is the factory done?"
-    eot_pos_recall: float  # frac of done states where the EOT head actually fired
-    per_kind_eot_acc: dict[str, float]  # eot_acc, keyed by LessonKind.name
-    per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
-    per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
-    per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
-    # `count_dangling_inserters` totals (no-input, no-output) over the scored
-    # factories — should be zero — lessons/trials pooled apart like `overall`.
-    dangling_inserters: tuple[int, int]
-    trial_dangling_inserters: tuple[int, int]
-    per_kind_dangling_inserters: dict[str, tuple[int, int]]
-
-
-def _solved_assembler_recipes(solved_CWH) -> set[int]:
-    """The set of recipes (item ids) carried by assemblers in a solved factory,
-    the ground truth for the rollout's recipe-pick check. Empty for factories
-    with no assembler (every non-MEMORISE lesson today)."""
-    asm_mask = solved_CWH[_CH_ENT] == _ASM_MACHINE_ENT_ID
-    recipes = solved_CWH[_CH_ITEMS][asm_mask]
-    return set() if not bool(asm_mask.any()) else {int(v) for v in recipes.unique().tolist()}
-
-
-def run_rollout_eval(
-    agent,
-    args: SftArgs,
-    val_seeds_to_kind: dict[int, int],
-    device,
-    max_seeds: int = 100,
-    num_envs: int = 8,
-    best_of: int = 1,
-    records: Optional[list[dict]] = None,
-) -> RolloutEval:
-    """Best-of-N sampled rollout eval on the held-out val factories.
-
-    Each held-out (seed, kind) gets `best_of` rollouts sampled from the policy
-    (temperature 1, tile pick restricted to legal tiles, as a PPO rollout
-    samples) and scores the best of them. A rollout steps until the sampled EOT
-    action fires — which ends it, exactly as it terminates a PPO episode — or
-    the env finishes (throughput==1.0 or max_steps) without it ever firing.
-    Throughput is the last `info['thput_normed']` the env reported for the
-    state the model stopped at: raw items/sec divided by the per-factory
-    max, so a perfectly-rebuilt factory scores 1.0 regardless of
-    its absolute belt speed (the env already calls the Rust solver every
-    step, so we don't re-run it).
-
-    Every (factory, sample) pair is a work item for K=num_envs*best_of
-    FactorioEnvs run in parallel with the CNN forward batched across them;
-    slots refill from the queue as they finish, so all K stay busy until it
-    drains. Each sample draws from its own noise stream seeded by (args.seed,
-    factory seed, sample index), so the result is reproducible, independent
-    of K and of batching order, and every checkpoint faces the same random
-    numbers.
-
-    The (seed, kind) pairs are exactly the val_accuracy set. The result is
-    logged as `val/thput@N`, directly comparable to the existing per-kind val
-    accuracy curves. Eval-only; training is untouched.
-
-    Every other output (EOT and recipe-pick scoring, dangling inserters,
-    `records`) comes from each factory's selected sample. `records`, when
-    given, collects one dict per scored factory (seed, kind, thput,
-    entity_cost and the ASCII render of the world the model stopped at) — the
-    raw material for a qualitative diff of two policies (`factory_diff.py`),
-    which the aggregates alone cannot show.
-
-    Returns a dict with:
-        overall — mean best-of-N throughput at the state the model stopped at;
-        per_kind — the same, keyed by LessonKind.name;
-        per_kind_n — sample count per kind in the eval;
-        eot_acc, eot_pos_recall — EOT-head accuracy / positive-class recall;
-        per_kind_eot_acc, per_kind_eot_pos_recall — same, keyed by kind.
-    """
-    was_training = agent.training
-    agent.eval()
-
-    # Blank the WHOLE factory (size*size) so the eval builds from an
-    # empty grid — the honest "can it build from scratch" test, not a partial
-    # 2*size blank that leaves most of the factory pre-placed. Matches the
-    # data-generation path (which already auto-blanks size*size) and the
-    # max_level docstring.
-    max_level = args.max_level if args.max_level > 0 else args.size * args.size
-
-    # Deterministic, run-stable subsample of val seeds. Sorting first
-    # makes the selection independent of dict iteration order, then we
-    # shuffle with args.seed so different runs see the same selection.
-    seeds_sorted = sorted(val_seeds_to_kind.keys())
-    rng = random.Random(args.seed)
-    rng.shuffle(seeds_sorted)
-    seeds_sorted = seeds_sorted[:max_seeds]
-
-    per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
-    # Lessons and trials accumulate separately — see RolloutEval.
-    all_throughputs: list[float] = []
-    trial_throughputs: list[float] = []
-    per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
-    # EOT-head scoring: every scored step counts toward *_step; done states
-    # (should-stop positives) also count toward *_pos.
-    per_kind_eot_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_dangling: dict[str, tuple[int, int]] = {k.name: (0, 0) for k in LessonKind}
-
-    if not seeds_sorted:
-        if was_training:
-            agent.train()
-        zero = {kn: 0.0 for kn in per_kind_throughputs}
-        per_kind_n = {kn: 0 for kn in per_kind_throughputs}
-        return {
-            "overall": 0.0,
-            "trial_overall": 0.0,
-            "trial_n": 0,
-            "per_kind": zero,
-            "per_kind_n": per_kind_n,
-            "asm_item_acc": 0.0,
-            "per_kind_asm_item_acc": dict(zero),
-            "per_kind_asm_n": dict(per_kind_n),
-            "eot_acc": 0.0,
-            "eot_pos_recall": 0.0,
-            "per_kind_eot_acc": dict(zero),
-            "per_kind_eot_pos_recall": dict(zero),
-            "per_kind_eot_step_n": dict(per_kind_n),
-            "per_kind_eot_pos_n": dict(per_kind_n),
-            "dangling_inserters": (0, 0),
-            "trial_dangling_inserters": (0, 0),
-            "per_kind_dangling_inserters": per_kind_dangling,
-        }
-
-    # One work item per (factory, sample), a factory's samples adjacent so they
-    # share batched forwards: K slots hold num_envs factories' samples at once.
-    # Cap K at the number of work items — spinning up more envs than that
-    # wastes memory. All envs use idx=0 so the seed we pass to reset() is the
-    # seed generate_lesson sees: FactorioEnv.reset adds self.idx to the seed
-    # for env-diversity in PPO, but here we need exact seed pass-through to
-    # replay the held-out val factories.
-    queue = [(s, j) for s in seeds_sorted for j in range(best_of)]
-    K = max(1, min(num_envs * best_of, len(queue)))
-    # A factory's samples all start from the same blank grid, so it is reset
-    # once into `template` and each sample deep-copies that (~40x cheaper).
-    template = FactorioEnv(size=args.size, idx=0)
-    template_reset: dict[int, tuple] = {}
-    envs = [template] * K
-    head_sizes = {"tile": args.size * args.size, "entity": agent.num_entities,
-                  "direction": agent.num_directions, "item": agent.num_items,
-                  "misc": agent.num_misc, "eot": 1}
-    active = [True] * K
-    # Each slot's in-flight sample: its stats so far and its own noise stream,
-    # seeded by (run seed, factory, sample) so neither the batch it rides in nor
-    # the checkpoint being scored changes which random numbers it draws.
-    cur: list[dict] = [{} for _ in range(K)]
-    rngs = [np.random.default_rng() for _ in range(K)]
-    finished: dict[int, list[dict]] = {s: [] for s in seeds_sorted}
-    # Staged on the host so each step is one host->device copy, not one per env.
-    obs_batch = torch.zeros((K, len(Channel), args.size, args.size))
-
-    def load_slot(i: int) -> None:
-        """Reset slot `i` onto the next work item, deactivating it once the
-        queue is empty."""
-        if not queue:
-            active[i] = False
-            return
-        s, j = queue.pop(0)
-        k = LessonKind(val_seeds_to_kind[s])
-        if s not in template_reset:
-            template_reset.clear()
-            template_reset[s] = template.reset(
-                seed=s,
-                options={
-                    "num_missing_entities": max_level,
-                    "kind": k,
-                },
-            )
-        obs, info = template_reset[s]
-        envs[i] = copy.deepcopy(template)
-        cur[i] = {
-            "seed": s,
-            "sample": j,
-            "kind": k,
-            "thput": float(info.get("thput_normed", 0.0)),
-            # Correct recipes from the solved world; empty when that factory has
-            # no assembler, which skips the recipe check.
-            "asm_recipes": _solved_assembler_recipes(envs[i]._solved_world_CWH),
-            **dict.fromkeys(
-                ("asm_n", "asm_correct", "eot_steps", "eot_correct", "eot_pos", "eot_pos_correct"), 0
-            ),
-        }
-        rngs[i] = np.random.default_rng((args.seed, s, j))
-        obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32)
-
-    def finish_slot(i: int) -> None:
-        """Record slot `i`'s finished sample, then refill the slot."""
-        c = cur[i]
-        c["entity_cost"] = float(envs[i]._entity_cost)
-        c["dangling"] = count_dangling_inserters(envs[i]._world_CWH)
-        if records is not None:
-            c["render"] = render_factory(envs[i]._world_CWH)
-        finished[c["seed"]].append(c)
-        load_slot(i)
-
-    for i in range(K):
-        load_slot(i)
-
-    with torch.no_grad():
-        while any(active):
-            # Single CNN forward across all K slots. Inactive slots'
-            # outputs are discarded; the per-eval cost of K-1 stale
-            # forwards at the tail is negligible compared to the
-            # batching win earlier in the queue. An inactive slot draws from
-            # its finished sample's stream, which nothing reads again.
-            u_KL = torch.as_tensor(
-                np.stack([r.random(sum(head_sizes.values()), dtype=np.float32) for r in rngs])
-            ).to(device)
-            noise = dict(zip(head_sizes, u_KL.split(list(head_sizes.values()), dim=1)))
-            noise["eot"] = noise["eot"].squeeze(1)
-            # The policy's own sample, as a PPO rollout draws it (legal_mask
-            # keeps it off walled and source/sink tiles); the critic is unused here.
-            out = agent.sample_action(
-                obs_batch.to(device), noise=noise, legal_mask=True, compute_value=False
-            )
-            # One device->host copy per head per step, not one per env per head.
-            act = out["action"]
-            eot_K = act["eot"].tolist()
-            x_K = act["xy"][:, 0].tolist()
-            y_K = act["xy"][:, 1].tolist()
-            ent_K = act["entity"].tolist()
-            dir_K = act["direction"].tolist()
-            item_K = act["item"].tolist()
-            misc_K = act["misc"].tolist()
-
-            for i in range(K):
-                if not active[i]:
-                    continue
-
-                c = cur[i]
-                pred_stop = bool(eot_K[i])
-
-                # Score the head against ground truth on this pre-action state:
-                # it should fire iff the factory is already complete.
-                is_done = c["thput"] >= 1.0
-                c["eot_steps"] += 1
-                c["eot_correct"] += int(pred_stop == is_done)
-                if is_done:
-                    c["eot_pos"] += 1
-                    c["eot_pos_correct"] += int(pred_stop)
-
-                # The sampled EOT action ends the rollout, exactly as it
-                # terminates a PPO episode: we score the factory the model
-                # declared finished, never one it was forced past.
-                if pred_stop:
-                    finish_slot(i)
-                    continue
-
-                action = {
-                    "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
-                    "entity": int(ent_K[i]),
-                    "direction": int(dir_K[i]),
-                    "item": int(item_K[i]),
-                    "misc": int(misc_K[i]),
-                }
-                next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                c["thput"] = float(info.get("thput_normed", 0.0))
-
-                # Recipe-pick check: the agent tried to place an assembler in a
-                # factory that has one. Count it iff the assembler actually
-                # landed at the anchor (invalid placements are env no-ops), then
-                # score its recipe against the solved factory's recipes.
-                if c["asm_recipes"] and action["entity"] == _ASM_MACHINE_ENT_ID:
-                    ax, ay = int(action["xy"][0]), int(action["xy"][1])
-                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
-                        c["asm_n"] += 1
-                        c["asm_correct"] += int(action["item"] in c["asm_recipes"])
-
-                if not (terminated or truncated):
-                    obs_batch[i] = torch.as_tensor(
-                        next_obs,
-                        dtype=torch.float32,
-                    )
-                    continue
-
-                # The env ran out of room or steps before the head ever fired.
-                finish_slot(i)
-
-    # Each factory scores its best sample; ties go to the cheaper build, then
-    # the lower sample index, so the pick doesn't depend on finish order. Every
-    # other output comes from that same sample.
-    for s in seeds_sorted:
-        c = max(finished[s], key=lambda r: (r["thput"], -r["entity_cost"], -r["sample"]))
-        kn = c["kind"].name
-        per_kind_throughputs[kn].append(c["thput"])
-        (trial_throughputs if LESSON_IS_TRIAL[c["kind"]] else all_throughputs).append(c["thput"])
-        per_kind_asm_total[kn] += c["asm_n"]
-        per_kind_asm_correct[kn] += c["asm_correct"]
-        per_kind_eot_step_total[kn] += c["eot_steps"]
-        per_kind_eot_correct[kn] += c["eot_correct"]
-        per_kind_eot_pos_total[kn] += c["eot_pos"]
-        per_kind_eot_pos_correct[kn] += c["eot_pos_correct"]
-        no_input, no_output = c["dangling"]
-        acc_in, acc_out = per_kind_dangling[kn]
-        per_kind_dangling[kn] = (acc_in + no_input, acc_out + no_output)
-        if records is not None:
-            records.append(
-                {
-                    "seed": s,
-                    "kind": kn,
-                    "thput": c["thput"],
-                    "entity_cost": c["entity_cost"],
-                    "inserters_no_input": no_input,
-                    "inserters_no_output": no_output,
-                    "render": c["render"],
-                }
-            )
-
-    overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
-    trial_overall = float(np.mean(trial_throughputs)) if trial_throughputs else 0.0
-    per_kind = {
-        kn: (float(np.mean(ts)) if ts else 0.0)
-        for kn, ts in per_kind_throughputs.items()
-    }
-    per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
-
-    asm_total_all = sum(per_kind_asm_total.values())
-    asm_item_acc = (
-        sum(per_kind_asm_correct.values()) / asm_total_all if asm_total_all else 0.0
+def assert_device_ok(device) -> None:
+    if device.type in ("cuda", "mps"):
+        return
+    # CI and the local test suite run CPU-only smoke tests; everywhere else a
+    # CPU fallback is a bug. pytest sets PYTEST_CURRENT_TEST for every test, so
+    # `uv run pytest` trains on CPU without needing CI=true in the environment.
+    if os.environ.get("CI") or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    raise RuntimeError(
+        f"Refusing to train on '{device.type}': no CUDA GPU was found. This "
+        "usually means the host NVIDIA driver is too old for the installed torch "
+        f"CUDA build (this wheel ships CUDA {torch.version.cuda}). Fix the "
+        "host/driver, or pick a GPU+host that supports it."
     )
-    per_kind_asm_item_acc = {
-        kn: (per_kind_asm_correct[kn] / n if n else 0.0)
-        for kn, n in per_kind_asm_total.items()
-    }
 
-    eot_step_all = sum(per_kind_eot_step_total.values())
-    eot_pos_all = sum(per_kind_eot_pos_total.values())
-    eot_acc = sum(per_kind_eot_correct.values()) / eot_step_all if eot_step_all else 0.0
-    eot_pos_recall = (
-        sum(per_kind_eot_pos_correct.values()) / eot_pos_all if eot_pos_all else 0.0
-    )
-    per_kind_eot_acc = {
-        kn: (per_kind_eot_correct[kn] / n if n else 0.0)
-        for kn, n in per_kind_eot_step_total.items()
-    }
-    per_kind_eot_pos_recall = {
-        kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
-        for kn, n in per_kind_eot_pos_total.items()
-    }
 
-    def pooled_dangling(trial: bool) -> tuple[int, int]:
-        pairs = [per_kind_dangling[k.name] for k in LessonKind if LESSON_IS_TRIAL[k] == trial]
-        return sum(p[0] for p in pairs), sum(p[1] for p in pairs)
+def cuda_env_info() -> dict[str, str]:
+    """Wheel CUDA build + host GPU, recorded in every run's W&B config: CI
+    schedules across whatever driver versions RunPod has free, so a failure
+    that only reproduces on some hosts is otherwise untraceable after the pod
+    is gone. The host driver's CUDA version is in W&B's own run metadata
+    (`cudaVersion`)."""
+    info = {"env/torch_version": torch.__version__, "env/torch_cuda_build": torch.version.cuda or "none"}
+    if torch.cuda.is_available():
+        info["env/gpu_name"] = torch.cuda.get_device_name(0)
+        info["env/gpu_capability"] = "%d.%d" % torch.cuda.get_device_capability(0)
+    return info
 
-    if was_training:
-        agent.train()
-    return {
-        "overall": overall,
-        "trial_overall": trial_overall,
-        "trial_n": len(trial_throughputs),
-        "per_kind": per_kind,
-        "per_kind_n": per_kind_n,
-        "asm_item_acc": asm_item_acc,
-        "per_kind_asm_item_acc": per_kind_asm_item_acc,
-        "per_kind_asm_n": dict(per_kind_asm_total),
-        "eot_acc": eot_acc,
-        "eot_pos_recall": eot_pos_recall,
-        "per_kind_eot_acc": per_kind_eot_acc,
-        "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
-        "per_kind_eot_step_n": dict(per_kind_eot_step_total),
-        "per_kind_eot_pos_n": dict(per_kind_eot_pos_total),
-        "dangling_inserters": pooled_dangling(trial=False),
-        "trial_dangling_inserters": pooled_dangling(trial=True),
-        "per_kind_dangling_inserters": per_kind_dangling,
-    }
+
+def resolve_checkpoint(spec: str, project: str, entity: Optional[str] = None) -> tuple[str, dict]:
+    """(local .pt path, provenance) of a checkpoint given as a local path or a
+    W&B run id ("abc123" or "entity/project/abc123"), whose newest committed
+    model artifact is downloaded to /tmp/factorion-checkpoints."""
+    if os.path.exists(spec):
+        return spec, {"kind": "local", "path": spec}
+    if spec.endswith(".pt"):
+        raise FileNotFoundError(f"checkpoint {spec!r} does not exist")
+    import wandb
+
+    # Callers that disabled W&B (the factory builder, tests) still need the download.
+    prev = {k: os.environ.pop(k) for k in ("WANDB_MODE", "WANDB_DISABLED") if k in os.environ}
+    try:
+        api = wandb.Api()
+        run = api.run(spec if spec.count("/") == 2 else f"{entity or api.default_entity}/{project}/{spec}")
+        # A run replaces its checkpoint as its best improves, so skip a
+        # version whose upload hasn't finished.
+        arts = [a for a in run.logged_artifacts() if a.type == "model" and a.state == "COMMITTED"]
+        if not arts:
+            raise RuntimeError(f"run {run.id} has no committed model artifact")
+        art = max(arts, key=lambda a: a.created_at)
+        dest = Path("/tmp/factorion-checkpoints") / run.id / art.name.replace(":", "_")
+        pt_files = sorted(Path(art.download(root=str(dest))).glob("*.pt"))
+        if not pt_files:
+            raise RuntimeError(f"artifact {art.name} contains no .pt file")
+        print(f"Resolved {spec} -> {art.name} -> {pt_files[0]}")
+        source = {
+            "kind": "wandb",
+            "run_id": run.id,
+            "run_url": run.url,
+            "run_name": run.name,
+            "artifact": art.name,
+            "config": dict(getattr(run, "config", {})),
+        }
+        return str(pt_files[0]), source
+    finally:
+        os.environ.update(prev)
+
+
+def upload_replacing(run, name, files, metadata, aliases, previous):
+    """Log `files` as a new version of model artifact `name` and delete
+    `previous`, this run's last upload, so a run holds one checkpoint in W&B
+    however often its best improves, and a run killed mid-training still
+    leaves its best behind. Returns the new version, to pass as `previous`."""
+    import wandb
+
+    artifact = wandb.Artifact(name=name, type="model", metadata=metadata)
+    for f in files:
+        artifact.add_file(f)
+    logged = run.log_artifact(artifact, aliases=aliases)
+    logged.wait()
+    if previous is not None:
+        previous.delete(delete_aliases=True)
+    return logged
 
 
 def noise_levels(n, args: SftArgs, device):
@@ -617,7 +301,7 @@ def throughput_pg_loss(model, logits, state, free, max_thput, t, args: SftArgs):
     """REINFORCE on simulated throughput. Up to `rl_inputs` lightly-corrupted
     examples (t ≤ rl_max_noise, where a sample is a plausible factory) each get
     `rl_samples` factories sampled from the prediction; each is legalized and
-    scored with PPO's reward (raw throughput × cost efficiency ÷ reference) and
+    scored with RL's reward (raw throughput × cost efficiency ÷ reference) and
     reinforced against its siblings' mean (RLOO). Returns (loss, mean score)."""
     idx = torch.nonzero(t <= args.rl_max_noise).squeeze(1)[: args.rl_inputs]
     if len(idx) == 0:
@@ -636,7 +320,7 @@ def throughput_pg_loss(model, logits, state, free, max_thput, t, args: SftArgs):
             score_world(
                 legalize(cond[i], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i]),
                 mt[i],
-                PpoArgs.entity_cost_scale,
+                RlArgs.entity_cost_scale,
             )["score"]
             for i in range(len(rep))
         ],
@@ -732,7 +416,7 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
         steps=args.gen_steps,
         refine=args.gen_refine,
         temperature=args.gen_temperature,
-        cost_scale=PpoArgs.entity_cost_scale,
+        cost_scale=RlArgs.entity_cost_scale,
         seed=args.seed,
         batch_chains=args.eval_batch_chains,
         records=records,
@@ -757,16 +441,29 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
     return out
 
 
-def build_eval_factories(args: SftArgs) -> list:
-    """The held-out (seed, kind, Factory) set: PPO's eval seeds (trials
-    included), so a generation eval is directly comparable to PPO's."""
-    seeds_to_kind = _build_eval_set(SimpleNamespace(size=args.size, seed=args.seed, eval_seeds_per_kind=args.eval_seeds_per_kind))
-    return [(s, LessonKind(k), build_factory(size=args.size, kind=LessonKind(k), seed=s)) for s, k in seeds_to_kind.items()]
+def build_eval_factories(args) -> list[tuple[int, LessonKind, Factory]]:
+    """The held-out (seed, kind, Factory) set: `eval_seeds_per_kind` factories
+    of every training kind (trials included), each kind from its own seed
+    range far below the training seeds."""
+    out = []
+    for ki, kind in enumerate(LessonKind):
+        if kind not in TRAINING_KINDS:
+            continue
+        base = 9_000_000 + args.seed + ki * 100_000
+        found = 0
+        for s in range(base, base + 5000):
+            if found == args.eval_seeds_per_kind:
+                break
+            factory = build_factory(size=args.size, kind=kind, seed=s)
+            if factory is not None:
+                out.append((s, kind, factory))
+                found += 1
+    return out
 
 
 def _upload_checkpoint(run, args, best_thput, files, previous):
     """Upload the run's best checkpoint via `_upload_replacing`."""
-    return _upload_replacing(
+    return upload_replacing(
         run,
         _artifact_name(args),
         files,
@@ -807,7 +504,7 @@ def train_sft(args: SftArgs):
 
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
-        model = load_denoiser(_resolve_start_from(args.start_from, args.wandb_project_name, args.wandb_entity))
+        model = load_denoiser(resolve_checkpoint(args.start_from, args.wandb_project_name, args.wandb_entity)[0])
     else:
         model = DenoiserUNet(
             width=args.width,

@@ -188,7 +188,7 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
     for name, is_trial in factorion_rs.py_lesson_is_trial().items()
 }
 
-# The kinds SFT and PPO sample and evaluate on (SFT skips the trials, which
+# The kinds SFT and RL sample and evaluate on (SFT skips the trials, which
 # have no demonstrations). Every other kind stays buildable and testable, but
 # is left out of training while the belt-routing and full-factory lessons are
 # trialled alone.
@@ -748,7 +748,7 @@ def read_blueprint_file(path):
 def plot_flow_network(G):
     # Lazy imports: matplotlib + networkx are visualization-only (this function
     # and build_graph_nx). Importing them at module scope cost ~0.44s on every
-    # `import factorion` — paid by ppo/sft training that never plots. Deferring
+    # `import factorion` — paid by sft/rl training that never plots. Deferring
     # them here keeps those import-bound entry points (and the benchmarks) fast.
     import matplotlib.pyplot as plt
     import networkx as nx
@@ -1021,6 +1021,62 @@ def blank_entities(
         protected_positions=set(factory.protected_positions),
     )
     return partial, min_entities_required
+
+
+def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[str]:
+    """Validate and apply one placement action to ``world_CWH`` in place.
+
+    The one placement path for the factory-builder UI and the mod server, so
+    multi-tile footprints and rejection rules cannot drift between them.
+
+    Placements overwrite: every entity the footprint touches is removed whole
+    first, so ``empty`` deletes the entity under ``xy`` and any other entity
+    replaces what it lands on. Walls (which include a lesson's protected
+    entities) and sources/sinks can't be edited.
+
+    Returns ``None`` when applied, else why the placement was rejected.
+    """
+    x, y = action["xy"]
+    entity_id, direc, item_id, misc = action["entity"], action["direction"], action["item"], action["misc"]
+    size_x, size_y = world_CWH.shape[1:3]
+    assert 0 <= x < size_x and 0 <= y < size_y, f"({x}, {y}) out of bounds"
+
+    asm = str2ent("assembling_machine_1").value
+    ug = str2ent("underground_belt").value
+    if entity_id not in entities or not 0 <= direc < len(Direction):
+        return "unknown_entity_or_direction"
+    if entity_id in (_SOURCE_ENT_VAL, _SINK_ENT_VAL):
+        return "placed_source_or_sink"
+    if entity_id == asm and item_id == _EMPTY_ITEM_VAL:
+        return "place_asm_mach_wo_recipe"
+    if entity_id not in (_EMPTY_ENT_VAL, asm) and direc == Direction.NONE.value:
+        return "placement_wo_direction"
+    if entity_id == _EMPTY_ENT_VAL and direc != Direction.NONE.value:
+        return "direction_wo_entity"
+    if (misc == Misc.NONE.value) == (entity_id == ug):
+        return "ug_belt_wo_up_or_down" if entity_id == ug else "placement_with_unneeded_misc"
+
+    proto = entities[entity_id]
+    tiles = [tuple(t) for t in factorion_rs.py_entity_tiles(x, y, direc, proto.width, proto.height) or [(x, y)]]
+    # A zero-copy view, validated for every tile before any is written, so a
+    # rejected multi-tile placement never leaves a partial entity behind.
+    world = world_CWH.numpy()
+    ent = world[Channel.ENTITIES.value]
+    if any(not (0 <= tx < size_x and 0 <= ty < size_y) for tx, ty in tiles):
+        return "too_wide"
+    if any(world[Channel.FOOTPRINT.value, tx, ty] == Footprint.UNAVAILABLE.value for tx, ty in tiles):
+        return "placed_on_masked_tile"
+    if any(ent[tx, ty] in (_SOURCE_ENT_VAL, _SINK_ENT_VAL) for tx, ty in tiles):
+        return "replaced_source_or_sink"
+    occupied = [(tx, ty) for tx, ty in tiles if ent[tx, ty] != _EMPTY_ENT_VAL]
+    if occupied:
+        world_WHC = np.ascontiguousarray(world.transpose(1, 2, 0), dtype=np.int64)
+        for tx, ty in factorion_rs.py_unit_tiles(world_WHC, occupied):
+            world[:4, tx, ty] = (_EMPTY_ENT_VAL, Direction.NONE.value, _EMPTY_ITEM_VAL, Misc.NONE.value)
+    if entity_id != _EMPTY_ENT_VAL:
+        for tx, ty in tiles:
+            world[:4, tx, ty] = (entity_id, direc, item_id, misc)
+    return None
 
 
 def _bfs_shortest(grid_h, grid_w, start, end, blocked):

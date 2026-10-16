@@ -1,7 +1,7 @@
 """CLI command functions. `python -m ci` maps each onto a subcommand.
 
 Deliberately tiny override surface: a commitish plus the few job-specific
-knobs (SFT num_samples, PPO start_from/total_timesteps, compare seeds, sweep
+knobs (SFT num_samples, RL start_from/total_timesteps, compare seeds, sweep
 pod counts). Every other hyperparameter comes from training_config.py.
 """
 
@@ -14,7 +14,7 @@ from ci.config import (
     AGENTS_PER_POD_DEFAULT,
     COMPARE_NUM_SAMPLES_DEFAULT,
     COMPARE_SEEDS_DEFAULT,
-    PpoJob,
+    RlJob,
     SftJob,
     SweepJob,
     compare_group,
@@ -47,7 +47,7 @@ def sft(
     launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
-def ppo(
+def rl(
     ref: str,
     start_from: str,
     total_timesteps: Optional[int] = None,
@@ -55,17 +55,17 @@ def ppo(
     dry_run: bool = False,
     no_wait: bool = False,
 ) -> None:
-    """Launch a PPO run at a commitish, starting from an SFT checkpoint.
+    """Launch an RL run at a commitish, starting from an SFT checkpoint.
 
     Args:
         ref: Commitish to train (branch / tag / SHA); must be pushed to origin.
         start_from: W&B run id of the SFT checkpoint (e.g. j0s5y2mc).
-        total_timesteps: Override; default = PpoArgs().total_timesteps.
+        total_timesteps: Override; default = RlArgs().total_timesteps.
         gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating a pod.
         no_wait: Return right after pod creation instead of waiting for boot.
     """
-    job = PpoJob(sha=resolve_ref(ref), start_from=start_from, total_timesteps=total_timesteps)
+    job = RlJob(sha=resolve_ref(ref), start_from=start_from, total_timesteps=total_timesteps)
     launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
@@ -78,13 +78,13 @@ def sweep(
     gpu_type: Optional[str] = None,
     dry_run: bool = False,
 ) -> None:
-    """Run a W&B hyperparameter sweep, e.g. `sweep sft` or `sweep ppo`.
+    """Run a W&B hyperparameter sweep, e.g. `sweep sft` or `sweep rl`.
 
     The sweep config is ci/sweep_<algo>.yaml as it exists AT THE REF, so the
     sweep is true to the commit being swept.
 
     Args:
-        algo: "sft" or "ppo".
+        algo: "sft" or "rl".
         ref: Commitish to sweep; must be pushed to origin.
         pods: Number of RunPod pods to launch.
         agents_per_pod: Parallel `wandb agent` processes per pod (GPU
@@ -93,8 +93,8 @@ def sweep(
             every pod gets the GPU the first one landed on.
         dry_run: Print what would launch without creating pods or the sweep.
     """
-    if algo not in ("sft", "ppo"):
-        raise SystemExit(f"error: algo must be 'sft' or 'ppo', got {algo!r}")
+    if algo not in ("sft", "rl"):
+        raise SystemExit(f"error: algo must be 'sft' or 'rl', got {algo!r}")
     sha = resolve_ref(ref)
     if dry_run:
         sweep_path = f"<entity>/<project>/<sweep-id-for-ci/sweep_{algo}.yaml@{sha[:7]}>"
@@ -120,7 +120,7 @@ def compare(
 ) -> None:
     """Compare a commitish against a base (default origin/main), multi-seed.
 
-    Invoked as `compare sft --ref X` or `compare ppo --ref X --start-from ID`.
+    Invoked as `compare sft --ref X` or `compare rl --ref X --start-from ID`.
     Fans out into 2 pods — one per side, each running its seeds sequentially
     (pods are scarce, so a compare only ever needs two). Both sides run their
     own commit's code. On a PR, the /ci compare comment command launches this
@@ -128,15 +128,15 @@ def compare(
     status) when the runs finish.
 
     Args:
-        algo: "sft" (from scratch) or "ppo" (finetune from --start-from on
+        algo: "sft" (from scratch) or "rl" (finetune from --start-from on
             both commits).
         ref: Commitish under test; must be pushed to origin.
         base_ref: Baseline commitish (default: main).
         seeds: Seeds per side; runs are seed-paired for the t-test.
         num_samples: SFT samples per run (smaller than a production run so a
-            compare finishes in hours, not days). Ignored for ppo.
-        start_from: W&B SFT run id; required for ppo.
-        total_timesteps: PPO override; default = PpoArgs().total_timesteps.
+            compare finishes in hours, not days). Ignored for rl.
+        start_from: W&B SFT run id; required for rl.
+        total_timesteps: RL override; default = RlArgs().total_timesteps.
         gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md);
             both sides get the GPU the first one landed on.
         dry_run: Print what would launch without creating pods.
@@ -281,8 +281,8 @@ def compare_renders(
 ) -> None:
     """Print the side-by-side factory diff of two checkpoints (see factory_diff.py).
 
-    The same report `/ci compare` posts, runnable on any pair — SFT vs PPO,
-    PPO@2M vs PPO@10M, seed vs seed.
+    The same report `/ci compare` posts, runnable on any pair — SFT vs RL,
+    RL@2M vs RL@10M, seed vs seed.
 
     Args:
         pr: Checkpoint(s) shown on the left, comma-separated: local .pt paths

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from ci.config import (
     MAX_POD_AGE_SECONDS,
     CompareJob,
-    PpoJob,
+    RlJob,
     SftJob,
     SweepJob,
     compare_fanout,
@@ -25,13 +25,13 @@ from ci.config import (
     parse_pod_name,
     pod_emoji,
     pod_name,
-    ppo_budget_seconds,
+    rl_budget_seconds,
     sft_budget_seconds,
 )
 from ci.gh_command import parse_comment
 from ci.launch import BOOTSTRAP
 from ci import jobs as ci_jobs
-from ci.jobs import _compare_subjob, ppo_command, run_compare, sft_command, sweep_agent_command
+from ci.jobs import _compare_subjob, rl_command, run_compare, sft_command, sweep_agent_command
 from ci.report import (
     MetricRow,
     boot_failure_markdown,
@@ -76,16 +76,16 @@ class TestSftCommand:
         assert "pr:42" in cmd
 
 
-class TestPpoCommand:
+class TestRlCommand:
     def test_start_from_required_total_timesteps_optional(self):
-        cmd = ppo_command(PpoJob(sha=SHA, start_from="j0s5y2mc"))
+        cmd = rl_command(RlJob(sha=SHA, start_from="j0s5y2mc"))
         assert cmd[cmd.index("--start-from") + 1] == "j0s5y2mc"
         assert "--total-timesteps" not in cmd
         forbidden = {"--learning-rate", "--seed", "--size", "--critic-warmup", "--ent-coef-start"}
         assert forbidden.isdisjoint(cmd)
 
     def test_total_timesteps_override(self):
-        cmd = ppo_command(PpoJob(sha=SHA, start_from="j0s5y2mc", total_timesteps=99))
+        cmd = rl_command(RlJob(sha=SHA, start_from="j0s5y2mc", total_timesteps=99))
         assert cmd[cmd.index("--total-timesteps") + 1] == "99"
 
 
@@ -101,7 +101,7 @@ class TestSweepCommand:
         from pathlib import Path
         from training_config import SharedArgs
 
-        for algo, section in (("ppo", "eval"), ("sft", "val")):
+        for algo, section in (("rl", "eval"), ("sft", "val")):
             cfg = yaml.safe_load((Path(__file__).parents[1] / "ci" / f"sweep_{algo}.yaml").read_text())
             assert cfg["metric"]["name"] == f"{section}/thput@{SharedArgs.eval_best_of}"
 
@@ -131,12 +131,12 @@ class TestCompareRunner:
         assert cmd[cmd.index("--wandb-group") + 1] == "cmp-grp-pr"
         assert "cmp-side:pr" in cmd and "pr:7" in cmd
 
-    def test_ppo_subjob_uses_the_shared_checkpoint(self):
-        sub = _compare_subjob(self._job(algo="ppo"), seed=1)
-        assert isinstance(sub, PpoJob)
-        cmd = ppo_command(sub)
+    def test_rl_subjob_uses_the_shared_checkpoint(self):
+        sub = _compare_subjob(self._job(algo="rl"), seed=1)
+        assert isinstance(sub, RlJob)
+        cmd = rl_command(sub)
         assert cmd[cmd.index("--start-from") + 1] == "j0s5y2mc"
-        assert "kind:ppo" in cmd
+        assert "kind:rl" in cmd
 
     def test_runs_every_seed_in_order(self, monkeypatch):
         seen = []
@@ -192,12 +192,12 @@ class TestCompareFanout:
         assert all(SHA[:7] in (j.group or "") for j in jobs)
 
     def test_groups_unique_per_launch(self):
-        # Two compares at the same commit (rerun, or sft + ppo back to back)
+        # Two compares at the same commit (rerun, or sft + rl back to back)
         # must NOT share W&B groups — a shared group let one compare's runs
         # pollute the other's report (seen live on PR #243).
         a = compare_fanout("sft", SHA, BASE_SHA, nonce="aaaa", seeds=1, num_samples=10)
         b = compare_fanout("sft", SHA, BASE_SHA, nonce="bbbb", seeds=1, num_samples=10)
-        p = compare_fanout("ppo", SHA, BASE_SHA, nonce="aaaa", seeds=1, start_from="x")
+        p = compare_fanout("rl", SHA, BASE_SHA, nonce="aaaa", seeds=1, start_from="x")
         assert {j.group for j in a}.isdisjoint({j.group for j in b})
         assert {j.group for j in a}.isdisjoint({j.group for j in p})
 
@@ -211,18 +211,18 @@ class TestCompareFanout:
         sides = {t for j in jobs for t in j.extra_tags if t.startswith("cmp-side:")}
         assert sides == {"cmp-side:pr", "cmp-side:main"}
 
-    def test_ppo_fanout_uses_same_checkpoint_both_sides(self):
+    def test_rl_fanout_uses_same_checkpoint_both_sides(self):
         jobs = compare_fanout(
-            "ppo", SHA, BASE_SHA, nonce="ab12", seeds=2, start_from="j0s5y2mc", total_timesteps=100
+            "rl", SHA, BASE_SHA, nonce="ab12", seeds=2, start_from="j0s5y2mc", total_timesteps=100
         )
         assert len(jobs) == 2
-        assert all(j.algo == "ppo" for j in jobs)
+        assert all(j.algo == "rl" for j in jobs)
         assert {j.start_from for j in jobs} == {"j0s5y2mc"}
         assert all(j.seeds == [1, 2] for j in jobs)
 
-    def test_ppo_fanout_requires_start_from(self):
+    def test_rl_fanout_requires_start_from(self):
         try:
-            compare_fanout("ppo", SHA, BASE_SHA, nonce="ab12")
+            compare_fanout("rl", SHA, BASE_SHA, nonce="ab12")
             assert False, "expected ValueError"
         except ValueError:
             pass
@@ -235,8 +235,8 @@ class TestJobSerialization:
     def test_round_trip_every_kind(self):
         jobs = [
             SftJob(sha=SHA, num_samples=5, seed=2, group="g", extra_tags=["pr:1"]),
-            PpoJob(sha=SHA, start_from="j0s5y2mc", total_timesteps=7),
-            SweepJob(sha=SHA, algo="ppo", sweep_path="e/p/s", agents_per_pod=2),
+            RlJob(sha=SHA, start_from="j0s5y2mc", total_timesteps=7),
+            SweepJob(sha=SHA, algo="rl", sweep_path="e/p/s", agents_per_pod=2),
             CompareJob(
                 sha=SHA, algo="sft", seeds=[1, 2, 3], group="g", num_samples=5, extra_tags=["pr:1"]
             ),
@@ -262,13 +262,13 @@ class TestPodName:
 
     def test_timestamps_are_iso8601(self):
         # 2026-07-06 15:16:10 UTC — readable in the RunPod console at a glance.
-        name = pod_name("ppo", 1783350970, 1783356170, SHA)
-        assert name == f"factorion-ci-ppo-c20260706T151610Z-d20260706T164250Z-{SHA[:7]}"
+        name = pod_name("rl", 1783350970, 1783356170, SHA)
+        assert name == f"factorion-ci-rl-c20260706T151610Z-d20260706T164250Z-{SHA[:7]}"
 
     def test_legacy_epoch_names_still_parse(self):
         # Pods launched before the ISO switch keep epoch-seconds names; the
         # watchdog must be able to reap them until they've all cycled out.
-        meta = parse_pod_name(f"factorion-ci-ppo-c1783350970-d1783356170-{SHA[:7]}")
+        meta = parse_pod_name(f"factorion-ci-rl-c1783350970-d1783356170-{SHA[:7]}")
         assert meta is not None
         assert (meta.created, meta.deadline) == (1783350970, 1783356170)
 
@@ -297,7 +297,7 @@ class TestWatchdog:
     def test_kills_past_deadline_keeps_live_ones(self):
         now = time.time()
         expired = self._pod(pod_name("sft", int(now - 7200), int(now - 60), SHA))
-        alive = self._pod(pod_name("ppo", int(now - 60), int(now + 7200), SHA))
+        alive = self._pod(pod_name("rl", int(now - 60), int(now + 7200), SHA))
         doomed = decide_terminations([expired, alive], now=now)
         assert [p["name"] for p, _ in doomed] == [expired["name"]]
 
@@ -341,7 +341,7 @@ class TestWatchdog:
 class TestBudgets:
     def test_budgets_scale_with_work(self):
         assert sft_budget_seconds(10_000_000) > sft_budget_seconds(1_000_000)
-        assert ppo_budget_seconds(1_000_000) > ppo_budget_seconds(100_000)
+        assert rl_budget_seconds(1_000_000) > rl_budget_seconds(100_000)
 
     def test_one_seed_compare_budget_equals_single_run(self):
         (job, *_) = compare_fanout(
@@ -578,13 +578,13 @@ class TestReporter:
         md = boot_failure_markdown(
             run_id="deadb33f",
             url="https://wandb.ai/x/y/runs/deadb33f",
-            kind="ppo",
+            kind="rl",
             sha7=SHA[:7],
             log_tail="[fci] cloning ...\nfatal: reference is not a tree: abc123\n",
         )
         assert "<!-- factorion-ci-run:deadb33f -->" in md
         assert "failed to boot" in md
-        assert "ppo" in md
+        assert "rl" in md
         assert "https://wandb.ai/x/y/runs/deadb33f" in md
         assert "reference is not a tree" in md  # the actual error, in a code block
 
@@ -632,32 +632,26 @@ class TestSelectHeadline:
             "perf/train_seconds",
         ]
 
-    def test_ppo_patterns(self):
+    def test_rl_patterns(self):
         names = [
             "eval/thput@8",  # eval/ stays in the long tail
             "rollout/thput",
             "rollout/reward",
-            "rollout/length",
-            "rollout/invalid_frac",
-            "rollout/eot_rate",  # not headline
+            "rollout/entity_cost",  # not headline
             "rollout/MOVE_ONE_ITEM/thput",
             "rollout/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
             "rollout/MOVE_ONE_ITEM/reward",  # per-lesson non-thput stays in the tail
-            "critic/explained_variance",
-            "policy/entropy",
             "perf/update_seconds",
             "perf/rollout_seconds",
             "perf/eval_seconds",
             "perf/sps",
-            "losses/value",
+            "losses/raft",
             "optim/lr",
         ]
         got = select_headline(names)
         assert got == [
             "rollout/thput",
             "rollout/reward",
-            "rollout/length",
-            "rollout/invalid_frac",
             "rollout/MOVE_ONE_ITEM/thput",
             "rollout/SOME_FUTURE_LESSON_9/thput",
             "perf/update_seconds",

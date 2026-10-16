@@ -18,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
@@ -44,9 +43,8 @@ from factorion import (  # noqa: E402
     items,
     render_factory,
 )
+from helpers import TINY  # noqa: E402
 from training_config import SftArgs  # noqa: E402
-
-TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -423,20 +421,6 @@ class TestSwapModel:
             assert fb._MODEL is not before
         finally:
             other.unlink(missing_ok=True)
-
-    def test_swap_falls_through_to_wandb_when_no_local_file(self, monkeypatch):
-        """A value that isn't an existing path is treated as a wandb run id."""
-        called_with: dict = {}
-
-        def fake_resolve(run_spec, project, entity):
-            called_with["run_spec"] = run_spec
-            called_with["project"] = project
-            raise RuntimeError("wandb resolver was called as expected")
-
-        monkeypatch.setattr(fb, "_resolve_wandb_checkpoint", fake_resolve)
-        with pytest.raises(RuntimeError, match="wandb resolver"):
-            fb._swap_model("not-a-path", project="x", entity=None)
-        assert called_with == {"run_spec": "not-a-path", "project": "x"}
 
     def test_swap_empty_value(self):
         with pytest.raises(ValueError, match="empty"):

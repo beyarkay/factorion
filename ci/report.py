@@ -213,7 +213,7 @@ def compare_metric_rows(
 # every-metric table sits inside it). Ordered regexes; a metric is headline
 # when any matches, and headline rows sort by first-matching pattern. Lesson
 # names are matched, never hardcoded (`val/{LESSON}/thput` covers every
-# current and future lesson). SFT (val/) and PPO (eval/, rollout/, ...) key
+# current and future lesson). SFT (val/) and RL (eval/, rollout/) key
 # spaces are disjoint, so one list serves both kinds.
 HEADLINE_PATTERNS = [
     # SFT: throughput first (overall then per-lesson), then accuracies
@@ -223,11 +223,9 @@ HEADLINE_PATTERNS = [
     r"^val/[A-Z0-9_]+/thput@\d+$",
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
-    # PPO: on-policy rollout health (overall then per-lesson), then speed.
+    # RL: the training builds (overall then per-lesson), then speed.
     r"^rollout/thput$",
     r"^rollout/reward$",
-    r"^rollout/length$",
-    r"^rollout/invalid_frac$",
     r"^rollout/[A-Z0-9_]+/thput$",
     r"^perf/update_seconds$",
     r"^perf/rollout_seconds$",

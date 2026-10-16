@@ -2,14 +2,15 @@
 
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 from typing import cast
 
+import numpy as np
 import pytest
 import torch
 
-from factorion import Channel, Misc, str2ent
-from ppo import AgentCNN
+from denoise import DenoiserUNet
+from factorion import Channel, Footprint, Misc, str2ent
+from helpers import TINY
 
 
 SERVER_DIR = Path(__file__).parents[1] / "factorion-mod" / "server"
@@ -121,6 +122,11 @@ def test_request_seeds_existing_entities_with_configuration():
     assert ent[1, 7] == _id("splitter")
     assert ent[1, 8] == _id("splitter")
 
+    # Existing entities are walls the model builds around; the markers aren't.
+    walls = obs[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value
+    assert walls.sum() == 1 + 9 + 1 + 2
+    assert not walls[0, 5] and not walls[10, 5]
+
 
 class _AcceptingRcon:
     def __init__(self):
@@ -146,16 +152,6 @@ def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
     assert sleeps == [0.01]
 
 
-def _fake_sampler(action, steps_before_eot):
-    calls = []
-
-    def sample(*_):
-        calls.append(None)
-        return action | {"eot": int(len(calls) > steps_before_eot)}, 0.0
-
-    return sample
-
-
 def _request():
     return {
         "grid_size": 11,
@@ -171,31 +167,30 @@ def _request():
 def test_request_error_still_releases_pending_state():
     req = _request() | {"request_id": "request-1", "checkpoint": "ckpt"}
     rcon = _AcceptingRcon()
-    wrong_size = SimpleNamespace(width=8, height=8)
 
-    with pytest.raises(ValueError):
+    def broken(_):
+        raise RuntimeError("no such run")
+
+    with pytest.raises(RuntimeError):
         mod_server.handle_request(
-            req, lambda _: (cast(AgentCNN, wrong_size), "run"),
-            cast(mod_server.RconClient, rcon),
-            device=torch.device("cpu"),
+            req, broken, cast(mod_server.RconClient, rcon), device=torch.device("cpu"),
         )
 
     assert "finish_prediction" in rcon.commands[-1]
     assert "server_error" in rcon.commands[-1]
-    assert "expects 8x8" in rcon.commands[-1]
+    assert "no such run" in rcon.commands[-1]
 
 
 def test_load_model_reports_grid_size_or_error():
     rcon = _AcceptingRcon()
-    agent = cast(AgentCNN, SimpleNamespace(width=15, height=15))
 
     def get_model(spec):
         if spec == "missing":
             raise FileNotFoundError("no such run")
-        return agent, "sft-run"
+        return cast(DenoiserUNet, None), "sft-run"
 
-    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model)
-    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model, 15)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model, 15)
 
     loaded, failed = rcon.commands
     assert "'model_loaded'" in loaded and '"grid_size":15' in loaded
@@ -203,23 +198,31 @@ def test_load_model_reports_grid_size_or_error():
     assert "'model_failed'" in failed and "no such run" in failed
 
 
-@pytest.mark.parametrize(("accepted", "stop_reason"), [
-    (True, "eot"), (False, "placement_error"),
+def _belt_build(_model, obs, *_):
+    world = obs.astype(np.int64)
+    for x in range(1, 3):
+        world[Channel.ENTITIES.value, x, 5] = _id("transport_belt")
+        world[Channel.DIRECTION.value, x, 5] = 2
+    return world
+
+
+@pytest.mark.parametrize(("accepted", "stop_reason", "steps"), [
+    (True, "eot", 2), (False, "placement_error", 0),
 ])
-def test_inference_streams_until_done_or_rejected(monkeypatch, accepted, stop_reason):
-    action = _action("transport_belt", xy=(1, 5), direction=2)
-    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 1))
+def test_inference_streams_the_build_until_done_or_rejected(monkeypatch, accepted, stop_reason, steps):
+    monkeypatch.setattr(mod_server, "best_build", _belt_build)
     streamed = []
 
     _, stats = mod_server.run_inference(
-        cast(AgentCNN, None),
-        _request() | {"max_steps": 4},
+        cast(DenoiserUNet, None),
+        _request(),
         device=torch.device("cpu"),
-        on_placement=lambda predicted: streamed.append(predicted) or accepted,
+        on_placement=lambda action: streamed.append(action) or accepted,
     )
 
-    assert streamed == [action | {"eot": 0}]
-    assert stats["steps_taken"] == 1
+    belts = [_action("transport_belt", xy=(x, 5), direction=2) for x in (1, 2)]
+    assert streamed == belts[: max(steps, 1)]
+    assert stats["steps_taken"] == steps
     assert stats["stop_reason"] == stop_reason
 
 
@@ -229,69 +232,29 @@ def test_empty_action_becomes_a_deletion():
     }
 
 
-def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
-    request = _request() | {"seed": 7, "max_steps": 4, "entities": [{
-        "name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0,
-        "item": "electronic-circuit",
-    }]}
-    action = _action("transport_belt", xy=(5, 4), direction=2)
-    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 99))
-    streamed = []
-
-    obs, stats = mod_server.run_inference(
-        cast(AgentCNN, None),
-        request,
-        device=torch.device("cpu"),
-        on_placement=lambda predicted: streamed.append(predicted) or True,
-    )
-
-    ent = obs[Channel.ENTITIES.value]
-    assert (ent == _id("assembling_machine_1")).sum() == 0
-    assert ent[5, 4] == _id("transport_belt")
-    assert streamed == [action | {"eot": 0}] * 4
-    assert stats == {
-        "steps_taken": 4, "invalid_steps": 0, "stop_reason": "max_steps",
-        "seed": 7,
-    }
+def test_build_streams_one_action_per_new_entity_at_its_anchor():
+    obs = mod_server.request_to_obs(_request())
+    world = obs.astype(np.int64)
+    world[Channel.ENTITIES.value, 4:7, 3:6] = _id("assembling_machine_1")
+    world[Channel.ITEMS.value, 4:7, 3:6] = _id("electronic_circuit")
+    (action,) = mod_server.build_actions(obs, world)
+    assert action["xy"] == (4, 3) and action["entity"] == _id("assembling_machine_1")
 
 
-def _streamed_actions(agent, **sampling):
+def _streamed(model, **req):
     streamed = []
     mod_server.run_inference(
-        agent, _request() | {"max_steps": 8} | sampling,
-        device=torch.device("cpu"),
+        model, _request() | req, device=torch.device("cpu"),
         on_placement=lambda action: streamed.append(action) or True,
     )
     return streamed
 
 
-def _tie_free_agent():
-    """An untrained agent scores every tile of an empty grid identically until
-    its (zero-initialised) positional embedding is randomised."""
+def test_seed_replays_a_generated_build_and_new_seeds_differ():
     torch.manual_seed(0)
-    agent = AgentCNN(
-        mod_server._duck_envs(11), attn_dim=32, attn_heads=2, attn_layers=1,
-    ).eval()
-    assert agent.attn is not None and agent.attn.pos_embed is not None
-    torch.nn.init.normal_(agent.attn.pos_embed)
-    return agent
-
-
-def test_seed_replays_a_sampled_run_and_new_seeds_differ():
-    agent = _tie_free_agent()
-
-    assert _streamed_actions(agent, seed=1) == _streamed_actions(agent, seed=1)
-    assert _streamed_actions(agent, seed=1) != _streamed_actions(agent, seed=2)
-
-
-@pytest.mark.parametrize("truncation", [{"top_k": 1}, {"top_p": 1e-6}])
-def test_top_k_and_top_p_can_narrow_sampling_to_greedy(truncation):
-    agent = _tie_free_agent()
-    never = {"stop_rule": "never", "seed": 3}
-
-    greedy = _streamed_actions(agent, temperature=0, **never)
-    assert len(greedy) == 8
-    assert _streamed_actions(agent, **truncation, **never) == greedy
+    model = DenoiserUNet(**TINY).eval()
+    assert _streamed(model, seed=1) == _streamed(model, seed=1)
+    assert _streamed(model, seed=1) != _streamed(model, seed=2)
 
 
 class _CancelledRcon:
@@ -304,14 +267,12 @@ class _CancelledRcon:
 
 
 def test_cancel_in_game_stops_quietly(monkeypatch):
-    action = _action("transport_belt", xy=(1, 5), direction=2)
-    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 99))
+    monkeypatch.setattr(mod_server, "best_build", _belt_build)
     rcon = _CancelledRcon()
-    agent = cast(AgentCNN, SimpleNamespace(width=11, height=11))
 
     mod_server.handle_request(
-        _request() | {"request_id": "r", "checkpoint": "c", "max_steps": 4},
-        lambda _: (agent, "run"), cast(mod_server.RconClient, rcon),
+        _request() | {"request_id": "r", "checkpoint": "c"},
+        lambda _: (cast(DenoiserUNet, None), "run"), cast(mod_server.RconClient, rcon),
         device=torch.device("cpu"),
     )
 

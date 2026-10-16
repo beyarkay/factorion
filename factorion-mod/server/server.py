@@ -1,7 +1,8 @@
 """Factorion model server.
 
-Polls the Factorio mod for requests, runs the trained AgentCNN policy, and
-streams each predicted entity back into the running game over RCON.
+Polls the Factorio mod for requests, generates a factory with the trained
+denoiser, and streams each of its entities back into the running game over
+RCON.
 
 Run from the repo root so the `factorion` and `factorion_rs` modules are
 importable (e.g. via `uv run python factorion-mod/server/server.py ...`).
@@ -16,9 +17,7 @@ import logging
 import secrets
 import sys
 import time
-from dataclasses import dataclass, fields
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Callable, Optional
 
 import numpy as np
@@ -29,15 +28,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from factorion import Channel, Misc, entities, items, str2ent  # noqa: E402
-from ppo import AgentCNN, _resolve_wandb_checkpoint, apply_placement_action  # noqa: E402
+from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state  # noqa: E402
+from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent  # noqa: E402
+from sft import resolve_checkpoint  # noqa: E402
+from training_config import RlArgs, SftArgs  # noqa: E402
 
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
 MOD_PROTOCOL_VERSION = "9"
-ModelLoader = Callable[[str], tuple[AgentCNN, str]]
-"""Checkpoint spec (the mod's setting) → (agent, display name)."""
+ModelLoader = Callable[[str], tuple[DenoiserUNet, str]]
+"""Checkpoint spec (the mod's setting) → (model, display name)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -45,97 +46,6 @@ ModelLoader = Callable[[str], tuple[AgentCNN, str]]
 # --------------------------------------------------------------------------- #
 
 from rcon import RconClient, RconError  # noqa: E402, F401
-
-
-# --------------------------------------------------------------------------- #
-# Model loading & inference.
-# --------------------------------------------------------------------------- #
-def _duck_envs(size: int):
-    """Minimal vector-env shape surface needed to construct AgentCNN."""
-    return SimpleNamespace(
-        single_observation_space=SimpleNamespace(shape=(len(Channel), size, size)),
-    )
-
-
-@dataclass
-class Hyperparams:
-    grid_size: int = 15
-    layers: tuple[int, ...] = (93, 69, 96)
-    kernel_size: int = 3
-    attn_dim: int = 0
-    attn_heads: int = 12
-    attn_layers: int = 4
-    attn_pos_embed: int = 1
-
-    @classmethod
-    def from_mapping(cls, values: dict) -> "Hyperparams":
-        """Read W&B's layer1..8 config or a sidecar's layers list."""
-        size = int(values.get("size", values.get("grid_size", cls.grid_size)))
-        if "layers" in values:
-            layers = tuple(int(v) for v in values["layers"] if int(v) > 0)
-        else:
-            layers = tuple(
-                int(values.get(f"layer{i}", 0))
-                for i in range(1, 9)
-                if int(values.get(f"layer{i}", 0)) > 0
-            )
-        if not layers:
-            raise ValueError("checkpoint config has no positive-width encoder layers")
-        return cls(
-            grid_size=size,
-            layers=layers,
-            kernel_size=int(values.get("kernel_size", 3)),
-            attn_dim=int(values.get("attn_dim", 0)),
-            attn_heads=int(values.get("attn_heads", 12)),
-            attn_layers=int(values.get("attn_layers", 4)),
-            attn_pos_embed=int(values.get("attn_pos_embed", 1)),
-        )
-
-    @classmethod
-    def from_json_sibling(cls, ckpt_path: Path) -> "Hyperparams":
-        sidecar = ckpt_path.with_suffix(".hp.json")
-        if sidecar.exists():
-            with sidecar.open() as f:
-                return cls.from_mapping(json.load(f))
-        return cls()
-
-
-def resolve_checkpoint(
-    spec: str, project: str = "factorion", entity: Optional[str] = None,
-) -> tuple[Path, Optional[Hyperparams], Optional[dict]]:
-    """Resolve a local checkpoint or W&B run and recover its architecture."""
-    local = Path(spec).expanduser()
-    if local.exists():
-        return local.resolve(), None, None
-    if spec.endswith(".pt"):
-        raise FileNotFoundError(f"checkpoint does not exist: {local}")
-
-    path, source = _resolve_wandb_checkpoint(spec, project, entity)
-    config = source.get("config") or {}
-    hp = Hyperparams.from_mapping(config)
-    return Path(path), hp, source
-
-
-def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentCNN:
-    log.info(
-        "Loading checkpoint %s (grid=%d, layers=%s, kernel=%d, attention=%d)",
-        ckpt_path, hp.grid_size, "/".join(map(str, hp.layers)), hp.kernel_size,
-        hp.attn_dim,
-    )
-    agent = AgentCNN(
-        _duck_envs(hp.grid_size),
-        layers=hp.layers,
-        kernel_size=hp.kernel_size,
-        attn_dim=hp.attn_dim,
-        attn_heads=hp.attn_heads,
-        attn_layers=hp.attn_layers,
-        attn_pos_embed=hp.attn_pos_embed,
-    ).to(device)
-    state = torch.load(ckpt_path, map_location=device, weights_only=True)
-    # PPO checkpoints are saved from a torch.compile'd module.
-    agent.load_state_dict({k.removeprefix("_orig_mod."): v for k, v in state.items()})
-    agent.eval()
-    return agent
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +64,8 @@ def _sink_id() -> int:
 
 
 def request_to_obs(req: dict) -> np.ndarray:
-    """Build the (C, W, H) tensor the policy expects from a request dict."""
+    """The (C, W, H) world of a request: its markers, plus its existing
+    entities as walls the model builds around, as a lesson protects its own."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
@@ -189,7 +100,7 @@ def request_to_obs(req: dict) -> np.ndarray:
             )
             continue
         item = str2ent(existing.get("item", existing.get("recipe", "empty")))
-        is_invalid, reason, _ = apply_placement_action(
+        reason = apply_placement_action(
             torch.from_numpy(obs),
             {
                 "xy": (int(existing["x"]), int(existing["y"])),
@@ -198,96 +109,21 @@ def request_to_obs(req: dict) -> np.ndarray:
                 "item": item.value if item is not None else 0,
                 "misc": int(existing.get("misc", Misc.NONE.value)),
             },
-            source_id=src_id,
-            sink_id=snk_id,
         )
-        if is_invalid:
+        if reason is not None:
             log.warning("Ignoring existing %s: %s", entity.name, reason)
 
+    ent = obs[Channel.ENTITIES.value]
+    existing_mask = (ent != str2ent("empty").value) & (ent != src_id) & (ent != snk_id)
+    obs[Channel.FOOTPRINT.value][existing_mask] = Footprint.UNAVAILABLE.value
     return obs
 
 
 # --------------------------------------------------------------------------- #
-# Iterative inference: sample one entity at a time, as a PPO episode does.
+# Inference: generate best-of-N as the eval does, stream the best build.
 # --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class Sampling:
-    """Per-request sampling knobs, set by the mod's map settings."""
-
-    temperature: float = 1.0
-    top_k: int = 0
-    top_p: float = 1.0
-    stop_rule: str = "sample"
-    """sample the eot head (as in training), stop above `stop_threshold`, or never."""
-    stop_threshold: float = 0.5
-    max_steps: int = 0
-    """0 = the training episode length, grid width x height."""
-
-    def __str__(self) -> str:
-        changed = [
-            f"{f.name}={getattr(self, f.name)}"
-            for f in fields(self) if getattr(self, f.name) != f.default
-        ]
-        return ", ".join(changed) or "default sampling"
-
-    @classmethod
-    def from_request(cls, req: dict) -> "Sampling":
-        d = cls()
-        return cls(
-            temperature=float(req.get("temperature", d.temperature)),
-            top_k=int(req.get("top_k", d.top_k)),
-            top_p=float(req.get("top_p", d.top_p)),
-            stop_rule=str(req.get("stop_rule", d.stop_rule)),
-            stop_threshold=float(req.get("stop_threshold", d.stop_threshold)),
-            max_steps=int(req.get("max_steps", d.max_steps)),
-        )
-
-
-def _sample_action(
-    agent: AgentCNN,
-    obs_CWH: np.ndarray,
-    rng: np.random.Generator,
-    sampling: Sampling,
-    device,
-) -> tuple[dict, float]:
-    """One step of the shared sampler, with its randomness drawn from `rng` so
-    a seed replays the whole run."""
-    head_sizes = {
-        "tile": agent.width * agent.height, "entity": agent.num_entities,
-        "direction": agent.num_directions, "item": agent.num_items,
-        "misc": agent.num_misc, "eot": 1,
-    }
-    u = torch.as_tensor(rng.random(sum(head_sizes.values()), dtype=np.float32))
-    noise = {
-        k: v.unsqueeze(0).to(device)
-        for k, v in zip(head_sizes, u.split(list(head_sizes.values())))
-    }
-    noise["eot"] = noise["eot"].squeeze(1)
-    x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
-    with torch.no_grad():
-        out = agent.sample_action(
-            x, temperature=sampling.temperature, noise=noise, legal_mask=True,
-            compute_value=False, top_k=sampling.top_k, top_p=sampling.top_p,
-        )
-    act = out["action"]
-    eot_p = float(out["eot_prob"].item())
-    stop = {
-        "sample": float(noise["eot"]) < eot_p,
-        "threshold": eot_p > sampling.stop_threshold,
-        "never": False,
-    }[sampling.stop_rule]
-    return {
-        "xy": (int(act["xy"][0, 0]), int(act["xy"][0, 1])),
-        "entity": int(act["entity"].item()),
-        "direction": int(act["direction"].item()),
-        "item": int(act["item"].item()),
-        "misc": int(act["misc"].item()),
-        "eot": int(stop),
-    }, eot_p
-
-
 def action_to_placement(action: dict) -> dict:
-    """Convert one model action into a Factorio create_entity specification.
+    """Convert one placement action into a Factorio create_entity specification.
 
     The mod first removes every entity the placement's tiles overlap, so an
     `empty` action becomes a name-less placement that only deletes."""
@@ -339,63 +175,57 @@ def action_to_placement(action: dict) -> dict:
     return placement
 
 
+def best_build(model: DenoiserUNet, obs: np.ndarray, temperature: float, seed: int, device) -> np.ndarray:
+    """The highest-throughput (then cheapest) of `eval_best_of` factories
+    generated around `obs`'s markers."""
+    cond = torch.as_tensor(world_to_state(obs)).unsqueeze(0).repeat(SftArgs.eval_best_of, 1, 1, 1).to(device)
+    gen = torch.Generator(device=device).manual_seed(seed)
+    (typ, rec, part), conf, _, _ = generate(model, cond, SftArgs.gen_steps, SftArgs.gen_refine, temperature, gen)
+    typ, rec, part, conf = (t.cpu().numpy() for t in (typ, rec, part, conf.float()))
+    worlds = [legalize(obs.astype(np.int64), typ[i], rec[i], part[i], conf[i]) for i in range(len(cond))]
+    scores = [score_world(w, 1.0, RlArgs.entity_cost_scale) for w in worlds]
+    return worlds[max(range(len(worlds)), key=lambda i: (scores[i]["thput_raw"], -scores[i]["entity_cost"]))]
+
+
+def build_actions(obs: np.ndarray, world: np.ndarray) -> list[dict]:
+    """One placement action per entity `world` adds to `obs`, in raster order
+    of their anchors."""
+    ent = world[Channel.ENTITIES.value]
+    added = (ent != obs[Channel.ENTITIES.value]) & (part_map(world) == 0)
+    return [
+        {
+            "xy": (int(x), int(y)),
+            "entity": int(ent[x, y]),
+            "direction": int(world[Channel.DIRECTION.value, x, y]),
+            "item": int(world[Channel.ITEMS.value, x, y]),
+            "misc": int(world[Channel.MISC.value, x, y]),
+        }
+        for x, y in zip(*np.nonzero(added))
+    ]
+
+
 def run_inference(
-    agent: AgentCNN,
+    model: DenoiserUNet,
     req: dict,
     device,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until the stop rule fires or we hit the
-    step budget. Invalid actions can't exist in the world, so they are
-    counted rather than streamed."""
+    """Generate a factory for `req` and stream its entities until done or
+    Factorio refuses one."""
     obs = request_to_obs(req)
-    src_id, snk_id = _source_id(), _sink_id()
     seed = int(req.get("seed") or secrets.randbits(31))
-    sampling = Sampling.from_request(req)
-    rng = np.random.default_rng(seed)
-    log.info("  seed=%d %s", seed, sampling)
-
-    stats: dict = {
-        "steps_taken": 0,
-        "invalid_steps": 0,
-        "stop_reason": "max_steps",
-        "seed": seed,
-    }
-
-    max_steps = sampling.max_steps or agent.width * agent.height
-    for step in range(max_steps):
-        action, eot_p = _sample_action(agent, obs, rng, sampling, device)
-        if action["eot"]:
-            log.info("  step %d: eot_prob=%.3f → STOP", step, eot_p)
-            stats["stop_reason"] = "eot"
-            stats["steps_taken"] = step
-            break
-        ent_id = action["entity"]
-        ent_name = entities[ent_id].name if ent_id in entities else "?"
-        item_id = action["item"]
-        item_name = items[item_id].name if item_id in items else "?"
-        log.info(
-            "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
-            step, eot_p, ent_name, ent_id,
-            action["xy"][0], action["xy"][1],
-            action["direction"], item_name, item_id, action["misc"],
-        )
-        is_invalid, reason, _ = apply_placement_action(
-            torch.from_numpy(obs), action, source_id=src_id, sink_id=snk_id,
-        )
-        stats["steps_taken"] = step + 1
-        if is_invalid:
-            log.info("  → invalid (%s), cannot be placed", reason)
-            stats["invalid_steps"] += 1
-            continue
+    temperature = float(req.get("temperature", SftArgs.gen_temperature))
+    log.info("  seed=%d temperature=%g", seed, temperature)
+    world = best_build(model, obs, temperature, seed, device)
+    stats: dict = {"steps_taken": 0, "invalid_steps": 0, "stop_reason": "eot", "seed": seed}
+    for action in build_actions(obs, world):
+        log.info("  place %s at %s", entities[action["entity"]].name, action["xy"])
         if on_placement is not None and not on_placement(action):
             log.info("  → Factorio rejected the placement, stopping")
             stats["stop_reason"] = "placement_error"
             break
-    else:
-        log.info("Reached max_steps=%d without eot.", max_steps)
-
-    return obs, stats
+        stats["steps_taken"] += 1
+    return world, stats
 
 
 # --------------------------------------------------------------------------- #
@@ -447,11 +277,11 @@ def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
     ).strip()
 
 
-def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader) -> None:
+def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader, grid_size: int) -> None:
     try:
-        agent, name = get_model(checkpoint)
+        _, name = get_model(checkpoint)
         method = "model_loaded"
-        payload = {"checkpoint": checkpoint, "name": name, "grid_size": agent.width}
+        payload = {"checkpoint": checkpoint, "name": name, "grid_size": grid_size}
     except Exception as exc:
         log.exception("Could not load checkpoint %s", checkpoint)
         method = "model_failed"
@@ -481,6 +311,7 @@ def poll_loop(
     *,
     poll_interval: float = 0.25,
     device: torch.device,
+    grid_size: int,
 ):
     """Poll Factorio over RCON for queued requests; handle each as it arrives.
 
@@ -533,7 +364,7 @@ def poll_loop(
 
         try:
             if req.get("type") == "load_model":
-                _report_model(rcon, req["checkpoint"], get_model)
+                _report_model(rcon, req["checkpoint"], get_model, grid_size)
                 continue
             handle_request(
                 req,
@@ -555,22 +386,17 @@ def handle_request(
     t0 = time.time()
     stats = {"steps_taken": 0, "invalid_steps": 0, "stop_reason": "server_error"}
     try:
-        agent, _ = get_model(req["checkpoint"])
-        if req["grid_size"] != agent.width:
-            raise ValueError(
-                f"game requested a {req['grid_size']}x{req['grid_size']} grid, "
-                f"but the checkpoint expects {agent.width}x{agent.height}"
-            )
+        model, _ = get_model(req["checkpoint"])
         log.info(
             "Requesting a factory converting [%s] to [%s] using checkpoint %s "
-            "(%dx%d, %s, %d existing entities)",
+            "(%dx%d, %d existing entities)",
             ", ".join(e["item"] for e in req.get("sources", [])),
             ", ".join(e["item"] for e in req.get("sinks", [])),
             req["checkpoint"], req["grid_size"], req["grid_size"],
-            Sampling.from_request(req), len(req.get("entities", [])),
+            len(req.get("entities", [])),
         )
         _, stats = run_inference(
-            agent,
+            model,
             req,
             device=device,
             on_placement=lambda action: _stream_placement(
@@ -607,6 +433,7 @@ def main():
     ap.add_argument("--rcon-port", type=int, default=27015)
     ap.add_argument("--rcon-password", default="factorion")
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
+    ap.add_argument("--grid-size", type=int, default=SftArgs.size, help="side of the region the mod plans")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
 
@@ -618,15 +445,9 @@ def main():
     device = torch.device(args.device)
 
     @functools.cache
-    def get_model(spec: str) -> tuple[AgentCNN, str]:
-        checkpoint, wandb_hp, source = resolve_checkpoint(
-            spec, args.wandb_project, args.wandb_entity,
-        )
-        hp = wandb_hp or Hyperparams.from_json_sibling(checkpoint)
-        if source:
-            log.info("W&B run: %s (%s)", source["run_id"], source["run_url"])
-        name = source["run_name"] if source else checkpoint.name
-        return load_agent(checkpoint, hp, device), name
+    def get_model(spec: str) -> tuple[DenoiserUNet, str]:
+        path, source = resolve_checkpoint(spec, args.wandb_project, args.wandb_entity)
+        return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
 
     rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
     while True:
@@ -672,6 +493,7 @@ def main():
             get_model, rcon,
             poll_interval=0.25,
             device=device,
+            grid_size=args.grid_size,
         )
     finally:
         rcon.close()
