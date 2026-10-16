@@ -95,3 +95,29 @@ An [[underground-belt]] has two modes controlled by the `Misc` channel:
 A down belt searches ahead (in its facing direction) for a matching up belt
 within range. The underground segment between them is invisible and passes
 through any entities above it.
+
+## Electricity
+
+### Electric network
+
+A set of electric poles joined by copper wires. Every consumer inside any of
+the poles' [[glossary#supply-area|supply areas]] draws from the same supply.
+See [[electric-network]].
+
+> **In Factorion:** every pair of poles within wire reach is connected, and a
+> network is powered iff one of its poles is within wire reach of a tile
+> just outside the grid.
+
+### Supply area
+
+The axis-aligned square, centred on an electric pole, inside which entities
+are powered by it: 5x5 for a [[small-electric-pole]], 7x7 for a
+[[medium-electric-pole]], 18x18 for a [[substation]]. A multi-tile entity is
+powered if any one of its tiles lies in the supply area.
+
+### Wire reach
+
+The maximum distance at which two electric poles can be wired together,
+measured between the poles' centres; when two pole types connect, the smaller
+reach applies. 7.5 for a [[small-electric-pole]], 9 for a
+[[medium-electric-pole]], 18 for a [[substation]].

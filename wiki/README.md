@@ -20,12 +20,18 @@ implementation simplifies or diverges from the real game.
 | Underground Belt | Yes | [[underground-belt]] |
 | Splitter | Yes | [[splitter]] |
 | Source / Sink | Yes (custom) | See [[inserter]] — they use inserter connection logic |
+| Small Electric Pole | Yes | [[small-electric-pole]] |
+| Medium Electric Pole | Yes | [[medium-electric-pole]] |
+| Substation | Yes | [[substation]] |
+| Big Electric Pole | No | See [[electric-network]] |
 
 ## Other docs
 
 - [[items-and-recipes]] — items, crafting recipes, and how Factorion models them
 - [[two-lane-system]] — the left/right lane mechanic that spans belts,
   inserters, splitters, and sideloading (**not yet modelled in Factorion**)
+- [[electric-network]] — how poles connect (wire reach), which tiles they
+  power (supply area), and which entities need electricity
 - [[glossary]] — definitions of Factorio terms used in these docs
 
 ## What's deliberately excluded
