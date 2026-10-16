@@ -10,7 +10,7 @@ import torch
 
 from helpers import TINY_ARCH, Channel, Direction, LessonKind, Misc, blank_entities, build_factory, str2ent
 import factorion_rs
-from factorion import POLE_ENT_IDS
+from factorion import POLE_ENT_IDS, count_unpowered
 from ppo import AgentCNN, apply_placement_action
 
 POWER = Channel.POWER.value
@@ -44,9 +44,13 @@ def test_assembler_lessons_need_their_poles(seed):
     assert np.array_equal(world_WHC[..., POWER].astype(bool), factorion_rs.py_power_map(world_WHC[None])[0])
     assert factorion_rs.simulate_throughput(world_WHC)[0] == pytest.approx(factory.max_throughput)
 
+    inserters = np.isin(world_WHC[..., Channel.ENTITIES.value], [str2ent(n).value for n in ("inserter", "long_handed_inserter")]).sum()
+    assert count_unpowered(world) == 0
     world_WHC[poles, Channel.ENTITIES.value] = 0
+    # Every inserter, plus each 3x3 assembler once.
+    assemblers = (world_WHC[..., Channel.ENTITIES.value] == str2ent("assembling_machine_1").value).sum() // 9
+    assert count_unpowered(torch.from_numpy(world_WHC).permute(2, 0, 1)) == inserters + assemblers
     assert factorion_rs.simulate_throughput(world_WHC)[0] == 0
-    assert factorion_rs.simulate_throughput(world_WHC, all_powered=True)[0] == pytest.approx(factory.max_throughput)
 
 
 def test_blanking_unpowers_the_grid():

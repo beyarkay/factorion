@@ -33,7 +33,6 @@ from factorion import (  # noqa: E402
 
 from parity import (  # noqa: E402
     SinkComparison,
-    _PITCH,
     build_batch_spec,
     compare_sinks,
     expected_sink_rates,
@@ -309,36 +308,18 @@ def test_batch_factories_do_not_overlap():
     assert len(occ) == len(set(occ)), "two factories share a tile"
 
 
-def test_batch_substations_never_collide_with_factories():
+def test_batch_leaves_a_ring_of_free_tiles_around_each_factory():
+    """The mod rings every grid with off-map poles one tile out; those rings
+    must not land on another factory or its ring, nor off the field."""
     spec = build_batch_spec(_batch_worlds())
-    occ = _occupied_tiles(spec)
-    for sx, sy in spec["substations"]:
-        # substation is 2x2 with its top-left at (sx-1, sy-1) .. (sx, sy)
-        for dx in (-1, 0):
-            for dy in (-1, 0):
-                assert (sx + dx, sy + dy) not in occ, (
-                    f"substation at ({sx},{sy}) collides with a factory tile"
-                )
-
-
-def test_batch_every_tile_is_powered():
-    """Every occupied tile must lie within a substation's 18x18 (Chebyshev
-    <= 9) supply area, or inserters/assemblers would sit unpowered and skew
-    the measurement."""
-    spec = build_batch_spec(_batch_worlds())
-    subs = spec["substations"]
-    for tx, ty in _occupied_tiles(spec):
-        assert any(max(abs(tx - sx), abs(ty - sy)) <= 9 for sx, sy in subs), (
-            f"tile ({tx},{ty}) is outside every substation supply area"
-        )
-
-
-def test_batch_offsets_are_on_the_pitch_grid():
-    spec = build_batch_spec(_batch_worlds(n_kinds=2, seeds=2))
-    for fac in spec["factories"]:
-        margin = (_PITCH - fac["grid_size"]) // 2
-        assert (fac["offset_x"] - margin) % _PITCH == 0
-        assert (fac["offset_y"] - margin) % _PITCH == 0
+    boxes = [
+        (f["offset_x"] - 1, f["offset_y"] - 1, f["offset_x"] + f["width"], f["offset_y"] + f["height"])
+        for f in spec["factories"]
+    ]
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        assert x0 >= 0 and y0 >= 0 and x1 < spec["extent_x"] and y1 < spec["extent_y"]
+        for a0, b0, a1, b1 in boxes[i + 1:]:
+            assert x1 < a0 or a1 < x0 or y1 < b0 or b1 < y0, "two factory rings overlap"
 
 
 def test_batch_preserves_all_factories_and_ids():

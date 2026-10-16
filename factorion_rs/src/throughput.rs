@@ -411,7 +411,7 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::graph::build_graph_all_powered as build_graph;
+    use crate::graph::build_graph;
     use crate::types::{Direction, Misc, NodeId};
     use crate::world::World;
 
@@ -455,12 +455,13 @@ mod tests {
     fn test_source_inserter_belt_sink() {
         // Source → Inserter → Belt → Sink
         // Throughput limited by inserter rate (0.86).
-        let mut w = World::empty(4, 1);
+        let mut w = World::empty(4, 2);
 
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::Inserter, Direction::East, None);
         w.place(2, 0, Item::TransportBelt, Direction::East, None);
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(1, 1, Item::MediumElectricPole, Direction::None, None);
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -707,6 +708,7 @@ mod tests {
         w.place(5, 2, Item::Inserter, Direction::East, None);
         w.place(6, 2, Item::TransportBelt, Direction::East, None);
         w.place(7, 2, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(3, 4, Item::MediumElectricPole, Direction::None, None);
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -737,6 +739,7 @@ mod tests {
         );
         w.place(1, 1, Item::TransportBelt, Direction::East, None);
         w.place(2, 1, Item::TransportBelt, Direction::East, None);
+        w.place(4, 3, Item::MediumElectricPole, Direction::None, None);
         w_extra(&mut w);
         w
     }
@@ -780,6 +783,7 @@ mod tests {
         w.place(2, 1, Item::TransportBelt, Direction::East, None);
         w.place(2, 2, Item::Inserter, Direction::South, None);
         w.place(2, 3, Item::Sink, Direction::South, Some(Item::IronPlate));
+        w.place(4, 3, Item::MediumElectricPole, Direction::None, None);
 
         let g = build_graph(&w);
         let (output, _) = calc_throughput(&g);

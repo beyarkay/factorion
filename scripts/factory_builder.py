@@ -566,8 +566,7 @@ def factory_yaml(grid: list[list[dict]], source: Optional[str] = None) -> str:
     from the engine's own per-sink deliveries, so the fixture asserts what the
     engine computes for this exact world. The FOOTPRINT channel has no fixture
     form and is dropped — it gates placement legality, not throughput. Nor does
-    a sink with no item bound, so those are left out of `throughput:`. Power
-    is simulated, as the engine computed it here.
+    a sink with no item bound, so those are left out of `throughput:`.
     """
     world_WHC = build_world(grid)
     protos = {it.name: it for it in items.values()}
@@ -605,7 +604,6 @@ def factory_yaml(grid: list[list[dict]], source: Optional[str] = None) -> str:
     note = _provenance(source)
     if note:
         doc["description"] = _Block(note + "\n")
-    doc["simulate_power"] = True
     if bindings:
         doc["items"] = bindings
     if throughput:

@@ -61,14 +61,6 @@ impl PlacedPole {
 }
 
 impl PowerMap {
-    /// Every tile powered: for exercising item flow without placing poles.
-    pub fn everywhere(world: &World) -> Self {
-        Self {
-            powered: vec![true; world.width() * world.height()],
-            height: world.height(),
-        }
-    }
-
     pub fn of(world: &World) -> Self {
         let (width, height) = (world.width() as i64, world.height() as i64);
         let anchor_of = unit_anchors(world);

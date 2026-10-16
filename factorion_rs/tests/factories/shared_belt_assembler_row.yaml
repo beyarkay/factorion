@@ -24,9 +24,9 @@ factory: |
   .. .. b^ i> aaaaaaaa .. ..
   .. .. b^ .. aa    aa .. ..
   .. .. b^ .. aaaaaaaa i> bv
-  .. .. b^ .. aaaaaaaa i> bv
+  .. E. b^ .. aaaaaaaa i> bv
   .. .. b^ .. aa    aa .. bv
-  .. .. b^ i> aaaaaaaa .. bv
+  .. .. b^ i> aaaaaaaa E. bv
   .. .. b^ i> aaaaaaaa .. bv
   .. .. b^ .. aa    aa .. bv
   .. b> b^ .. aaaaaaaa i> bv
@@ -50,9 +50,9 @@ factory: |
   .. .. b^ i> aaaaaaaa .. ..
   .. .. b^ .. aa    aa .. ..
   .. .. b^ .. aaaaaaaa i> bv
-  .. .. b^ .. aaaaaaaa i> bv
+  .. E. b^ .. aaaaaaaa i> bv
   .. .. b^ .. aa    aa .. bv
-  .. .. b^ i> aaaaaaaa .. bv
+  .. .. b^ i> aaaaaaaa E. bv
   .. .. b^ i> aaaaaaaa .. bv
   .. .. b^ .. aa    aa .. bv
   .. .. b^ .. aaaaaaaa i> bv
@@ -76,9 +76,9 @@ factory: |
   .. .. b^ i> aaaaaaaa .. ..
   .. .. b^ .. aa    aa .. ..
   .. .. b^ .. aaaaaaaa i> bv
-  .. .. b^ .. aaaaaaaa i> bv
+  .. E. b^ .. aaaaaaaa i> bv
   .. .. b^ .. aa    aa .. bv
-  .. .. b^ i> aaaaaaaa .. bv
+  .. .. b^ i> aaaaaaaa E. bv
   .. .. b^ i> aaaaaaaa .. bv
   .. .. b^ .. aa    aa .. bv
   .. b> b^ b< aaaaaaaa i> bv

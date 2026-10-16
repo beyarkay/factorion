@@ -24,22 +24,22 @@ factory: |
 description: ug_up/N vs inserter/N
 graph: ""
 factory: |
-  .. u^ i^ ..
+  E. u^ i^ ..
 ---
 description: ug_up/N vs inserter/E
 graph: "u@1,0 -> i@2,0"
 factory: |
-  .. u^ i> ..
+  E. u^ i> ..
 ---
 description: ug_up/N vs inserter/S
 graph: ""
 factory: |
-  .. u^ iv ..
+  E. u^ iv ..
 ---
 description: ug_up/N vs inserter/W
 graph: "i@2,0 -> u@1,0"
 factory: |
-  .. u^ i< ..
+  E. u^ i< ..
 ---
 description: ug_up/N vs ug_up/N
 graph: ""
@@ -104,22 +104,22 @@ factory: |
 description: ug_up/E vs inserter/N
 graph: ""
 factory: |
-  .. u> i^ ..
+  E. u> i^ ..
 ---
 description: ug_up/E vs inserter/E
 graph: "u@1,0 -> i@2,0"
 factory: |
-  .. u> i> ..
+  E. u> i> ..
 ---
 description: ug_up/E vs inserter/S
 graph: ""
 factory: |
-  .. u> iv ..
+  E. u> iv ..
 ---
 description: ug_up/E vs inserter/W
 graph: "i@2,0 -> u@1,0"
 factory: |
-  .. u> i< ..
+  E. u> i< ..
 ---
 description: ug_up/E vs ug_up/N
 graph: ""
@@ -184,22 +184,22 @@ factory: |
 description: ug_up/S vs inserter/N
 graph: ""
 factory: |
-  .. uv i^ ..
+  E. uv i^ ..
 ---
 description: ug_up/S vs inserter/E
 graph: "u@1,0 -> i@2,0"
 factory: |
-  .. uv i> ..
+  E. uv i> ..
 ---
 description: ug_up/S vs inserter/S
 graph: ""
 factory: |
-  .. uv iv ..
+  E. uv iv ..
 ---
 description: ug_up/S vs inserter/W
 graph: "i@2,0 -> u@1,0"
 factory: |
-  .. uv i< ..
+  E. uv i< ..
 ---
 description: ug_up/S vs ug_up/N
 graph: ""
@@ -264,22 +264,22 @@ factory: |
 description: ug_up/W vs inserter/N
 graph: ""
 factory: |
-  .. u< i^ ..
+  E. u< i^ ..
 ---
 description: ug_up/W vs inserter/E
 graph: "u@1,0 -> i@2,0"
 factory: |
-  .. u< i> ..
+  E. u< i> ..
 ---
 description: ug_up/W vs inserter/S
 graph: ""
 factory: |
-  .. u< iv ..
+  E. u< iv ..
 ---
 description: ug_up/W vs inserter/W
 graph: "i@2,0 -> u@1,0"
 factory: |
-  .. u< i< ..
+  E. u< i< ..
 ---
 description: ug_up/W vs ug_up/N
 graph: ""
@@ -344,22 +344,22 @@ factory: |
 description: ug_down/N vs inserter/N
 graph: ""
 factory: |
-  .. d^ i^ ..
+  E. d^ i^ ..
 ---
 description: ug_down/N vs inserter/E
 graph: "d@1,0 -> i@2,0"
 factory: |
-  .. d^ i> ..
+  E. d^ i> ..
 ---
 description: ug_down/N vs inserter/S
 graph: ""
 factory: |
-  .. d^ iv ..
+  E. d^ iv ..
 ---
 description: ug_down/N vs inserter/W
 graph: "i@2,0 -> d@1,0"
 factory: |
-  .. d^ i< ..
+  E. d^ i< ..
 ---
 description: ug_down/N vs ug_up/N
 graph: ""
@@ -424,22 +424,22 @@ factory: |
 description: ug_down/E vs inserter/N
 graph: ""
 factory: |
-  .. d> i^ ..
+  E. d> i^ ..
 ---
 description: ug_down/E vs inserter/E
 graph: "d@1,0 -> i@2,0"
 factory: |
-  .. d> i> ..
+  E. d> i> ..
 ---
 description: ug_down/E vs inserter/S
 graph: ""
 factory: |
-  .. d> iv ..
+  E. d> iv ..
 ---
 description: ug_down/E vs inserter/W
 graph: "i@2,0 -> d@1,0"
 factory: |
-  .. d> i< ..
+  E. d> i< ..
 ---
 description: ug_down/E vs ug_up/N
 graph: ""
@@ -504,22 +504,22 @@ factory: |
 description: ug_down/S vs inserter/N
 graph: ""
 factory: |
-  .. dv i^ ..
+  E. dv i^ ..
 ---
 description: ug_down/S vs inserter/E
 graph: "d@1,0 -> i@2,0"
 factory: |
-  .. dv i> ..
+  E. dv i> ..
 ---
 description: ug_down/S vs inserter/S
 graph: ""
 factory: |
-  .. dv iv ..
+  E. dv iv ..
 ---
 description: ug_down/S vs inserter/W
 graph: "i@2,0 -> d@1,0"
 factory: |
-  .. dv i< ..
+  E. dv i< ..
 ---
 description: ug_down/S vs ug_up/N
 graph: ""
@@ -584,22 +584,22 @@ factory: |
 description: ug_down/W vs inserter/N
 graph: ""
 factory: |
-  .. d< i^ ..
+  E. d< i^ ..
 ---
 description: ug_down/W vs inserter/E
 graph: "d@1,0 -> i@2,0"
 factory: |
-  .. d< i> ..
+  E. d< i> ..
 ---
 description: ug_down/W vs inserter/S
 graph: ""
 factory: |
-  .. d< iv ..
+  E. d< iv ..
 ---
 description: ug_down/W vs inserter/W
 graph: "i@2,0 -> d@1,0"
 factory: |
-  .. d< i< ..
+  E. d< i< ..
 ---
 description: ug_down/W vs ug_up/N
 graph: ""

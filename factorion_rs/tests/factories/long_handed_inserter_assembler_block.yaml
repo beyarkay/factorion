@@ -21,6 +21,7 @@ factory: |
   l> l> l> aaaaaaaa
   l> l> l> aa    aa
   l> l> l> aaaaaaaa
+  E. .. .. .. .. ..
 ---
 description: input from the EAST — block of west-facing long inserters feeds the assembler
 graph: |
@@ -34,6 +35,7 @@ factory: |
   aaaaaaaa l< l< l<
   aa    aa l< l< l<
   aaaaaaaa l< l< l<
+  .. .. E. .. .. ..
 ---
 description: input from the NORTH — block of south-facing long inserters feeds the assembler
 graph: |
@@ -44,12 +46,13 @@ graph: |
   l@1,2 -> a@0,3
   l@2,2 -> a@0,3
 factory: |
-  lv lv lv
-  lv lv lv
-  lv lv lv
-  aaaaaaaa
-  aa    aa
-  aaaaaaaa
+  lv lv lv E.
+  lv lv lv ..
+  lv lv lv ..
+  aaaaaaaa ..
+  aa    aa ..
+  aaaaaaaa ..
+  .. .. .. ..
 ---
 description: input from the SOUTH — block of north-facing long inserters feeds the assembler
 graph: |
@@ -60,12 +63,13 @@ graph: |
   l@1,4 -> a@0,0
   l@2,4 -> a@0,0
 factory: |
-  aaaaaaaa
-  aa    aa
-  aaaaaaaa
-  l^ l^ l^
-  l^ l^ l^
-  l^ l^ l^
+  aaaaaaaa ..
+  aa    aa ..
+  aaaaaaaa E.
+  l^ l^ l^ ..
+  l^ l^ l^ ..
+  l^ l^ l^ ..
+  .. .. .. ..
 ---
 
 # ── Draining the assembler (assembler -> inserters) ──────────────────────────
@@ -82,6 +86,7 @@ factory: |
   aaaaaaaa l> l> l>
   aa    aa l> l> l>
   aaaaaaaa l> l> l>
+  .. .. E. .. .. ..
 ---
 description: output to the WEST — assembler feeds a block of west-facing long inserters
 graph: |
@@ -95,6 +100,7 @@ factory: |
   l< l< l< aaaaaaaa
   l< l< l< aa    aa
   l< l< l< aaaaaaaa
+  E. .. .. .. .. ..
 ---
 description: output to the NORTH — assembler feeds a block of north-facing long inserters
 graph: |
@@ -105,12 +111,13 @@ graph: |
   a@0,3 -> l@1,2
   a@0,3 -> l@2,2
 factory: |
-  l^ l^ l^
-  l^ l^ l^
-  l^ l^ l^
-  aaaaaaaa
-  aa    aa
-  aaaaaaaa
+  l^ l^ l^ E.
+  l^ l^ l^ ..
+  l^ l^ l^ ..
+  aaaaaaaa ..
+  aa    aa ..
+  aaaaaaaa ..
+  .. .. .. ..
 ---
 description: output to the SOUTH — assembler feeds a block of south-facing long inserters
 graph: |
@@ -121,9 +128,10 @@ graph: |
   a@0,0 -> l@1,4
   a@0,0 -> l@2,4
 factory: |
-  aaaaaaaa
-  aa    aa
-  aaaaaaaa
-  lv lv lv
-  lv lv lv
-  lv lv lv
+  aaaaaaaa ..
+  aa    aa ..
+  aaaaaaaa E.
+  lv lv lv ..
+  lv lv lv ..
+  lv lv lv ..
+  .. .. .. ..

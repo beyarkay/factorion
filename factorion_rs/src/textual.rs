@@ -26,10 +26,6 @@
 //! `throughput:`/`graph:` checks are skipped. An empty file (or one of only
 //! comments / `---` separators) holds zero factories and the sweep skips it.
 //!
-//! Every tile counts as powered unless a document sets `simulate_power: true`,
-//! in which case inserters and assemblers run only where the factory's own
-//! poles power them (see [`crate::power`]).
-//!
 //! ## Graph blocks and lanes
 //!
 //! A `graph:` block lists one expected edge per line in the canonical node
@@ -79,7 +75,7 @@ use std::collections::HashSet;
 use serde::Deserialize;
 
 use crate::entities::entity_tiles;
-use crate::graph::{build_graph, build_graph_all_powered, FactoryGraph};
+use crate::graph::build_graph;
 use crate::render::{bbox, on_perimeter, render, render_char, DIR_CHARS, ENTITY_CHARS};
 use crate::throughput::calc_throughput;
 use crate::types::{Channel, Direction, Item, Lane, Misc, NodeId};
@@ -362,11 +358,6 @@ struct Header {
     /// a known-failing fixture without deleting it.
     #[serde(default)]
     ignored: bool,
-    /// When `true`, entities that need power run only if the factory's own
-    /// poles power them. Otherwise every tile is powered, so a fixture about
-    /// item flow needs no poles.
-    #[serde(default)]
-    simulate_power: bool,
     /// Per-coordinate item bindings. For a source this is what it emits, for a
     /// sink what it counts, for an assembler the recipe (product). The `(x, y)`
     /// may be any tile of a multi-tile entity — it resolves to the whole
@@ -412,8 +403,6 @@ pub(crate) struct FactorySpec {
     /// When `true`, the directory sweep skips this factory's assertions (see
     /// [`Header::ignored`]).
     pub ignored: bool,
-    /// See [`Header::simulate_power`].
-    pub simulate_power: bool,
     /// Expected directed edges from the `graph:` block, if any — each a
     /// `(source, destination)` referenced by `<char>@x,y[:L|:R]` (lane-less
     /// multi-tile entities by their anchor). Asserted by [`check_graph`].
@@ -473,7 +462,6 @@ fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
         expected_throughput,
         description: header.description,
         ignored: header.ignored,
-        simulate_power: header.simulate_power,
         expected_graph,
     })
 }
@@ -578,19 +566,11 @@ pub(crate) fn parse_many(text: &str) -> Result<Vec<FactorySpec>, String> {
 
 // ── Assertions & rendering ─────────────────────────────────────────────────
 
-fn spec_graph(spec: &FactorySpec) -> FactoryGraph {
-    if spec.simulate_power {
-        build_graph(&spec.world)
-    } else {
-        build_graph_all_powered(&spec.world)
-    }
-}
-
 /// Build the graph, compute throughput, and check the per-sink deliveries
 /// against the header's `throughput:` as multisets (order-independent, within a
 /// float tolerance). Returns `Err` with the rendered factory on mismatch.
 pub(crate) fn check_throughput(spec: &FactorySpec) -> Result<(), String> {
-    let graph = spec_graph(spec);
+    let graph = build_graph(&spec.world);
     let (deliveries, _unreachable) = calc_throughput(&graph);
     let got: Vec<(Option<Item>, f64)> = deliveries.iter().map(|d| (d.item, d.achieved)).collect();
     let want: Vec<(Option<Item>, f64)> = spec
@@ -651,7 +631,7 @@ pub(crate) fn check_graph(spec: &FactorySpec) -> Result<(), String> {
         Some(e) => e,
         None => return Ok(()),
     };
-    let graph = spec_graph(spec);
+    let graph = build_graph(&spec.world);
     let lane_mode = expected
         .iter()
         .any(|(a, b)| a.lane.is_some() || b.lane.is_some());
@@ -1085,7 +1065,7 @@ factory: |
     fn test_graph_node_parse_errors() {
         // Malformed graph specs are rejected at parse time.
         assert!(parse("graph: |\n  S@0,0 b@1,0\nfactory: |\n  S> b>").is_err()); // no ->
-        assert!(parse("graph: |\n  Z@0,0 -> b@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
+        assert!(parse("graph: |\n  Q@0,0 -> b@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
         assert!(parse("graph: |\n  S@x,0 -> b@1,0\nfactory: |\n  S> b>").is_err());
         // bad coord
     }
@@ -1215,6 +1195,7 @@ throughput:
 - { item: copper_cable, per_second: 0.86 }
 factory: |
   S> i> b> K>
+  .. e. .. ..
 ",
         )
         .unwrap();
@@ -1489,9 +1470,7 @@ factory: |
                 Err(_) => continue,
             };
             for (i, spec) in specs.into_iter().enumerate() {
-                // The parity surface powers every tile, so it can't replay a
-                // fixture whose expectation depends on its own poles.
-                if spec.ignored || spec.simulate_power || spec.expected_throughput.is_empty() {
+                if spec.ignored || spec.expected_throughput.is_empty() {
                     continue;
                 }
                 let thr: Vec<String> = spec
@@ -1548,6 +1527,7 @@ throughput:
 - { item: copper_cable, per_second: 0.86 }
 factory: |
   S> i> b> K>
+  .. e. .. ..
 ",
         )
         .unwrap();

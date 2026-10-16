@@ -24,22 +24,22 @@ factory: |
 description: belt/N vs inserter/N
 graph: ""
 factory: |
-  .. b^ i^ ..
+  E. b^ i^ ..
 ---
 description: belt/N vs inserter/E
 graph: "b@1,0 -> i@2,0"
 factory: |
-  .. b^ i> ..
+  E. b^ i> ..
 ---
 description: belt/N vs inserter/S
 graph: ""
 factory: |
-  .. b^ iv ..
+  E. b^ iv ..
 ---
 description: belt/N vs inserter/W
 graph: "i@2,0 -> b@1,0"
 factory: |
-  .. b^ i< ..
+  E. b^ i< ..
 ---
 description: belt/N vs ug_up/N
 graph: ""
@@ -104,22 +104,22 @@ factory: |
 description: belt/E vs inserter/N
 graph: ""
 factory: |
-  .. b> i^ ..
+  E. b> i^ ..
 ---
 description: belt/E vs inserter/E
 graph: "b@1,0 -> i@2,0"
 factory: |
-  .. b> i> ..
+  E. b> i> ..
 ---
 description: belt/E vs inserter/S
 graph: ""
 factory: |
-  .. b> iv ..
+  E. b> iv ..
 ---
 description: belt/E vs inserter/W
 graph: "i@2,0 -> b@1,0"
 factory: |
-  .. b> i< ..
+  E. b> i< ..
 ---
 description: belt/E vs ug_up/N
 graph: "b@1,0 -> u@2,0"
@@ -184,22 +184,22 @@ factory: |
 description: belt/S vs inserter/N
 graph: ""
 factory: |
-  .. bv i^ ..
+  E. bv i^ ..
 ---
 description: belt/S vs inserter/E
 graph: "b@1,0 -> i@2,0"
 factory: |
-  .. bv i> ..
+  E. bv i> ..
 ---
 description: belt/S vs inserter/S
 graph: ""
 factory: |
-  .. bv iv ..
+  E. bv iv ..
 ---
 description: belt/S vs inserter/W
 graph: "i@2,0 -> b@1,0"
 factory: |
-  .. bv i< ..
+  E. bv i< ..
 ---
 description: belt/S vs ug_up/N
 graph: ""
@@ -264,22 +264,22 @@ factory: |
 description: belt/W vs inserter/N
 graph: ""
 factory: |
-  .. b< i^ ..
+  E. b< i^ ..
 ---
 description: belt/W vs inserter/E
 graph: "b@1,0 -> i@2,0"
 factory: |
-  .. b< i> ..
+  E. b< i> ..
 ---
 description: belt/W vs inserter/S
 graph: ""
 factory: |
-  .. b< iv ..
+  E. b< iv ..
 ---
 description: belt/W vs inserter/W
 graph: "i@2,0 -> b@1,0"
 factory: |
-  .. b< i< ..
+  E. b< i< ..
 ---
 description: belt/W vs ug_up/N
 graph: ""

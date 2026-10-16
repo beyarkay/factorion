@@ -38,12 +38,12 @@ factory: |
 description: belt feeds an inserter
 graph: "b@1,0 -> i@2,0"
 factory: |
-  .. b> i> ..
+  E. b> i> ..
 ---
 description: inserter drops onto the belt ahead
 graph: "i@1,0 -> b@2,0"
 factory: |
-  .. i> b> ..
+  E. i> b> ..
 ---
 description: source drops onto a belt
 graph: "S@1,0 -> b@2,0"
@@ -53,7 +53,7 @@ factory: |
 description: source feeds an inserter (inserter picks up behind it)
 graph: "S@1,0 -> i@2,0"
 factory: |
-  .. S> i> ..
+  E. S> i> ..
 ---
 description: belt feeds an east-facing splitter (2x1, spans two rows)
 graph: "b@1,0 -> Y@2,0"
@@ -96,14 +96,14 @@ factory: |
 description: inserter feeds an assembler (anchor is its top-left tile)
 graph: "i@0,1 -> a@1,0"
 factory: |
-  .. aaaaaaaa ..
+  E. aaaaaaaa ..
   i> aa    aa ..
   .. aaaaaaaa ..
 ---
 description: assembler hands off to an inserter facing away
 graph: "a@1,0 -> i@4,1"
 factory: |
-  .. aaaaaaaa ..
+  .. aaaaaaaa E.
   .. aa    aa i>
   .. aaaaaaaa ..
 ---

@@ -42,9 +42,9 @@ use pyo3::types::PyDict;
 #[cfg(feature = "pyo3-bindings")]
 use entities::entity_tiles;
 #[cfg(feature = "pyo3-bindings")]
-use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, LessonKind};
+use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, place_poles, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
-use graph::{build_graph, build_graph_all_powered, unit_anchors};
+use graph::{build_graph, unit_anchors};
 #[cfg(feature = "pyo3-bindings")]
 use power::PowerMap;
 #[cfg(feature = "pyo3-bindings")]
@@ -64,18 +64,15 @@ use world::World;
 ///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint,
 ///   5: power (ignored — recomputed from the poles)
 ///
-/// `all_powered` counts every tile as powered, for item flow alone.
-///
 /// Returns: (score, num_unreachable).
 /// The score is the power mean (see [`factory_score`]) of each sink's
 /// achieved throughput of its configured item, so unused / under-served
 /// sinks drag it down rather than being hidden by a fully-fed sink.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
-#[pyo3(signature = (world, all_powered=false))]
-fn simulate_throughput(world: PyReadonlyArray3<i64>, all_powered: bool) -> PyResult<(f64, usize)> {
+fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     let world = World::from_numpy(&world);
-    let graph = graph_of(&world, all_powered);
+    let graph = build_graph(&world);
     let (deliveries, num_unreachable) = calc_throughput(&graph);
     Ok((factory_score(&deliveries), num_unreachable))
 }
@@ -101,13 +98,24 @@ fn py_power_map(py: Python<'_>, worlds: PyReadonlyArray4<i64>) -> Py<numpy::PyAr
     out.into_pyarray(py).unbind()
 }
 
+/// `world` with medium poles on its free tiles powering every inserter and
+/// assembler, as the lesson generators power theirs, or `None` when there is
+/// no room for them.
 #[cfg(feature = "pyo3-bindings")]
-fn graph_of(world: &World, all_powered: bool) -> graph::FactoryGraph {
-    if all_powered {
-        build_graph_all_powered(world)
-    } else {
-        build_graph(world)
+#[pyfunction]
+fn py_place_poles(
+    py: Python<'_>,
+    world: PyReadonlyArray3<i64>,
+) -> PyResult<Option<Py<numpy::PyArray3<i64>>>> {
+    let mut world = World::from_numpy(&world);
+    if place_poles(&mut world).is_none() {
+        return Ok(None);
     }
+    PowerMap::of(&world).write(&mut world);
+    let (data, w, h, c) = world.into_whc();
+    let arr = numpy::ndarray::Array3::from_shape_vec((w, h, c), data)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(Some(arr.into_pyarray(py).unbind()))
 }
 
 /// Python-facing shape of one sink's delivery: the sink's anchor tile, the
@@ -167,13 +175,12 @@ type PyGraphData = (Vec<String>, Vec<(usize, usize)>);
 ///
 /// This is enough to rebuild a `networkx.DiGraph` for connectivity checks and
 /// visualization layout, and is the single Python entry point for factory
-/// graph construction. `all_powered` as in `simulate_throughput`.
+/// graph construction.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
-#[pyo3(signature = (world, all_powered=false))]
-fn py_build_graph(world: PyReadonlyArray3<i64>, all_powered: bool) -> PyResult<PyGraphData> {
+fn py_build_graph(world: PyReadonlyArray3<i64>) -> PyResult<PyGraphData> {
     let world = World::from_numpy(&world);
-    let graph = graph_of(&world, all_powered);
+    let graph = build_graph(&world);
     let nodes: Vec<String> = graph.nodes.iter().map(|node| node.label()).collect();
     let mut edges: Vec<(usize, usize)> = Vec::new();
     for (src, succ) in graph.successors.iter().enumerate() {
@@ -424,6 +431,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
     m.add_function(wrap_pyfunction!(py_sink_deliveries, m)?)?;
     m.add_function(wrap_pyfunction!(py_power_map, m)?)?;
+    m.add_function(wrap_pyfunction!(py_place_poles, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_unit_tiles, m)?)?;
