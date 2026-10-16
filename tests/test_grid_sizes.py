@@ -69,8 +69,8 @@ class TestGridSizes:
                 obs, info = env.reset()
         env.close()
 
-    def test_default_size_is_15(self):
-        """Default PpoArgs.size is 15."""
+    def test_default_size_is_32(self):
+        """Default PpoArgs.size is 32."""
         from ppo import PpoArgs
         args = PpoArgs()
-        assert args.size == 15
+        assert args.size == 32
