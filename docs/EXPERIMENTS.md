@@ -132,6 +132,7 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#423](https://github.com/beyarkay/factorion/pull/423) | ❌ | Experiment: SFT on inefficient MOVE_ONE_ITEM then PPO to shorten; SFT val 0.986, PPO thput 0.990 length 9.3; jerry-rigged branch, closed |
 | [#425](https://github.com/beyarkay/factorion/pull/425) | ✅ | KL penalty to frozen SFT reference (divergence_penalty, default 0.02, sweep suggests ~0.002); per-head closed-form KL, EOT excluded |
 | [#427](https://github.com/beyarkay/factorion/pull/427) | ✅ | Independent WSD LR envelopes for PPO actor and critic: mixed per-lesson, FACTORY_N/TRIAL_1 slightly better, budget-independent LR |
+| [#484](https://github.com/beyarkay/factorion/pull/484) | ⏳ | RL for the denoiser from dr17bmik. GRPO policy gradient barely moved eval (gradient cosine between 128-rollout batches ≤ 0.09). Online RAFT (denoising loss toward each factory's best build, SFT anchor on the references) took 20M-step eval/thput@1 0.94→1.06, @8 1.32→1.41, trial@1 0.40→0.53, most of it by 3M. Best of 32 refined builds at temperature 1.5 with anchor 0.3: @8 1.33→1.56 in 3.3M steps and climbing; @1 stuck near 1.03 in every config; no anchor hurt @1; hot builds without refinement collapsed |
 
 ### Reward
 
