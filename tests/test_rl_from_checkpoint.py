@@ -570,24 +570,3 @@ class TestKlToRef:
         assert agent.ent_head.weight.grad.abs().sum() > 0
         assert all(p.grad is None for p in ref.parameters())
 
-
-def test_start_from_a_denoiser_checkpoint_fails_by_name(tmp_path):
-    """A denoiser artifact holds `sft_checkpoint.pt` too, so `--start-from <sft
-    run>` resolves it; PPO must say what it is rather than fail on a wall of
-    missing state-dict keys."""
-    import subprocess
-
-    from denoise import DenoiserUNet
-
-    model = DenoiserUNet(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
-    path = tmp_path / "dn.pt"
-    torch.save({"arch": model.arch, "model": model.state_dict()}, path)
-    proc = subprocess.run(
-        [sys.executable, "ppo.py", "--start-from", str(path), "--size", "5",
-         "--total-timesteps", "64", "--num-envs", "1"],
-        cwd=os.path.join(os.path.dirname(__file__), ".."),
-        env={**os.environ, "CI": "1", "WANDB_MODE": "disabled"},
-        capture_output=True, text=True, timeout=300,
-    )
-    assert proc.returncode != 0
-    assert "is a denoiser checkpoint" in proc.stderr

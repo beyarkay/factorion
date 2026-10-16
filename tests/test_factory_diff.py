@@ -68,7 +68,7 @@ class TestRolloutRecords:
         assert {r["seed"] for r in records} == set(seeds)
         for r in records:
             assert r["kind"] == "MOVE_ONE_ITEM"
-            assert 0.0 <= r["thput"] <= 1.0
+            assert r["thput"] >= 0.0
             assert r["entity_cost"] >= 0.0
             # The render is the real grid: `size` rows of 2-char tiles, 1-char gaps.
             rows = r["render"].splitlines()

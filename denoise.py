@@ -551,7 +551,7 @@ def score_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float)
     cost, eff = entity_cost(world_CWH, cost_scale)
     return {
         "thput_raw": raw,
-        "thput": min(1.0, raw / max_throughput) if max_throughput > 0 else 0.0,
+        "thput": raw / max_throughput if max_throughput > 0 else 0.0,
         # PPO's reward: uncapped, discounted by entity cost.
         "score": raw * eff / max_throughput if max_throughput > 0 else 0.0,
         "entity_cost": cost,

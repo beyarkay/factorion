@@ -786,7 +786,7 @@ def _batch_rollout(kinds: list[LessonKind], seeds: list[int], size: int, best_of
                 "size": size,
                 "steps": _GEN.gen_steps + int(n_refine[j]),
                 "stopped_by": "converged" if converged[j] else "max_steps",
-                "thput_normed": min(1.0, raw / factory.max_throughput) if factory.max_throughput > 0 else 0.0,
+                "thput_normed": raw / factory.max_throughput if factory.max_throughput > 0 else 0.0,
                 "thput_raw": raw,
                 "max_throughput": float(factory.max_throughput),
                 "num_placed_entities": _num_entities(world),
@@ -2407,7 +2407,7 @@ function renderScan() {{
   renderScanFilter();
 }}
 
-// thput_normed is clipped to 1, so this is "matched the reference" with float slack.
+// "Matched the reference" with float slack.
 const REFERENCE_THPUT = 0.999;
 
 function scanSummary(status) {{

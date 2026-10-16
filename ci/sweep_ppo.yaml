@@ -1,37 +1,25 @@
-# ci/sweep_ppo.yaml — peaks + shape of the independent actor/critic WSD LR envelopes
+# ci/sweep_ppo.yaml — RAFT finetuning of the denoiser (raft.py, via ppo.py)
 #
 # Launched with: /ci sweep ppo
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
 # Before launching, refresh the --start-from base below: check W&B for the
-# latest + longest-running SFT run that uploaded a model artifact (runs
-# without one can't be loaded as a base, and beware PR-experiment runs such
-# as single-lesson trains — their val/thput@8 is not comparable).
+# latest + longest-running denoiser SFT run that uploaded a model artifact. A
+# run's eval/ at iteration 0 is its base's own score, so the metric compares
+# across runs from the same base.
 #
-# Everything but the two LR envelopes stays at the training_config.py defaults;
-# the sweep picks the peaks and the shape knobs the envelopes added:
-#   - learning_rate: the peak the actor's stable phase holds for most of the
-#     run, so the single most consequential number here. The previous default
-#     was tuned under the linear whole-run anneal, which spends most of its
-#     steps well below peak — the best WSD peak may well sit lower, so the
-#     range reaches further down than up.
-#   - critic_lr: the critic's peak. Only the value head rides it, so the
-#     range is wide — it reaches both below the actor's band and above it.
-#   - lr_warmup_iters: an absolute iteration count, so what wins transfers
-#     unchanged to runs of any length; 0 is in range so the sweep can say the
-#     ramp is worthless. Only the actor has one — the critic-warmup freeze is
-#     the critic's warmup.
-#   - *_cooldown_frac: Hägele et al. report the benefit plateauing near 20%
-#     and as little as 5% sufficing on long runs; swept past both ends.
-#   - *_min_ratio: 0 (decay to zero) is in range, so the sweep can tell us
-#     whether a nonzero floor is worth anything. The critic's range reaches
-#     higher — keeping the value head learning while the actor cools is the
-#     point of scheduling the two independently.
+# Ranges bracket #484's hand-tuned defaults:
+#   - raft_lr: 1e-3 diverged under the policy gradient; RAFT has only seen 2.5e-4.
+#   - raft_groups x raft_group_size: the best of a larger group is a better
+#     target (best-of-k was still rising at 32), fewer groups fewer targets.
+#   - raft_temperature: 1.5 beat 1.0 on eval/thput@8; 2.0 widened best-of-32
+#     further.
+#   - raft_sft_coef: 0.3 beat 1.0 on eval/thput@8; 0 hurt eval/thput@1.
+#   - entity_cost_scale: 0 rewards throughput alone, which is what eval scores.
 #
-# 1M timesteps ≈ 244 iterations (~1 h/run): long enough that the stable phase
-# and the cooldown both register in eval/thput@8, short enough that 25 bayes
-# runs drain in about a pod-day.
+# 3M timesteps is ~90 optimizer steps at 64 factories x 32 builds, where #484's
+# configs had already separated.
 
 method: bayes
 run_cap: 25
@@ -40,39 +28,24 @@ metric:
   goal: maximize
 
 parameters:
-  # ── Peaks ────────────────────────────────────────────────────────
-  learning_rate:
+  raft_lr:
     distribution: log_uniform_values
-    min: 3e-6
-    max: 1e-4
-  critic_lr:
+    min: 5e-5
+    max: 1e-3
+  raft_groups:
+    values: [32, 64, 128]
+  raft_group_size:
+    values: [16, 32, 64]
+  raft_temperature:
+    distribution: uniform
+    min: 1.0
+    max: 2.0
+  raft_sft_coef:
     distribution: log_uniform_values
-    min: 3e-6
-    max: 3e-4
-
-  # ── Warmup ───────────────────────────────────────────────────────
-  lr_warmup_iters:
-    distribution: int_uniform
-    min: 0
-    max: 40
-
-  # ── Cooldown ─────────────────────────────────────────────────────
-  lr_cooldown_frac:
-    distribution: uniform
-    min: 0.02
-    max: 0.5
-  critic_lr_cooldown_frac:
-    distribution: uniform
-    min: 0.02
-    max: 0.5
-  lr_min_ratio:
-    distribution: uniform
-    min: 0.0
-    max: 0.1
-  critic_lr_min_ratio:
-    distribution: uniform
-    min: 0.0
-    max: 0.3
+    min: 0.05
+    max: 1.0
+  entity_cost_scale:
+    values: [0.0, 0.001]
 
 program: ppo.py
 
@@ -81,8 +54,8 @@ command:
   - python
   - ${program}
   - --start-from
-  - hcozpmwt
+  - dr17bmik
   - --total-timesteps
-  - 1_000_000
+  - 3_000_000
   - --track
   - ${args}
