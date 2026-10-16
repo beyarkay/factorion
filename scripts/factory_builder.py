@@ -51,6 +51,7 @@ from factorion import (  # noqa: E402
     Footprint,
     LessonKind,
     Misc,
+    POLE_ENT_IDS,
     blank_entities,
     build_factory,
     build_graph_nx,
@@ -59,6 +60,7 @@ from factorion import (  # noqa: E402
     items,
     new_world,
     plot_flow_network,
+    refresh_power,
     render_factory,
 )
 from denoise import (  # noqa: E402
@@ -87,6 +89,9 @@ PLACEABLE_ENTITIES = [
     "stack_inserter",
     "bulk_inserter",
     "assembling_machine_1",
+    "small_electric_pole",
+    "medium_electric_pole",
+    "substation",
 ]
 NON_PLACEABLE_ITEMS = [
     "copper_cable",
@@ -107,7 +112,7 @@ HOTBAR = [
     "bulk_inserter",
     "assembling_machine_1",
     "long_handed_inserter",
-    None,
+    "medium_electric_pole",
     "empty",
 ]
 # Display labels for slots whose canonical entity name differs from how
@@ -210,7 +215,9 @@ def build_world(grid: list[list[dict]]) -> torch.Tensor:
             world[x, y, Channel.MISC.value] = Misc[cell.get("misc", "NONE")].value
             footprint = cell.get("footprint", "AVAILABLE")
             world[x, y, Channel.FOOTPRINT.value] = Footprint[footprint].value
-    return torch.tensor(world)
+    world = torch.tensor(world)
+    refresh_power(world.permute(2, 0, 1))
+    return world
 
 
 def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
@@ -276,6 +283,7 @@ def _apply_prediction(grid: list[list[dict]], prediction: dict) -> dict:
 
 _MARKERS = ("stack_inserter", "bulk_inserter")
 _ASSEMBLER = "assembling_machine_1"
+_POLES = {items[v].name for v in POLE_ENT_IDS}
 
 
 def _footprint(x: int, y: int, cell: dict) -> list[tuple[int, int]]:
@@ -306,7 +314,9 @@ def _place_by_hand(grid: list[list[dict]], x: int, y: int, cell: dict) -> dict:
     if cell["entity"] == "empty":
         cell.update(direction="NONE", item="empty", misc="NONE")
     else:
-        if cell["direction"] == "NONE" and cell["entity"] != _ASSEMBLER:
+        if cell["entity"] in _POLES:
+            cell["direction"] = "NONE"
+        elif cell["direction"] == "NONE" and cell["entity"] != _ASSEMBLER:
             cell["direction"] = "EAST"
         if cell["entity"] != "underground_belt":
             cell["misc"] = "NONE"
@@ -556,7 +566,8 @@ def factory_yaml(grid: list[list[dict]], source: Optional[str] = None) -> str:
     from the engine's own per-sink deliveries, so the fixture asserts what the
     engine computes for this exact world. The FOOTPRINT channel has no fixture
     form and is dropped — it gates placement legality, not throughput. Nor does
-    a sink with no item bound, so those are left out of `throughput:`.
+    a sink with no item bound, so those are left out of `throughput:`. Power
+    is simulated, as the engine computed it here.
     """
     world_WHC = build_world(grid)
     protos = {it.name: it for it in items.values()}
@@ -594,6 +605,7 @@ def factory_yaml(grid: list[list[dict]], source: Optional[str] = None) -> str:
     note = _provenance(source)
     if note:
         doc["description"] = _Block(note + "\n")
+    doc["simulate_power"] = True
     if bindings:
         doc["items"] = bindings
     if throughput:
