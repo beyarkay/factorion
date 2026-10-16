@@ -40,6 +40,7 @@ from factorion import (
     Misc,
     POLE_ENT_IDS,
     count_dangling_inserters,
+    count_unpowered,
     entities,
     items,
     refresh_power,
@@ -652,7 +653,8 @@ def run_denoise_eval(
     cheaper build, then the lower chain index). Returns `"thput@n"` /
     `"trial_thput@n"` / `"per_kind@n"` for n in 1, 8 (when ≤ best_of) and
     best_of — best-of-n reads the first n chains — plus chain-level
-    convergence and the selected factories' dangling-inserter counts.
+    convergence and the selected factories' dangling-inserter and unpowered
+    counts.
     `records` collects one dict (seed, kind, thput, render, ...) per factory.
     """
     from factorion import blank_entities, render_factory
@@ -687,6 +689,7 @@ def run_denoise_eval(
     for n in ns:
         lesson, trial, per_kind = [], [], {}
         dangling = [0, 0, 0, 0]  # lesson in/out, trial in/out
+        unpowered = [0, 0]  # lesson, trial
         for (s, kind, _), rs in zip(factories, results):
             best = max(rs[:n], key=lambda r: (r["thput"], -r["entity_cost"], -r["chain"]))
             is_trial = LESSON_IS_TRIAL[kind]
@@ -696,6 +699,8 @@ def run_denoise_eval(
                 d_in, d_out = count_dangling_inserters(torch.from_numpy(best["world"]))
                 dangling[2 * is_trial] += d_in
                 dangling[2 * is_trial + 1] += d_out
+                n_unpowered = count_unpowered(torch.from_numpy(best["world"]))
+                unpowered[is_trial] += n_unpowered
                 if records is not None:
                     records.append(
                         {
@@ -705,6 +710,7 @@ def run_denoise_eval(
                             "entity_cost": best["entity_cost"],
                             "inserters_no_input": d_in,
                             "inserters_no_output": d_out,
+                            "unpowered": n_unpowered,
                             "render": render_factory(best["world"]),
                         }
                     )
@@ -713,6 +719,7 @@ def run_denoise_eval(
         out[f"per_kind@{n}"] = {k: float(np.mean(v)) for k, v in per_kind.items()}
         if n == best_of:
             out["dangling"] = dangling
+            out["unpowered"] = unpowered
             out["n_trials"] = len(trial)
     if was_training:
         model.train()

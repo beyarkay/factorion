@@ -341,6 +341,8 @@ def str2ent(s):
 _EMPTY_ENT_VAL = str2ent("empty").value
 _SOURCE_ENT_VAL = str2ent("source").value
 _SINK_ENT_VAL = str2ent("sink").value
+_INSERTER_ENT_VALS = torch.tensor([str2ent(n).value for n in ("inserter", "long_handed_inserter")])
+_ASM_ENT_VAL = str2ent("assembling_machine_1").value
 # Poles have no facing: they're stored with Direction.NONE.
 POLE_ENT_IDS = tuple(
     str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "substation")
@@ -1098,7 +1100,7 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
     return evals, avg_throughput, float(avg_num_entities)
 
 
-def build_graph_nx(world_WHC, all_powered=False):
+def build_graph_nx(world_WHC):
     """Build the factory connection graph as a networkx ``DiGraph``.
 
     The Rust engine (``factorion_rs.py_build_graph``) is the single source of
@@ -1111,12 +1113,12 @@ def build_graph_nx(world_WHC, all_powered=False):
     entity-connection rules.
 
     Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
-    ``factorion_rs.simulate_throughput`` takes; ``all_powered`` as there.
+    ``factorion_rs.simulate_throughput`` takes.
     """
     import networkx as nx  # lazy: networkx is visualization-only (see top imports)
 
     arr = world_WHC.numpy() if hasattr(world_WHC, "numpy") else np.asarray(world_WHC)
-    nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64), all_powered)
+    nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64))
     G = nx.DiGraph()
     G.add_nodes_from(nodes)
     G.add_edges_from((nodes[i], nodes[j]) for i, j in edges)
@@ -1126,10 +1128,10 @@ def build_graph_nx(world_WHC, all_powered=False):
 def count_dangling_inserters(world_CWH) -> tuple[int, int]:
     """(inserters with no input, inserters with no output) per the engine's
     factory graph. A finished factory should have zero of each: every inserter
-    the agent places should both pick up from and drop onto something. Power
-    is ignored: this counts wiring, and an unpowered inserter has no node."""
+    the agent places should both pick up from and drop onto something. An
+    unpowered inserter has no node, so `count_unpowered` counts it instead."""
     arr = world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
-    nodes, edges = factorion_rs.py_build_graph(arr, all_powered=True)
+    nodes, edges = factorion_rs.py_build_graph(arr)
     fed = {dst for _, dst in edges}
     draining = {src for src, _ in edges}
     inserters = [i for i, label in enumerate(nodes) if label[0] in "il"]
@@ -1137,6 +1139,14 @@ def count_dangling_inserters(world_CWH) -> tuple[int, int]:
         sum(i not in fed for i in inserters),
         sum(i not in draining for i in inserters),
     )
+
+
+def count_unpowered(world_CWH) -> int:
+    """Inserters and assemblers no pole powers, which do nothing."""
+    ent = world_CWH[Channel.ENTITIES.value]
+    placed = int(torch.isin(ent, _INSERTER_ENT_VALS).sum()) + int((ent == _ASM_ENT_VAL).sum()) // 9
+    nodes, _ = factorion_rs.py_build_graph(world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+    return placed - sum(n[0] in "ila" for n in nodes)
 
 
 def _remove_entities(

@@ -326,6 +326,7 @@ class TestTrackedArtifact:
         n = args.eval_best_of
         assert f"val/thput@{n}" in logged
         assert f"val/inserters_no_input@{n}" in logged
+        assert f"val/unpowered@{n}" in logged
         assert any(k.endswith(f"/MOVE_ONE_ITEM/thput@{n}") for k in logged)
         assert all(re.search(r"@\d+$", k) for k in logged if "thput" in k or "inserters_no" in k)
         assert f"best_val_throughput@{n}" in fake_run.summary

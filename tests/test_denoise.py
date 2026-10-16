@@ -186,6 +186,7 @@ def test_eval_pools_trials_apart_and_records_each_factory():
     )
     assert set(out) >= {"thput@1", "thput@3", "trial_thput@3", "per_kind@3", "converged_frac"}
     assert out["n_trials"] == 2
+    assert len(out["unpowered"]) == 2 and all("unpowered" in r for r in records)
     assert set(out["per_kind@3"]) == {k.name for k in kinds}
     assert out["thput@3"] >= out["thput@1"]
     assert [(r["seed"], r["kind"]) for r in records] == [(s, k.name) for s, k, _ in factories]
