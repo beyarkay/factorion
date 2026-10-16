@@ -237,6 +237,24 @@ class PpoArgs(SharedArgs):
     """Run the training envs in worker processes (gym AsyncVectorEnv) instead of
     serially (SyncVectorEnv)."""
 
+    # ── Denoiser RL: RAFT, when --start-from is a denoiser checkpoint (raft.py) ──
+    # A timestep is one ancestral denoising step of one build. Of the knobs
+    # above, these apply too: total_timesteps, max_grad_norm, adam_epsilon,
+    # entity_cost_scale, lr_warmup_iters / lr_cooldown_frac / lr_min_ratio,
+    # eval_every, eval_best_of.
+    raft_lr: float = 2.5e-4
+    """peak learning rate of the denoiser"""
+    raft_groups: int = 64
+    """factories per iteration"""
+    raft_group_size: int = 32
+    """builds per factory; the model trains toward the best of them"""
+    raft_temperature: float = 1.5
+    """sampling temperature of the builds: hotter widens the best of a
+    group without hurting the typical build (the eval keeps 1.0)"""
+    raft_sft_coef: float = 0.3
+    """weight of SFT's denoising loss on each iteration's lesson references
+    (the best builds' loss weighs 1)"""
+
     # ── Time-to-quality benchmarking (offline; see tests/benchmarks/bench_run.sh ppo-quality) ──────────
     target_metric: Optional[str] = None
     """If set, stop training the first time an EMA of this iter-metric key

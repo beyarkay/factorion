@@ -1871,6 +1871,17 @@ if __name__ == "__main__":
     num_gsteps = args.num_envs * args.num_steps * args.num_iterations
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
 
+    start_path = (
+        _resolve_start_from(args.start_from, args.wandb_project_name, args.wandb_entity)
+        if args.start_from is not None
+        else None
+    )
+    if start_path is not None and "arch" in torch.load(start_path, map_location="cpu", weights_only=True):
+        from raft import train_raft
+
+        train_raft(args, start_path)
+        raise SystemExit
+
     if args.divergence_penalty and args.start_from is None:
         print(
             "--divergence-penalty is inert without --start-from: there is no "
@@ -2004,22 +2015,14 @@ if __name__ == "__main__":
         print("AMP: bf16 autocast enabled for the encoder forward")
 
     ref_agent: Optional[AgentCNN] = None
-    if args.start_from is not None:
+    if start_path is not None:
         if args.track:
             _append_run_tags(run, f"start_from:{args.start_from}")
         print(f"Loading model weights from {args.start_from}")
-        ckpt_path = _resolve_start_from(
-            args.start_from, args.wandb_project_name, args.wandb_entity
-        )
         # Load to CPU first; the SFT checkpoint may hold CUDA tensors (saved on
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
-        state = torch.load(ckpt_path, map_location="cpu")
-        if "arch" in state:
-            raise SystemExit(
-                f"{args.start_from} is a denoiser checkpoint (sft.py); PPO trains "
-                f"AgentCNN and can only start from an AgentCNN state dict"
-            )
+        state = torch.load(start_path, map_location="cpu")
         agent.load_state_dict(state)
         # Snapshot the divergence-penalty anchor before the critic re-init below.
         ref_agent = copy.deepcopy(agent).to(device)
