@@ -78,12 +78,11 @@ ALLOWED_CUDA_VERSIONS = [
 # so the watchdog can enforce cleanup statelessly from `runpod.get_pods()`
 # alone: factorion-ci-<kind>-c<created>-d<deadline>-<sha7>, with timestamps
 # in compact UTC ISO 8601 (20260706T151610Z — no dashes/colons, since dashes
-# separate the name's fields). Bare epoch-seconds timestamps still parse for
-# pods launched before the switch.
+# separate the name's fields).
 POD_PREFIX = "factorion-ci-"
 _POD_NAME_RE = re.compile(
-    r"^factorion-ci-(?P<kind>[a-z-]+)-c(?P<created>\d{8}T\d{6}Z|\d+)"
-    r"-d(?P<deadline>\d{8}T\d{6}Z|\d+)-(?P<sha7>[0-9a-f]+)$"
+    r"^factorion-ci-(?P<kind>[a-z-]+)-c(?P<created>\d{8}T\d{6}Z)"
+    r"-d(?P<deadline>\d{8}T\d{6}Z)-(?P<sha7>[0-9a-f]+)$"
 )
 _POD_TS_FMT = "%Y%m%dT%H%M%SZ"
 
@@ -97,8 +96,6 @@ def _pod_ts(epoch: int) -> str:
 
 
 def _parse_pod_ts(token: str) -> int:
-    if "T" not in token:  # legacy epoch-seconds name
-        return int(token)
     return calendar.timegm(time.strptime(token, _POD_TS_FMT))
 
 
