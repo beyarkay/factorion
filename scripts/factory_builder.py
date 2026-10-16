@@ -674,7 +674,7 @@ def _legalize(model: DenoiserUNet, cond: torch.Tensor, toks, conf: torch.Tensor)
     typ, rec, part = (t.cpu().numpy() for t in toks)
     cond_np, conf_np = cond.cpu().numpy().astype(np.int64), conf.float().cpu().numpy()
     return [
-        legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i])
+        legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i], conf_np[i])
         for i in range(len(cond_np))
     ]
 

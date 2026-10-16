@@ -79,7 +79,7 @@ def rollout(model, batch, args: RlArgs, gen: SftArgs, generator) -> dict:
     conf = torch.cat([o[1] for o in outs]).float().cpu().numpy()
     cond_np = cond[:, :CH_PART].cpu().numpy().astype(np.int64)
     worlds = [
-        legalize(cond_np[i], typ[i], rec[i], part[i] if model.io == "token" else None, conf[i]) for i in range(len(cond))
+        legalize(cond_np[i], typ[i], rec[i], part[i], conf[i]) for i in range(len(cond))
     ]
     scores = [score_world(w, batch[i // G][1].max_throughput, args.entity_cost_scale) for i, w in enumerate(worlds)]
     reward = np.array([s["score"] for s in scores]).reshape(-1, G)
@@ -99,7 +99,7 @@ def update(model, optimizer, roll: dict, args: RlArgs, gen: SftArgs) -> dict:
         if targets is None:
             continue
         for t in targets.long().split(_CHUNK):
-            loss, _ = denoise_step(model, t, torch.zeros(len(t), device=t.device), gen)
+            loss, _ = denoise_step(model, t, gen)
             w = len(t) / len(targets)
             (coef * w * loss).backward()
             stats[key] = stats.get(key, 0.0) + w * float(loss.detach())

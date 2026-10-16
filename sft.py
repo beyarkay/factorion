@@ -30,23 +30,19 @@ import tqdm
 import tyro
 from torch.utils.data import DataLoader, IterableDataset
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-from denoise import (  # noqa: E402
-    CH_PART,
+from denoise import (
     DenoiserUNet,
     N_TYPES,
     _luts,
     corrupt,
     free_mask,
-    legalize,
     load_denoiser,
     run_denoise_eval,
-    score_world,
     state_to_tokens,
     tokens_to_state,
     world_to_state,
 )
-from factorion import (  # noqa: E402
+from factorion import (
     LESSON_IS_TRIAL,
     Factory,
     TRAINING_KINDS,
@@ -54,7 +50,7 @@ from factorion import (  # noqa: E402
     build_factory,
 )
 
-from training_config import RlArgs, SftArgs, wsd_multiplier  # noqa: E402
+from training_config import RlArgs, SftArgs, wsd_multiplier
 
 # Training factories come from far above the held-out eval seeds (9M-11M).
 _TRAIN_SEED_BASE = 1_000_000_000
@@ -113,7 +109,7 @@ _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
 def _iter_factories(size, base_seed, worker_id, num_workers):
-    """Yield (state uint8, max_throughput) for fresh lesson factories forever.
+    """Yield the uint8 state of fresh lesson factories forever.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     concurrent workers never share a factory. Kinds are drawn uniformly.
@@ -150,7 +146,7 @@ def _iter_factories(size, base_seed, worker_id, num_workers):
                     )
             continue
         consecutive_fails[kind.name] = 0
-        yield torch.from_numpy(world_to_state(factory.world_CWH)), float(factory.max_throughput)
+        yield torch.from_numpy(world_to_state(factory.world_CWH))
 
 
 class FactoryStream(IterableDataset):
@@ -290,47 +286,7 @@ def noise_prior_from(states: torch.Tensor) -> torch.Tensor:
     return 0.95 * freq / freq.sum() + 0.05 / N_TYPES
 
 
-def tokens_logp(model, logits, toks, free):
-    """Per-example log-probability of `toks` under `logits`, averaged over
-    free tiles."""
-    freef = free.float()
-    return (model.logp(logits, toks) * freef).sum((1, 2)) / freef.sum((1, 2)).clamp(min=1)
-
-
-def throughput_pg_loss(model, logits, state, free, max_thput, t, args: SftArgs):
-    """REINFORCE on simulated throughput. Up to `rl_inputs` lightly-corrupted
-    examples (t ≤ rl_max_noise, where a sample is a plausible factory) each get
-    `rl_samples` factories sampled from the prediction; each is legalized and
-    scored with RL's reward (raw throughput × cost efficiency ÷ reference) and
-    reinforced against its siblings' mean (RLOO). Returns (loss, mean score)."""
-    idx = torch.nonzero(t <= args.rl_max_noise).squeeze(1)[: args.rl_inputs]
-    if len(idx) == 0:
-        return logits.new_zeros(()), 0.0
-    K = args.rl_samples
-    rep = idx.repeat_interleave(K)
-    lg, fr = logits[rep], free[rep]
-    with torch.no_grad():
-        toks = model.pick(lg.detach(), temperature=1.0)
-        conf = model.conf(lg.detach(), toks)
-    cond = state[rep, :CH_PART].cpu().numpy().astype(np.int64)
-    typ, rec, part = (x.cpu().numpy() for x in toks)
-    conf_np, mt = conf.float().cpu().numpy(), max_thput[rep].tolist()
-    scores = torch.tensor(
-        [
-            score_world(
-                legalize(cond[i], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i]),
-                mt[i],
-                RlArgs.entity_cost_scale,
-            )["score"]
-            for i in range(len(rep))
-        ],
-        device=logits.device,
-    ).view(-1, K)
-    adv = (scores - (scores.sum(1, keepdim=True) - scores) / (K - 1)).view(-1)
-    return -(adv * tokens_logp(model, lg, toks, fr)).mean(), float(scores.mean())
-
-
-def denoise_step(model, state, max_thput, args: SftArgs):
+def denoise_step(model, state, args: SftArgs):
     """One training batch: corrupt, predict, (unroll), loss. Returns (loss,
     stats) where stats holds detached per-term values."""
     free = free_mask(state)
@@ -349,11 +305,6 @@ def denoise_step(model, state, max_thput, args: SftArgs):
     weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
     loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
     stats = {k: v.detach() for k, v in terms.items()}
-    if args.lw_thput > 0:
-        pg, mean_score = throughput_pg_loss(model, logits, state, free, max_thput, t, args)
-        loss = loss + args.lw_thput * pg
-        stats["thput_pg"] = pg.detach()
-        stats["rl_score"] = torch.tensor(mean_score)
     with torch.no_grad():
         typ_pred = model.pick(logits.detach())[0]
         stats["type_acc"] = ((typ_pred == clean[0]) & free).sum() / free.sum().clamp(min=1)
@@ -368,8 +319,7 @@ def val_denoise_metrics(model, val_states, args: SftArgs, device) -> dict:
     gen = torch.Generator(device=device).manual_seed(args.seed)
     out: dict = {}
     L = _luts(device)
-    # `factored` predicts no parts: its footprints are re-derived by `legalize`.
-    heads = ("type", "recipe", "part") if model.io == "token" else ("type", "recipe")
+    heads = ("type", "recipe", "part")
     for t in _VAL_NOISE_LEVELS:
         hits = dict.fromkeys(heads, 0.0)
         counts = dict.fromkeys(heads, 0.0)
@@ -484,8 +434,6 @@ def train_sft(args: SftArgs):
     t0 = time.time()
     if args.batch_size % args.noise_repeats:
         raise ValueError("batch_size must be a multiple of noise_repeats")
-    if args.lw_thput > 0 and args.rl_samples < 2:
-        raise ValueError("the throughput loss needs rl_samples >= 2 for its leave-one-out baseline")
 
     device = torch.device(
         "cuda"
@@ -513,9 +461,8 @@ def train_sft(args: SftArgs):
             attn_layers=args.attn_layers,
             attn_heads=args.attn_heads,
             dropout=args.dropout,
-            io=args.io,
         )
-        prior_states = [s for s, _ in itertools.islice(_iter_factories(args.size, train_seed, 0, 1), 256)]
+        prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1), 256))
         model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     model.to(device)
@@ -569,13 +516,12 @@ def train_sft(args: SftArgs):
     it = iter(loader)
     while samples_seen < args.num_samples:
         t_data = time.time()
-        state_cpu, max_cpu = next(it)
+        state_cpu = next(it)
         data_s += time.time() - t_data
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
-        max_thput = max_cpu.to(device, torch.float32).repeat_interleave(args.noise_repeats, 0)
 
         model.train()
-        loss, stats = denoise_step(fwd, state, max_thput, args)
+        loss, stats = denoise_step(fwd, state, args)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm or float("inf"))

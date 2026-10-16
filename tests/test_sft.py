@@ -14,8 +14,8 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from helpers import TINY, LessonKind, build_factory
-from denoise import DenoiserUNet, load_denoiser, world_to_state
+from helpers import TINY
+from denoise import load_denoiser
 from sft import (
     SftArgs,
     _artifact_name,
@@ -23,18 +23,11 @@ from sft import (
     _humanize_lr,
     build_lr_schedule,
     noise_levels,
-    throughput_pg_loss,
     train_sft,
 )
+
 # Generation eval shrunk to a couple of short chains per factory.
 FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2)
-
-
-def _batch(n=4, size=15):
-    factories = [f for s in range(n) if (f := build_factory(size=size, kind=LessonKind.SAME_SIDE_1IN, seed=s))]
-    assert len(factories) == n
-    state = torch.stack([torch.from_numpy(world_to_state(f.world_CWH)) for f in factories]).long()
-    return state, torch.tensor([f.max_throughput for f in factories])
 
 
 class TestNoiseLevels:
@@ -46,38 +39,13 @@ class TestNoiseLevels:
         assert (t == 1).float().mean() == pytest.approx(0.3, abs=0.02)
 
 
-class TestThroughputLoss:
-    @pytest.mark.parametrize("io", ["token", "factored"])
-    def test_reinforces_sampled_factories(self, io):
-        from denoise import free_mask
-
-        state, max_thput = _batch()
-        model = DenoiserUNet(**TINY, io=io)
-        logits = model(state)
-        args = SftArgs(rl_inputs=2, rl_samples=3, rl_max_noise=0.5)
-        loss, score = throughput_pg_loss(model, logits, state, free_mask(state), max_thput, torch.zeros(4), args)
-        loss.backward()
-        assert torch.isfinite(loss) and score >= 0
-        assert model.head[-1].weight.grad is not None
-
-    def test_skips_heavily_corrupted_inputs(self):
-        from denoise import free_mask
-
-        state, max_thput = _batch(2)
-        model = DenoiserUNet(**TINY)
-        logits = model(state)
-        loss, score = throughput_pg_loss(model, logits, state, free_mask(state), max_thput, torch.ones(2), SftArgs())
-        assert float(loss) == 0.0 and score == 0.0
-
-
 class TestTrainSFTEndToEnd:
-    @pytest.mark.parametrize("io", ["token", "factored"])
-    def test_trains_evaluates_and_checkpoints(self, tmp_path, io):
+    def test_trains_evaluates_and_checkpoints(self, tmp_path):
         ckpt, summary = tmp_path / "ckpt.pt", tmp_path / "summary.json"
         args = SftArgs(
             size=15, num_samples=64, batch_size=16, eval_seeds_per_kind=1,
-            eval_best_of=2, gen_steps=2, gen_refine=2, lw_thput=0.1, rl_inputs=2, rl_samples=2, rl_max_noise=1.0,
-            checkpoint_path=str(ckpt), summary_path=str(summary), io=io, **TINY,
+            eval_best_of=2, gen_steps=2, gen_refine=2,
+            checkpoint_path=str(ckpt), summary_path=str(summary), **TINY,
         )
         model = train_sft(args)
         out = json.loads(summary.read_text())

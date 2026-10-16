@@ -14,7 +14,6 @@ from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL, Factory, apply_placem
 from denoise import (  # noqa: E402
     STATE_CHANNELS,
     DenoiserUNet,
-    RECIPES,
     TYPES,
     corrupt,
     free_mask,
@@ -59,29 +58,22 @@ def test_every_training_factory_is_a_reachable_target(kind):
         assert score_world(world, factory.max_throughput, 0.0)["thput_raw"] > 0
 
 
-@pytest.mark.parametrize("io", ["token", "factored"])
-def test_a_confident_prediction_decodes_to_the_factory(io):
+def test_a_confident_prediction_decodes_to_the_factory():
     """Logits that put all their mass on a solved factory's tokens decode,
     through `pick` and `legalize`, to exactly that factory — assemblers and
-    splitters included, re-anchored by raster scan when the heads carry no
-    footprint part (`factored`)."""
-    model = DenoiserUNet(**TINY, io=io)
+    splitters included."""
+    model = DenoiserUNet(**TINY)
     for kind in (LessonKind.SPLITTER_1IN, LessonKind.MIRRORED_2IN):
         factory = _factory(15, kind, 0)
         state, toks = _tokens(factory.world_CWH)
-        typ, rec, part = (torch.from_numpy(t)[None] for t in toks)
-        if io == "token":
-            targets = [typ, rec, part]
-        else:
-            edm = torch.from_numpy(np.array(TYPES))[typ]
-            targets = [edm[..., 0], edm[..., 1], torch.from_numpy(np.array(RECIPES))[rec], edm[..., 2]]
+        targets = [torch.from_numpy(t)[None] for t in toks]
         logits = torch.cat(
             [100 * torch.nn.functional.one_hot(t, n).permute(0, 3, 1, 2).float() for t, n in zip(targets, model.head_sizes)],
             dim=1,
         )
         picked = [t[0].numpy() for t in model.pick(logits)]
         cond = blank_entities(factory)[0].numpy().astype(np.int64)
-        world = legalize(cond, picked[0], picked[1], picked[2] if io == "token" else None, np.ones(picked[0].shape))
+        world = legalize(cond, picked[0], picked[1], picked[2], np.ones(picked[0].shape))
         assert np.array_equal(world, factory.world_CWH.numpy()), kind
 
 

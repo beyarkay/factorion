@@ -21,7 +21,7 @@ class TestSFTFactoryDiversity:
 
         from sft import _iter_factories
 
-        return [s.numpy().tobytes() for s, _ in islice(_iter_factories(9, 1, worker_id, num_workers), n)]
+        return [s.numpy().tobytes() for s in islice(_iter_factories(9, 1, worker_id, num_workers), n)]
 
     def test_stream_covers_many_distinct_factories(self):
         assert len(set(self._states(0, 1, 40))) >= 30

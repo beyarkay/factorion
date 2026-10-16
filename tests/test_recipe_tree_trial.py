@@ -188,6 +188,6 @@ class TestTrialSftExclusion:
 
         from sft import _iter_factories
 
-        states = [s for s, _ in islice(_iter_factories(SIZE, 1, 0, 1), 40)]
+        states = list(islice(_iter_factories(SIZE, 1, 0, 1), 40))
         placeable = {str2ent(n).value for n in ("transport_belt", "inserter", "assembling_machine_1")}
         assert all(any(int(e) in placeable for e in s[0].flatten()) for s in states)

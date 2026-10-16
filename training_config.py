@@ -155,10 +155,6 @@ class SftArgs(SharedArgs):
     """rotary self-attention blocks over the bottleneck cells"""
     attn_heads: int = 8
     """heads of each attention block (head dim must be a multiple of 4)"""
-    io: str = "token"
-    """tile encoding in and out: 'token' (entity × facing × underground type,
-    recipe, footprint part) or 'factored' (AgentCNN's encoding and its
-    per-channel entity / direction / item / misc heads)"""
     lr: float = 3e-4
     """peak learning rate, held flat for the whole stable phase"""
     warmup_steps: int = 500
@@ -190,18 +186,6 @@ class SftArgs(SharedArgs):
     lw_cost: float = 0.05
     """weight of the predicted factory's expected per-tile entity cost: a
     pull toward leaving unneeded tiles empty"""
-    lw_thput: float = 0.0
-    """weight of the REINFORCE loss on simulated throughput × cost efficiency
-    of factories sampled from the prediction (0 disables). Off: at 5M samples
-    it left val/thput@64 unchanged (0.612 vs 0.609, runs gyh6chx8/r7inipmm)
-    while its CPU-side legalize + simulate halved training speed."""
-    rl_inputs: int = 32
-    """examples per batch the throughput loss samples from"""
-    rl_samples: int = 4
-    """factories sampled per example (leave-one-out baseline, so >= 2)"""
-    rl_max_noise: float = 0.5
-    """only examples at most this corrupted feed the throughput loss: from a
-    noisier input a one-step sample is rarely a working factory"""
     gen_steps: int = 8
     """ancestral steps of a chain (noise level 1 → 0)"""
     gen_refine: int = 8
