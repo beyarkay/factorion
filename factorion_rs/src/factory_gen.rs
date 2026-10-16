@@ -369,9 +369,9 @@ fn find_belt_paths(
     }
 
     let mut dist: Vec<u64> = vec![u64::MAX; (size * size * 5) as usize];
-    // Every min-cost incoming edge of a state: the predecessor state plus the
-    // placement(s) emitted on that edge, so all shortest routes can enumerate.
-    let mut preds: Vec<Vec<(State, Vec<UgPlacement>)>> = vec![Vec::new(); dist.len()];
+    // Every min-cost incoming edge of a state, as its predecessor state, so all
+    // shortest routes can enumerate.
+    let mut preds: Vec<Vec<State>> = vec![Vec::new(); dist.len()];
     dist[idx(start_state)] = 0;
     let mut counter: u64 = 0;
     let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
@@ -381,22 +381,35 @@ fn find_belt_paths(
     // Record a min-cost edge into `ns`: reset predecessors on a strict
     // improvement, accumulate on a tie (equal-cost edges enumerate alternatives).
     let mut relax = |dist: &mut Vec<u64>,
-                     preds: &mut Vec<Vec<(State, Vec<UgPlacement>)>>,
+                     preds: &mut Vec<Vec<State>>,
                      pq: &mut BinaryHeap<Reverse<(u64, u64, State)>>,
                      ns: State,
                      nd: u64,
-                     from: State,
-                     emit: Vec<UgPlacement>| {
+                     from: State| {
         let i = idx(ns);
         if nd < dist[i] {
             dist[i] = nd;
-            preds[i] = vec![(from, emit)];
+            preds[i].clear();
+            preds[i].push(from);
             pq.push(Reverse((nd, counter, ns)));
             counter += 1;
         } else if nd == dist[i] {
-            preds[i].push((from, emit));
+            preds[i].push(from);
         }
     };
+    // The placement(s) an edge `from` → `to` emits: a belt on `from` for a
+    // one-tile step, else a tunnel from `from` surfacing just short of `to`.
+    fn edge(from: State, to: State) -> Vec<UgPlacement> {
+        let d = Direction::from_i64(to.2);
+        if (to.0 - from.0).abs() + (to.1 - from.1).abs() == 1 {
+            return vec![(from.0, from.1, d, Misc::None)];
+        }
+        let (dx, dy) = d.delta();
+        vec![
+            (from.0, from.1, d, Misc::UndergroundDown),
+            (to.0 - dx, to.1 - dy, d, Misc::UndergroundUp),
+        ]
+    }
 
     // Cheapest arrival(s) onto `end`: the state to backtrack from and the
     // entity/entities covering `end` itself (a belt facing `end_dir`, or a
@@ -447,15 +460,7 @@ fn find_belt_paths(
             }
             let ns: State = (n.0, n.1, d as i64);
             let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
-            relax(
-                &mut dist,
-                &mut preds,
-                &mut pq,
-                ns,
-                nd,
-                state,
-                vec![(cx, cy, d, Misc::None)],
-            );
+            relax(&mut dist, &mut preds, &mut pq, ns, nd, state);
         }
 
         // Underground tunnel, continuing straight in the arrival direction.
@@ -493,18 +498,7 @@ fn find_belt_paths(
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
                 let nd = d_so_far + 20 * (span as u64 + 1);
-                relax(
-                    &mut dist,
-                    &mut preds,
-                    &mut pq,
-                    ns,
-                    nd,
-                    state,
-                    vec![
-                        (cx, cy, d, Misc::UndergroundDown),
-                        (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
-                    ],
-                );
+                relax(&mut dist, &mut preds, &mut pq, ns, nd, state);
             }
         }
     }
@@ -528,9 +522,9 @@ fn find_belt_paths(
                 if ps.is_empty() {
                     return vec![];
                 }
-                let (pstate, emit) = &ps[rng.choice_index(ps.len())];
-                rev.extend(emit.iter().rev().copied());
-                state = *pstate;
+                let pstate = ps[rng.choice_index(ps.len())];
+                rev.extend(edge(pstate, state).into_iter().rev());
+                state = pstate;
             }
             let mut path: Vec<UgPlacement> = rev.into_iter().rev().collect();
             path.extend(tail);
@@ -544,7 +538,7 @@ fn find_belt_paths(
     fn walk(
         state: State,
         start_state: State,
-        preds: &[Vec<(State, Vec<UgPlacement>)>],
+        preds: &[Vec<State>],
         idx: &dyn Fn(State) -> usize,
         acc: &mut Vec<UgPlacement>,
         tail: &[UgPlacement],
@@ -562,17 +556,14 @@ fn find_belt_paths(
             }
             return;
         }
-        for (pstate, emit) in &preds[idx(state)] {
+        for &pstate in &preds[idx(state)] {
             if results.len() >= limit {
                 return;
             }
-            for &p in emit.iter().rev() {
-                acc.push(p);
-            }
-            walk(*pstate, start_state, preds, idx, acc, tail, results, limit);
-            for _ in emit {
-                acc.pop();
-            }
+            let emit = edge(pstate, state);
+            acc.extend(emit.iter().rev());
+            walk(pstate, start_state, preds, idx, acc, tail, results, limit);
+            acc.truncate(acc.len() - emit.len());
         }
     }
 
