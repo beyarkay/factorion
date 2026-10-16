@@ -21,7 +21,7 @@ use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recip
 use crate::world::World;
 use nonempty::NonEmpty;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 
 /// The lesson kinds. This is the single source of truth for the kind set:
@@ -408,26 +408,31 @@ fn find_belt_paths(
     // shortest routes can enumerate.
     let mut preds: Vec<Vec<State>> = vec![Vec::new(); dist.len()];
     dist[idx(start_state)] = 0;
-    let mut counter: u64 = 0;
-    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
-    pq.push(Reverse((0, counter, start_state)));
-    counter += 1;
+    // Dial's bucket queue: a ring of FIFO buckets, one per cost modulo its
+    // length, pops in (cost, push order) like a heap but in O(1). Every queued
+    // cost lies within one maximal edge cost of the one being popped.
+    const RING: u64 = 20 * (UNDERGROUND_MAX_OFFSET as u64 + 1) + 1;
+    let mut pq: Vec<VecDeque<State>> = vec![VecDeque::new(); RING as usize];
+    let mut queued: usize = 1;
+    pq[0].push_back(start_state);
+    let mut d_so_far: u64 = 0;
 
     // Record a min-cost edge into `ns`: reset predecessors on a strict
     // improvement, accumulate on a tie (equal-cost edges enumerate alternatives).
-    let mut relax = |dist: &mut Vec<u64>,
-                     preds: &mut Vec<Vec<State>>,
-                     pq: &mut BinaryHeap<Reverse<(u64, u64, State)>>,
-                     ns: State,
-                     nd: u64,
-                     from: State| {
+    let relax = |dist: &mut Vec<u64>,
+                 preds: &mut Vec<Vec<State>>,
+                 pq: &mut Vec<VecDeque<State>>,
+                 queued: &mut usize,
+                 ns: State,
+                 nd: u64,
+                 from: State| {
         let i = idx(ns);
         if nd < dist[i] {
             dist[i] = nd;
             preds[i].clear();
             preds[i].push(from);
-            pq.push(Reverse((nd, counter, ns)));
-            counter += 1;
+            pq[(nd % RING) as usize].push_back(ns);
+            *queued += 1;
         } else if nd == dist[i] {
             preds[i].push(from);
         }
@@ -452,7 +457,12 @@ fn find_belt_paths(
     let mut goal_cost: u64 = u64::MAX;
     let mut goal_arrivals: Vec<(State, Vec<UgPlacement>)> = Vec::new();
 
-    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
+    while queued > 0 {
+        let Some(state) = pq[(d_so_far % RING) as usize].pop_front() else {
+            d_so_far += 1;
+            continue;
+        };
+        queued -= 1;
         if d_so_far > dist[idx(state)] {
             continue;
         }
@@ -495,7 +505,7 @@ fn find_belt_paths(
             }
             let ns: State = (n.0, n.1, d as i64);
             let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
-            relax(&mut dist, &mut preds, &mut pq, ns, nd, state);
+            relax(&mut dist, &mut preds, &mut pq, &mut queued, ns, nd, state);
         }
 
         // Underground tunnel, continuing straight in the arrival direction.
@@ -533,7 +543,7 @@ fn find_belt_paths(
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
                 let nd = d_so_far + 20 * (span as u64 + 1);
-                relax(&mut dist, &mut preds, &mut pq, ns, nd, state);
+                relax(&mut dist, &mut preds, &mut pq, &mut queued, ns, nd, state);
             }
         }
     }
