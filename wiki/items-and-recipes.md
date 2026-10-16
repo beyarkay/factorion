@@ -123,6 +123,8 @@ currently used by Factorion's throughput model.
 | Inserter (basic) | ~0.83 i/s (not in infobox) | rotation 302°/s, energy 15.1 kW | [wiki](https://wiki.factorio.com/Inserter) |
 | Assembling machine 1 | `0.5×` crafting speed | 0 module slots, 75 kW, 4 pollution/m, no fluid recipes | [wiki](https://wiki.factorio.com/Assembling_machine_1) |
 
-The 0.5× crafting speed of AM1 is why the Rust `assembling_machine_1`
-flow rate is `0.5` (`EntityKind::AssemblingMachine1.flow_rate()` in
-`factorion_rs/src/types.rs`).
+The 0.5× is a **unitless multiplier on a recipe's rate**, not an items/second
+figure, and lives in `Item::crafting_speed()` (`factorion_rs/src/types.rs`).
+`Item::flow_rate()` is items/second and returns `INFINITY` for an assembler:
+its limit comes from the recipe, not from a per-tile transfer cap. Conflating
+the two is what #355 was.

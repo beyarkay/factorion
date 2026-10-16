@@ -1,0 +1,32 @@
+description: |
+  An assembler whose INPUT supply is the binding constraint (#355). It
+  crafts electronic_circuit (3 copper cable + 1 iron plate -> 1, 0.5s),
+  fed by one inserter per ingredient:
+
+      source(copper cable) -> inserter -\
+                                          assembler -> inserter -> sink
+      source(iron plate)   -> inserter -/
+
+  Each inserter delivers 0.86 i/s, so the ingredient supply supports
+  min(0.86 / 3, 0.86 / 1) = 0.2866... crafts/s. An Assembling Machine 1
+  runs a 0.5s recipe at 0.5 / 0.5 = 1 craft/s, so the machine is nowhere
+  near its ceiling and the copper cable sets the pace: 0.2866... EC/s,
+  which the 0.86 i/s output inserter passes through untouched.
+items:
+- { x: 0, y: 0, item: copper_cable }          # source: the scarce ingredient
+- { x: 0, y: 2, item: iron_plate }            # source: the plentiful one
+- { x: 2, y: 0, item: electronic_circuit }    # assembler recipe (anchor = top-left)
+- { x: 6, y: 1, item: electronic_circuit }    # sink counts circuits
+throughput:
+- { item: electronic_circuit, per_second: 0.2866666666666667 }
+graph: |
+  S@0,0 -> i@1,0
+  i@1,0 -> a@2,0
+  S@0,2 -> i@1,2
+  i@1,2 -> a@2,0
+  a@2,0 -> i@5,1
+  i@5,1 -> K@6,1
+factory: |
+  S> i> aaaaaaaa .. ..
+  .. .. aa    aa i> K>
+  S> i> aaaaaaaa .. ..

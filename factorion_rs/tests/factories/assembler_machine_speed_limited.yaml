@@ -1,0 +1,28 @@
+description: |
+  An assembler whose own CRAFTING SPEED is the binding constraint (#355) —
+  the case the engine used to miss entirely. It crafts barrel (1 steel
+  plate -> 1 barrel, 1.0s):
+
+      source -> inserter -> assembler -> inserter -> sink
+
+  The input inserter delivers 0.86 steel plates/s, enough for 0.86
+  crafts/s, but an Assembling Machine 1 (crafting_speed 0.5) needs
+  1.0 / 0.5 = 2 real seconds per craft and so tops out at 0.5 crafts/s.
+  The machine, not the belt or the inserters, is the bottleneck: 0.5
+  barrels/s, comfortably under the output inserter's 0.86 i/s so the
+  sink sees the assembler's rate directly.
+items:
+- { x: 0, y: 1, item: steel_plate }   # source emits steel_plate
+- { x: 2, y: 0, item: barrel }        # assembler recipe (anchor = top-left)
+- { x: 6, y: 1, item: barrel }        # sink counts barrels
+throughput:
+- { item: barrel, per_second: 0.5 }
+graph: |
+  S@0,1 -> i@1,1
+  i@1,1 -> a@2,0
+  a@2,0 -> i@5,1
+  i@5,1 -> K@6,1
+factory: |
+  .. .. aaaaaaaa .. ..
+  S> i> aa    aa i> K>
+  .. .. aaaaaaaa .. ..
