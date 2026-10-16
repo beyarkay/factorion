@@ -1226,7 +1226,7 @@ mod tests {
         // 3..=5, rows 0..=2. The long inserter at (1,1) faces east and drops
         // two tiles ahead onto (3,1) — a secondary assembler tile, not the
         // anchor — yet the graph edge points at the anchor (3,0).
-        use crate::graph::build_graph;
+        use crate::graph::build_graph_all_powered as build_graph;
         let mut w = World::empty(6, 3);
         w.place_multi_tile(
             3,

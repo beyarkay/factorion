@@ -1,0 +1,152 @@
+description: |
+  An inserter with no pole anywhere has no power, so it moves nothing.
+simulate_power: true
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0 }
+graph: ""
+factory: |
+  S> i> K>
+---
+description: |
+  A small pole beside the map edge reaches off the map, so its 5x5 supply
+  area powers the inserter.
+simulate_power: true
+items:
+- { x: 0, y: 1, item: iron_plate }
+- { x: 2, y: 1, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+graph: |
+  S@0,1 -> i@1,1
+  i@1,1 -> K@2,1
+factory: |
+  .. w. ..
+  S> i> K>
+---
+description: |
+  The small pole at (8,7) is 9 tiles from the nearest off-map tile, beyond
+  its 7.5 wire reach, so its network is unpowered and so is the inserter.
+simulate_power: true
+items:
+- { x: 7, y: 8, item: iron_plate }
+- { x: 9, y: 8, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0 }
+factory: |
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. w. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. S> i> K> .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+---
+description: |
+  The same pole wired (7.07 apart) to a pole at (1,8) that reaches off the
+  map: the network is powered, so the inserter runs.
+simulate_power: true
+items:
+- { x: 7, y: 8, item: iron_plate }
+- { x: 9, y: 8, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+factory: |
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. w. .. .. .. .. .. .. .. ..
+  .. w. .. .. .. .. .. S> i> K> .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..
+---
+description: |
+  A substation's 18x18 supply area runs 8 tiles past its 2x2 body, so it
+  reaches the inserter at x = 9.
+simulate_power: true
+items:
+- { x: 8, y: 0, item: iron_plate }
+- { x: 10, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+factory: |
+  zzzzz .. .. .. .. .. .. S> i> K>
+  zzzzz .. .. .. .. .. .. .. .. ..
+---
+description: |
+  One tile further, the inserter at x = 10 is outside the substation's
+  supply area.
+simulate_power: true
+items:
+- { x: 9, y: 0, item: iron_plate }
+- { x: 11, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0 }
+factory: |
+  zzzzz .. .. .. .. .. .. .. S> i> K>
+  zzzzz .. .. .. .. .. .. .. .. .. ..
+---
+description: |
+  An assembler needs power too. Both inserters are powered, but the small
+  pole at (2,0) supplies rows 0..=2 and the one at (2,8) rows 6..=10, so no
+  tile of the assembler (rows 3..=5) is powered and no gears are made.
+simulate_power: true
+items:
+- { x: 2, y: 1, item: iron_plate }
+- { x: 1, y: 3, item: iron_gear_wheel }
+- { x: 2, y: 7, item: iron_gear_wheel }
+throughput:
+- { item: iron_gear_wheel, per_second: 0 }
+factory: |
+  .. .. w. .. ..
+  .. .. Sv .. ..
+  .. .. iv .. ..
+  .. aaaaaaaa ..
+  .. aa    aa ..
+  .. aaaaaaaa ..
+  .. .. iv .. ..
+  .. .. Kv .. ..
+  .. .. w. .. ..
+---
+description: |
+  A medium pole at (2,0) supplies rows 0..=3, reaching the assembler's top
+  row: one powered tile powers the whole machine.
+simulate_power: true
+items:
+- { x: 2, y: 1, item: iron_plate }
+- { x: 1, y: 3, item: iron_gear_wheel }
+- { x: 2, y: 7, item: iron_gear_wheel }
+throughput:
+- { item: iron_gear_wheel, per_second: 0.43 }
+factory: |
+  .. .. m. .. ..
+  .. .. Sv .. ..
+  .. .. iv .. ..
+  .. aaaaaaaa ..
+  .. aa    aa ..
+  .. aaaaaaaa ..
+  .. .. iv .. ..
+  .. .. Kv .. ..
+  .. .. w. .. ..

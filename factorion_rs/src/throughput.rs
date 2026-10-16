@@ -411,7 +411,7 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::graph::build_graph;
+    use crate::graph::build_graph_all_powered as build_graph;
     use crate::types::{Direction, Misc, NodeId};
     use crate::world::World;
 

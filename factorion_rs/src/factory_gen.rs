@@ -6,7 +6,8 @@
 //! randomized rejection sampling: it places a candidate layout, checks it
 //! carries positive throughput (via the [`crate::throughput`] engine), and on
 //! failure retries until one succeeds or the per-kind attempt budget is
-//! exhausted, returning `None` in that case.
+//! exhausted, returning `None` in that case. Layouts are checked with every
+//! tile powered; [`finish`] then places the medium poles that power them.
 //!
 //! All layout randomness is drawn from [`crate::rng`], a fast deterministic
 //! generator seeded once per call, so the same `(size, kind, seed)` always
@@ -14,7 +15,8 @@
 //! pattern; the result is a [`BuiltFactory`] (the world tensor plus the
 //! blanking bookkeeping a training lesson needs).
 
-use crate::graph::build_graph;
+use crate::graph::{build_graph, build_graph_all_powered, unit_anchors};
+use crate::power::{PlacedPole, PowerMap};
 use crate::rng::Rng;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
@@ -270,7 +272,7 @@ const PERIM_SLOTS: [(i64, i64, Direction, Direction); 12] = [
 /// Throughput score of a fully-placed world: build its flow graph and return
 /// the achieved-throughput score across its sinks.
 fn world_throughput(world: &World) -> f64 {
-    let graph = build_graph(world);
+    let graph = build_graph_all_powered(world);
     let (deliveries, _) = calc_throughput(&graph);
     factory_score(&deliveries)
 }
@@ -989,7 +991,9 @@ fn build_move_one_item(
         }
 
         let total_entities = chosen.len();
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -1095,7 +1099,9 @@ fn build_move_one_item_chaos(
             .iter()
             .map(|&(x, y)| (x as usize, y as usize))
             .collect();
-        return finish(world, total_entities, protected, count);
+        if let Some(f) = finish(world, total_entities, protected, count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -1449,11 +1455,13 @@ fn build_splitter_split(
         }
         // Reject dead builds and any orphan tiles (a tunnel could otherwise
         // strand a belt off every source→sink path).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
-        return finish(world, plan.total_entities, Vec::new(), count);
+        if let Some(f) = finish(world, plan.total_entities, Vec::new(), count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -1727,7 +1735,7 @@ fn build_splitter_merge_sideloaded(
 
         // The full build must merge both 7.5 arms to a saturated (15) sink,
         // and the only orphans may be the two protected decoys.
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) < 14.9 || unreachable != decoys.len() {
             continue;
         }
@@ -1744,7 +1752,7 @@ fn build_splitter_merge_sideloaded(
                 Channel::Entities,
                 Item::TransportBelt as i64,
             );
-            let (d2, _) = calc_throughput(&build_graph(&w2));
+            let (d2, _) = calc_throughput(&build_graph_all_powered(&w2));
             factory_score(&d2) > 9.0
         });
         if one_arm_saturates {
@@ -1766,7 +1774,9 @@ fn build_splitter_merge_sideloaded(
             .iter()
             .map(|&(x, y)| (x as usize, y as usize))
             .collect();
-        return finish(world, total_entities, protected_positions, count);
+        if let Some(f) = finish(world, total_entities, protected_positions, count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -1936,7 +1946,9 @@ fn build_assemble_1in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -2168,7 +2180,9 @@ fn build_move_via_ug_belt(
             world.set(wx as usize, wy as usize, Channel::Footprint, 0);
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -2369,7 +2383,9 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -2610,12 +2626,14 @@ fn build_memorise_recipes(
         // An arm's belts are only reachable if its own inserter drains them, and
         // nothing about the layout guarantees that, so check the no-orphan
         // invariant instead of trusting it.
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -3033,12 +3051,14 @@ fn build_factory_1_ingredient(
 
         // Reject dead builds and orphan tiles; anything slower-but-flowing is
         // kept on purpose (the lesson wants a throughput spread).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -3266,12 +3286,14 @@ fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<B
             world = rotate_world_cw(&world);
         }
 
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -3814,12 +3836,14 @@ fn build_factory_2_ingredients(
 
         // Reject dead builds and orphan tiles; anything slower-but-flowing is
         // kept on purpose (the lesson wants a throughput spread).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -4073,12 +4097,14 @@ fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Op
             world = rotate_world_cw(&world);
         }
 
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -4354,12 +4380,14 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
             world = rotate_world_cw(&world);
         }
 
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -4632,12 +4660,14 @@ fn build_intermediate_belt_2in(
             world = rotate_world_cw(&world);
         }
 
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -4848,12 +4878,14 @@ fn build_mirrored(
             world = rotate_world_cw(&world);
         }
 
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -5096,12 +5128,14 @@ fn build_factory_n_ingredients(
 
         // Reject dead builds and orphan tiles; anything slower-but-flowing is
         // kept on purpose (the lesson wants a throughput spread).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        if let Some(f) = finish(world, total_entities, vec![], count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -5325,7 +5359,7 @@ fn build_cross_under_belt(
 
         // Both lines must deliver at full belt speed, and no entity may be an
         // orphan (off every source→sink path).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         if factory_score(&deliveries) < belt_flow - 1e-6 || unreachable != 0 {
             continue;
         }
@@ -5341,7 +5375,9 @@ fn build_cross_under_belt(
             .map(|&(x, y)| (x as usize, y as usize))
             .collect();
         protected_positions.sort_unstable();
-        return finish(world, total_entities, protected_positions, count);
+        if let Some(f) = finish(world, total_entities, protected_positions, count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -5675,7 +5711,7 @@ fn build_route_belts(
             .iter()
             .filter(|g| matches!(g, RouteGroup::Unmatched))
             .count();
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable) = calc_throughput(&build_graph_all_powered(&world));
         let exact = deliveries.len() == expected.len()
             && deliveries.iter().all(|d| {
                 expected
@@ -5685,7 +5721,9 @@ fn build_route_belts(
         if !exact || unreachable != n_unmatched {
             continue;
         }
-        return finish(world, total_entities, Vec::new(), count);
+        if let Some(f) = finish(world, total_entities, Vec::new(), count) {
+            return Some(f);
+        }
     }
     None
 }
@@ -5879,9 +5917,11 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
     None
 }
 
-/// Wrap a finished factory, but honor the rejection-sampling budget: a
-/// factory found on the very attempt that drove `count` to 0 is discarded
-/// (returns `None`), so an exhausted budget always means "no factory".
+/// Power a finished factory and wrap it, but honor the rejection-sampling
+/// budget: a factory found on the very attempt that drove `count` to 0 is
+/// discarded (returns `None`), so an exhausted budget always means "no
+/// factory". `None` too when the layout leaves no room to power it, so the
+/// caller tries another.
 fn finish(
     mut world: World,
     total_entities: usize,
@@ -5897,13 +5937,95 @@ fn finish(
     for &(x, y) in &protected_positions {
         world.set(x, y, Channel::Footprint, 0);
     }
-    let max_throughput = world_throughput(&world);
+    let poles = place_poles(&mut world)?;
+    let power = PowerMap::of(&world);
+    power.write(&mut world);
+    let max_throughput = factory_score(&calc_throughput(&build_graph(&world)).0);
     Some(BuiltFactory {
         world,
-        total_entities,
+        total_entities: total_entities + poles,
         protected_positions,
         max_throughput,
     })
+}
+
+/// Power every entity that needs it with medium poles on free tiles, greedily
+/// on the tile powering the most unpowered entities among those whose pole
+/// would be live. When no live tile helps, a relay goes on the live tile
+/// nearest one that would. Returns the number of poles placed, `None` when
+/// some entity can't be powered.
+fn place_poles(world: &mut World) -> Option<usize> {
+    let kind = Item::MediumElectricPole;
+    let supply = kind.pole()?.supply;
+    let (w, h) = (world.width(), world.height());
+    let anchor_of = unit_anchors(world);
+    let units: Vec<Vec<Cell>> = (0..w)
+        .flat_map(|x| (0..h).map(move |y| (x, y)))
+        .filter(|t| !anchor_of.contains_key(t))
+        .filter(|&(x, y)| world.entity_at(x, y).is_some_and(Item::needs_power))
+        .map(|(x, y)| {
+            let (ew, eh) = world.entity_at(x, y).map_or((1, 1), Item::size);
+            crate::entities::entity_tiles(x, y, world.direction_at(x, y), ew, eh)
+                .unwrap_or_default()
+                .iter()
+                .map(|p| (p.x, p.y))
+                .collect()
+        })
+        .collect();
+    let mut unpowered: Vec<&Vec<Cell>> = units.iter().collect();
+    let mut placed: Vec<PlacedPole> = Vec::new();
+    while !unpowered.is_empty() {
+        let free: Vec<Cell> = (0..w as i64)
+            .flat_map(|x| (0..h as i64).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                world.entity_at(x as usize, y as usize).is_none()
+                    && world.get(x as usize, y as usize, Channel::Footprint) != 0
+            })
+            .collect();
+        let gain = |&(x, y): &Cell| {
+            let near = |t: &Cell| (t.0 - x).abs() <= supply && (t.1 - y).abs() <= supply;
+            unpowered.iter().filter(|u| u.iter().any(near)).count()
+        };
+        let live = |&(x, y): &Cell| {
+            PlacedPole::new(kind, x, y).is_some_and(|pole| {
+                pole.reaches_off_map(w as i64, h as i64) || placed.iter().any(|p| p.wires_to(&pole))
+            })
+        };
+        let scored: Vec<(Cell, usize, bool)> =
+            free.iter().map(|&c| (c, gain(&c), live(&c))).collect();
+        let &(best, best_gain, _) = scored
+            .iter()
+            .filter(|s| s.2)
+            .max_by_key(|&&(c, g, _)| (g, Reverse(c)))?;
+        let pick = if best_gain > 0 {
+            best
+        } else {
+            let dist = |c: Cell| {
+                scored
+                    .iter()
+                    .filter(|s| s.1 > 0)
+                    .map(|&(t, _, _)| (t.0 - c.0).pow(2) + (t.1 - c.1).pow(2))
+                    .min()
+            };
+            scored
+                .iter()
+                .filter(|s| s.2)
+                .filter_map(|&(c, _, _)| Some((dist(c)?, c)))
+                .min()?
+                .1
+        };
+        world.place(
+            pick.0 as usize,
+            pick.1 as usize,
+            kind,
+            Direction::None,
+            None,
+        );
+        placed.extend(PlacedPole::new(kind, pick.0, pick.1));
+        let near = |t: &Cell| (t.0 - pick.0).abs() <= supply && (t.1 - pick.1).abs() <= supply;
+        unpowered.retain(|u| !u.iter().any(near));
+    }
+    Some(placed.len())
 }
 
 #[cfg(test)]
@@ -7574,6 +7696,41 @@ mod tests {
             }
             assert!(checked > 0, "no {} factories built", kind.name());
         }
+    }
+
+    #[test]
+    fn test_every_lesson_powers_every_entity() {
+        for &kind in all_lesson_kinds() {
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                let power = PowerMap::of(&f.world);
+                let all = build_graph_all_powered(&f.world).node_count();
+                assert_eq!(
+                    build_graph(&f.world).node_count(),
+                    all,
+                    "{} seed={seed}",
+                    kind.name()
+                );
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        let channel = f.world.get(x, y, Channel::Power) != 0;
+                        assert_eq!(channel, power.tile(x, y), "{} seed={seed}", kind.name());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_place_poles_relays_power_inward() {
+        // Too far from every edge for one medium pole to reach off the map.
+        let mut w = World::empty(40, 40);
+        w.place(20, 20, Item::Inserter, Direction::East, None);
+        let poles = place_poles(&mut w).unwrap();
+        assert!(poles > 1);
+        assert!(PowerMap::of(&w).powers(&w, 20, 20));
     }
 
     /// Sources whose item no sink takes.

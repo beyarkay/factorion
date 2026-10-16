@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
+use crate::power::PowerMap;
 use crate::types::{Item, Lane, Misc, NodeId};
 use crate::world::World;
 use strum::IntoEnumIterator;
@@ -72,14 +73,21 @@ impl FactoryGraph {
 }
 
 /// Build a directed graph from a World, with edges per the engine's
-/// entity-connection rules. This is the single source of truth for factory
-/// graph construction.
+/// entity-connection rules and the world's own power. This is the single
+/// source of truth for factory graph construction.
+pub fn build_graph(world: &World) -> FactoryGraph {
+    build_graph_with_power(world, &PowerMap::of(world))
+}
+
+/// [`build_graph`] with the powered tiles given: an entity that needs power
+/// and has no powered tile gets no node, as if it weren't there.
 ///
 /// Nodes are not 1:1 with entities: lane-aware entities (belts, underground
 /// belts, and EACH tile of a splitter) get one node per lane; everything
 /// else gets a single node at its anchor tile (multi-tile assemblers still
-/// collapse their secondary tiles onto the anchor).
-pub fn build_graph(world: &World) -> FactoryGraph {
+/// collapse their secondary tiles onto the anchor). Poles carry no items, so
+/// they get no node.
+pub fn build_graph_with_power(world: &World, power: &PowerMap) -> FactoryGraph {
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();
     let mut edge_list: Vec<(NodeId, NodeId)> = Vec::new();
@@ -97,12 +105,15 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             // Empty cell, or a stray non-placeable item in the entities
             // channel (data error). Either way, no graph node.
             let entity_kind = match world.entity_at(x, y) {
-                Some(k) if k.is_placeable() => k,
+                Some(k) if k.is_placeable() && k.pole().is_none() => k,
                 _ => continue,
             };
 
             let secondary_of = anchor_of.get(&(x, y)).copied();
             if secondary_of.is_some() && !entity_kind.is_lane_aware() {
+                continue;
+            }
+            if entity_kind.needs_power() && !power.powers(world, x, y) {
                 continue;
             }
             let secondary_lane_tile = secondary_of.is_some();
@@ -189,6 +200,12 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     }
 }
 
+/// [`build_graph`] with every tile powered: item flow alone, for tests and
+/// for generators checking a layout before they power it.
+pub fn build_graph_all_powered(world: &World) -> FactoryGraph {
+    build_graph_with_power(world, &PowerMap::everywhere(world))
+}
+
 /// Map every secondary tile of a multi-tile entity to its unit's anchor tile.
 /// The scan order (x, then y, ascending) visits every anchor before its
 /// secondary tiles, so the first unclaimed tile of a multi-tile entity is its
@@ -239,6 +256,7 @@ fn remap_to_anchor(id: &NodeId, anchor_of: &HashMap<(usize, usize), (usize, usiz
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use super::build_graph_all_powered as build_graph;
     use super::*;
     use crate::rng::Rng;
     use crate::throughput::calc_throughput;
