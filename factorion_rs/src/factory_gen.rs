@@ -4801,6 +4801,23 @@ fn build_mirrored(
         }
         belts.extend((out_a..out_b).map(|y| (col, y, Direction::South, Misc::None)));
 
+        let head_cells: Vec<Cell> = heads.iter().map(|&(c, _)| c).collect();
+        // The input belt must stay clear of the collector and its overshoot
+        // cell empty. Most draws fail this, so it scans the layout rather
+        // than first hashing it into `structure`.
+        let occupied = |c: &Cell| {
+            asm.iter()
+                .any(|&(ax, ay)| (ax..ax + 3).contains(&c.0) && (ay..ay + 3).contains(&c.1))
+                || inserters.iter().any(|(p, _)| p == c)
+                || belts.iter().any(|&(x, y, ..)| (x, y) == *c)
+        };
+        if lo < 0
+            || hi >= col
+            || occupied(&over)
+            || head_cells.iter().any(|c| !in_grid(*c, s) || occupied(c))
+        {
+            continue;
+        }
         let mut structure: HashSet<Cell> = asm
             .iter()
             .flat_map(|&(ax, ay)| {
@@ -4809,18 +4826,6 @@ fn build_mirrored(
             .collect();
         structure.extend(inserters.iter().map(|&(c, _)| c));
         structure.extend(belt_cells(&belts));
-        let head_cells: Vec<Cell> = heads.iter().map(|&(c, _)| c).collect();
-        // The input belt must stay clear of the collector and its overshoot
-        // cell empty.
-        if lo < 0
-            || hi >= col
-            || structure.contains(&over)
-            || head_cells
-                .iter()
-                .any(|c| !in_grid(*c, s) || structure.contains(c))
-        {
-            continue;
-        }
         let mut reserved = structure.clone();
         reserved.insert(over);
         reserved.extend(head_cells.iter().copied());
