@@ -76,6 +76,14 @@ _DEFAULT_TIMING = dict(
 # of the substations at the cell corners.
 _PITCH = 18
 
+# Engine item names that Factorio 2.0 calls something else (item and recipe).
+_GAME_NAMES = {"personal-roboport": "personal-roboport-equipment"}
+
+
+def _game_name(engine_name: str) -> str:
+    name = _hyphenate(engine_name)
+    return _GAME_NAMES.get(name, name)
+
 
 def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
     """Tensor → (entities, sources, sinks, grid_size) in factory-local tiles.
@@ -120,7 +128,7 @@ def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
             item_id = int(item_ch[x, y])
             item_meta = items.get(item_id)
             item_name = (
-                _hyphenate(item_meta.name)
+                _game_name(item_meta.name)
                 if item_meta is not None and item_meta.name != "empty"
                 else None
             )
@@ -248,7 +256,7 @@ def expected_sink_rates(world_CWH) -> dict[tuple[int, int], tuple[str | None, fl
     out = {}
     for x, y, item_name, achieved in factorion_rs.py_sink_deliveries(world_WHC):
         out[(x, y)] = (
-            _hyphenate(item_name) if item_name is not None else None,
+            _game_name(item_name) if item_name is not None else None,
             achieved,
         )
     return out

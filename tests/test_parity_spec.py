@@ -27,6 +27,7 @@ from factorion import (  # noqa: E402
     Misc,
     build_factory,
     entities,
+    items,
     recipes,
     str2ent,
 )
@@ -34,6 +35,7 @@ from factorion import (  # noqa: E402
 from parity import (  # noqa: E402
     SinkComparison,
     _PITCH,
+    _game_name,
     build_batch_spec,
     compare_sinks,
     expected_sink_rates,
@@ -156,10 +158,28 @@ def test_spec_assembler_recipes_exist():
         for e in spec["entities"]:
             if e["name"] == "assembling-machine-1":
                 assert "recipe" in e, (kind.name, seed, e)
-                assert e["recipe"].replace("-", "_") in recipes, (
+                assert e["recipe"] in {_game_name(r) for r in recipes}, (
                     f"{kind.name} seed={seed}: recipe {e['recipe']!r} "
                     "not in the engine's recipe table"
                 )
+
+
+def test_spec_uses_factorio_2_names():
+    """The engine's personal_roboport is Factorio 2.0's
+    personal-roboport-equipment; the raw name makes parity_start raise."""
+    factory = build_factory(SIZE, LessonKind.OPPOSITE_SIDES_1IN, seed=0)
+    assert factory is not None
+    world = np.array(factory.world_CWH)
+    ent_ch = world[Channel.ENTITIES.value]
+    retag = np.isin(ent_ch, [str2ent("assembling_machine_1").value, str2ent("sink").value])
+    roboport = next(i for i, m in items.items() if m.name == "personal_roboport")
+    world[Channel.ITEMS.value][retag] = roboport
+    spec = world_to_parity_spec(world, run_id="roboport")
+    named = [e["recipe"] for e in spec["entities"] if "recipe" in e]
+    named += [s["item"] for s in spec["sinks"]]
+    named += [item for item, _ in expected_sink_rates(world).values()]
+    assert len(named) >= 3
+    assert set(named) == {"personal-roboport-equipment"}
 
 
 def test_spec_sources_and_sinks_carry_items():
