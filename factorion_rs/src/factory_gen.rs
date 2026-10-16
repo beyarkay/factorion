@@ -350,11 +350,29 @@ fn find_belt_paths(
     type State = (i64, i64, i64);
     let start_state: State = (start.0, start.1, start_adir);
 
-    let mut dist: HashMap<State, u64> = HashMap::new();
+    // Flat per-cell/per-state tables: hashing dominated the search on big grids.
+    let cell = |x: i64, y: i64| (x * size + y) as usize;
+    let idx = |(x, y, a): State| cell(x, y) * 5 + a as usize;
+    let mut blocked_grid = vec![false; (size * size) as usize];
+    for &c in blocked.iter().filter(|&&c| in_bounds(c)) {
+        blocked_grid[cell(c.0, c.1)] = true;
+    }
+    let is_blocked = |c: Cell| blocked_grid[cell(c.0, c.1)];
+    let mut hugging_grid = vec![false; (size * size) as usize];
+    for &(hx, hy) in hug {
+        for (dx, dy) in BFS_DELTAS {
+            let c = (hx - dx, hy - dy);
+            if in_bounds(c) {
+                hugging_grid[cell(c.0, c.1)] = true;
+            }
+        }
+    }
+
+    let mut dist: Vec<u64> = vec![u64::MAX; (size * size * 5) as usize];
     // Every min-cost incoming edge of a state: the predecessor state plus the
     // placement(s) emitted on that edge, so all shortest routes can enumerate.
-    let mut preds: HashMap<State, Vec<(State, Vec<UgPlacement>)>> = HashMap::new();
-    dist.insert(start_state, 0);
+    let mut preds: Vec<Vec<(State, Vec<UgPlacement>)>> = vec![Vec::new(); dist.len()];
+    dist[idx(start_state)] = 0;
     let mut counter: u64 = 0;
     let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
     pq.push(Reverse((0, counter, start_state)));
@@ -362,21 +380,21 @@ fn find_belt_paths(
 
     // Record a min-cost edge into `ns`: reset predecessors on a strict
     // improvement, accumulate on a tie (equal-cost edges enumerate alternatives).
-    let mut relax = |dist: &mut HashMap<State, u64>,
-                     preds: &mut HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+    let mut relax = |dist: &mut Vec<u64>,
+                     preds: &mut Vec<Vec<(State, Vec<UgPlacement>)>>,
                      pq: &mut BinaryHeap<Reverse<(u64, u64, State)>>,
                      ns: State,
                      nd: u64,
                      from: State,
                      emit: Vec<UgPlacement>| {
-        let cur = *dist.get(&ns).unwrap_or(&u64::MAX);
-        if nd < cur {
-            dist.insert(ns, nd);
-            preds.insert(ns, vec![(from, emit)]);
+        let i = idx(ns);
+        if nd < dist[i] {
+            dist[i] = nd;
+            preds[i] = vec![(from, emit)];
             pq.push(Reverse((nd, counter, ns)));
             counter += 1;
-        } else if nd == cur {
-            preds.entry(ns).or_default().push((from, emit));
+        } else if nd == dist[i] {
+            preds[i].push((from, emit));
         }
     };
 
@@ -387,7 +405,7 @@ fn find_belt_paths(
     let mut goal_arrivals: Vec<(State, Vec<UgPlacement>)> = Vec::new();
 
     while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
-        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
+        if d_so_far > dist[idx(state)] {
             continue;
         }
         // All equal-cost arrivals pop before any strictly costlier state, so once
@@ -417,19 +435,17 @@ fn find_belt_paths(
         };
 
         // Normal surface belt step (no 180° reversal): this cell becomes a belt.
+        let hugging = hugging_grid[cell(cx, cy)];
         for d in DIRS {
             let (dx, dy) = d.delta();
             if back == Some((dx, dy)) {
                 continue;
             }
             let n = (cx + dx, cy + dy);
-            if !in_bounds(n) || blocked.contains(&n) {
+            if !in_bounds(n) || is_blocked(n) {
                 continue;
             }
             let ns: State = (n.0, n.1, d as i64);
-            let hugging = BFS_DELTAS
-                .iter()
-                .any(|&(hx, hy)| hug.contains(&(cx + hx, cy + hy)));
             let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
             relax(
                 &mut dist,
@@ -448,7 +464,7 @@ fn find_belt_paths(
             let (dx, dy) = d.delta();
             for span in 2..=UNDERGROUND_MAX_OFFSET {
                 let exit_cell = (cx + dx * span, cy + dy * span);
-                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
+                if !in_bounds(exit_cell) || is_blocked(exit_cell) {
                     continue;
                 }
                 // Surface straight onto `end` (UG_UP → sink), no trailing belt.
@@ -472,7 +488,7 @@ fn find_belt_paths(
                     continue;
                 }
                 let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
-                if !in_bounds(surface) || blocked.contains(&surface) {
+                if !in_bounds(surface) || is_blocked(surface) {
                     continue;
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
@@ -508,9 +524,10 @@ fn find_belt_paths(
                 goal_arrivals.swap_remove(rng.choice_index(goal_arrivals.len()));
             let mut rev: Vec<UgPlacement> = Vec::new();
             while state != start_state {
-                let Some(ps) = preds.get(&state) else {
+                let ps = &preds[idx(state)];
+                if ps.is_empty() {
                     return vec![];
-                };
+                }
                 let (pstate, emit) = &ps[rng.choice_index(ps.len())];
                 rev.extend(emit.iter().rev().copied());
                 state = *pstate;
@@ -527,7 +544,8 @@ fn find_belt_paths(
     fn walk(
         state: State,
         start_state: State,
-        preds: &HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+        preds: &[Vec<(State, Vec<UgPlacement>)>],
+        idx: &dyn Fn(State) -> usize,
         acc: &mut Vec<UgPlacement>,
         tail: &[UgPlacement],
         results: &mut Vec<Vec<UgPlacement>>,
@@ -544,17 +562,14 @@ fn find_belt_paths(
             }
             return;
         }
-        let Some(ps) = preds.get(&state) else {
-            return;
-        };
-        for (pstate, emit) in ps {
+        for (pstate, emit) in &preds[idx(state)] {
             if results.len() >= limit {
                 return;
             }
             for &p in emit.iter().rev() {
                 acc.push(p);
             }
-            walk(*pstate, start_state, preds, acc, tail, results, limit);
+            walk(*pstate, start_state, preds, idx, acc, tail, results, limit);
             for _ in emit {
                 acc.pop();
             }
@@ -571,6 +586,7 @@ fn find_belt_paths(
             *gstate,
             start_state,
             &preds,
+            &idx,
             &mut acc,
             tail,
             &mut results,
