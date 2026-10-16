@@ -358,6 +358,39 @@ fn find_belt_paths(
         blocked_grid[cell(c.0, c.1)] = true;
     }
     let is_blocked = |c: Cell| blocked_grid[cell(c.0, c.1)];
+    // Rejection sampling often walls `end` into a pocket, which the search
+    // below would only rule out after exhausting the grid. A backward flood
+    // fill over cells, blind to arrival direction (so a superset of the
+    // search's moves), rules it out in a few steps.
+    let open = |c: Cell| in_bounds(c) && !is_blocked(c);
+    let mut seen = vec![false; (size * size) as usize];
+    seen[cell(end.0, end.1)] = true;
+    let mut stack = vec![end];
+    loop {
+        let Some(c) = stack.pop() else {
+            return vec![];
+        };
+        if c == start {
+            break;
+        }
+        for d in DIRS {
+            let (dx, dy) = d.delta();
+            let back = |k: i64| (c.0 - dx * k, c.1 - dy * k);
+            // A tunnel entering `k` tiles back surfaces past its exit at
+            // `back(1)`, or exits straight onto `end`.
+            let tunnels = (2..=UNDERGROUND_MAX_OFFSET + 1).filter(|&k| {
+                allow_underground
+                    && ((k > 2 && open(back(1)))
+                        || (k <= UNDERGROUND_MAX_OFFSET && c == end && d == end_dir))
+            });
+            for f in std::iter::once(1).chain(tunnels).map(back) {
+                if open(f) && !seen[cell(f.0, f.1)] {
+                    seen[cell(f.0, f.1)] = true;
+                    stack.push(f);
+                }
+            }
+        }
+    }
     let mut hugging_grid = vec![false; (size * size) as usize];
     for &(hx, hy) in hug {
         for (dx, dy) in BFS_DELTAS {
