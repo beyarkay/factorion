@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
-use crate::types::Item;
+use crate::types::{get_recipe, Item, Lane};
 
 /// Exponent for the factory score's power mean over per-sink deliveries.
 ///
@@ -152,6 +152,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     let mut node_outputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.output.clone()).collect();
     let mut taken: Vec<HashMap<Item, f64>> = vec![HashMap::new(); graph.node_count()];
+    let demand = downstream_demand(graph);
+    let mut room = demand.clone();
 
     let mut already_processed: HashSet<usize> = HashSet::new();
 
@@ -181,7 +183,15 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             // everything.
             let accumulated_input: HashMap<Item, f64> =
                 if matches!(entity_kind, Item::Inserter | Item::LongHandedInserter) {
-                    pickup_input(graph, node_idx, &node_outputs, &n_pickers, &mut taken)
+                    pickup_input(
+                        graph,
+                        node_idx,
+                        &node_outputs,
+                        &n_pickers,
+                        &mut taken,
+                        &demand,
+                        &mut room,
+                    )
                 } else {
                     let mut acc: HashMap<Item, f64> = HashMap::new();
                     for &pred in &graph.predecessors[node_idx] {
@@ -299,53 +309,183 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
     unit_on_path.values().filter(|&&hit| !hit).count()
 }
 
+/// How much of each item a node can pass on in steady state, set by what
+/// lies downstream: a belt that leads nowhere fills up and stops, and an
+/// assembler only accepts ingredients for the crafts its output can drain.
+/// `rest` covers every item without an entry in `items`.
+#[derive(Debug, Clone, Default)]
+struct Demand {
+    rest: f64,
+    items: HashMap<Item, f64>,
+}
+
+impl Demand {
+    fn get(&self, item: Item) -> f64 {
+        self.items.get(&item).copied().unwrap_or(self.rest)
+    }
+
+    fn consume(&mut self, item: Item, rate: f64) {
+        *self.items.get_mut(&item).unwrap_or(&mut self.rest) -= rate;
+    }
+}
+
+/// Every node's [`Demand`], from the sinks back. The graph is acyclic here.
+fn downstream_demand(graph: &FactoryGraph) -> Vec<Demand> {
+    let n = graph.node_count();
+    let mut demand = vec![Demand::default(); n];
+    let mut pending: Vec<usize> = graph.successors.iter().map(Vec::len).collect();
+    let mut ready: Vec<usize> = (0..n).filter(|&i| pending[i] == 0).collect();
+    while let Some(node) = ready.pop() {
+        let succs = &graph.successors[node];
+        let total = |item: Item| succs.iter().map(|&s| demand[s].get(item)).sum::<f64>();
+        let kind = graph.nodes[node].entity_kind;
+        demand[node] = match kind {
+            Item::Sink => Demand {
+                rest: f64::INFINITY,
+                items: HashMap::new(),
+            },
+            Item::AssemblingMachine1 => match graph.nodes[node].recipe_item.and_then(get_recipe) {
+                Some(recipe) => {
+                    let crafts = recipe
+                        .produces
+                        .iter()
+                        .map(|&(item, rate)| total(item) / rate)
+                        .fold(1.0, f64::min);
+                    Demand {
+                        rest: 0.0,
+                        items: recipe
+                            .consumes
+                            .iter()
+                            .map(|&(item, rate)| (item, rate * crafts))
+                            .collect(),
+                    }
+                }
+                None => Demand::default(),
+            },
+            _ => {
+                let cap = if kind.is_lane_aware() {
+                    kind.flow_rate() / 2.0
+                } else {
+                    kind.flow_rate()
+                };
+                Demand {
+                    rest: succs.iter().map(|&s| demand[s].rest).sum::<f64>().min(cap),
+                    items: succs
+                        .iter()
+                        .flat_map(|&s| demand[s].items.keys())
+                        .map(|&item| (item, total(item).min(cap)))
+                        .collect(),
+                }
+            }
+        };
+        for &p in &graph.predecessors[node] {
+            pending[p] -= 1;
+            if pending[p] == 0 {
+                ready.push(p);
+            }
+        }
+    }
+    demand
+}
+
+/// Split `budget` max-min fairly over `(cap, weight)` claims: each gets
+/// `λ·weight` clamped to its cap, with `λ` as large as the budget allows.
+fn water_fill(claims: &[(f64, f64)], mut budget: f64) -> Vec<f64> {
+    let mut order: Vec<usize> = (0..claims.len()).filter(|&i| claims[i].1 > 0.0).collect();
+    order.sort_by(|&a, &b| (claims[a].0 / claims[a].1).total_cmp(&(claims[b].0 / claims[b].1)));
+    let mut weight: f64 = order.iter().map(|&i| claims[i].1).sum();
+    let mut out = vec![0.0; claims.len()];
+    for i in order {
+        let (cap, w) = claims[i];
+        out[i] = cap.min(budget * w / weight).max(0.0);
+        budget -= out[i];
+        weight -= w;
+    }
+    out
+}
+
 /// An inserter's accumulated input, recorded in `taken` so the flow it
-/// leaves moves on. The inserters picking from one lane share it evenly, and
-/// each splits its capacity evenly over the lanes it reaches — the hand
-/// sweeps the whole tile, so unlike a drop it cannot prefer a lane — then across each lane's items in proportion to
-/// their rates. Poorest lane first: a rich lane served early would stop at
-/// its equal share and leave the hand under-filled, since a poor lane
-/// cannot take up the slack afterwards.
+/// leaves moves on, and in `room` so the next inserter into the same
+/// destination only tops up what is still missing. The inserters picking
+/// from one lane share it evenly, and a hand only picks what its destination
+/// will take. Into an assembler it fills in recipe proportion from both
+/// lanes at once, since the machine refuses an ingredient it already has
+/// enough of. Anywhere else it fills from the near lane first — the lane on
+/// the inserter's side, or the belt's left lane when the inserter is in line
+/// with it — and reaches the far lane only for what the near one cannot
+/// give, splitting each lane's share across its items in proportion to
+/// their rates.
 fn pickup_input(
     graph: &FactoryGraph,
     node_idx: usize,
     node_outputs: &[HashMap<Item, f64>],
     n_pickers: &[usize],
     taken: &mut [HashMap<Item, f64>],
+    demand: &[Demand],
+    room: &mut [Demand],
 ) -> HashMap<Item, f64> {
-    let mut supply: Vec<(usize, f64)> = graph.predecessors[node_idx]
-        .iter()
-        .map(|&p| {
-            (
-                p,
-                node_outputs[p].values().sum::<f64>() / n_pickers[p] as f64,
-            )
-        })
-        .collect();
-    supply.sort_by(|a, b| a.1.total_cmp(&b.1));
-
-    let mut remaining = graph.nodes[node_idx].entity_kind.flow_rate();
     let mut input: HashMap<Item, f64> = HashMap::new();
-    for (i, &(p, available)) in supply.iter().enumerate() {
-        let share = available.min(remaining / (supply.len() - i) as f64);
-        remaining -= share;
-        // An empty lane has nothing to divide, and would turn the
-        // proportional split below into a 0/0.
-        if share <= 0.0 {
-            continue;
-        }
-        for (&item, &rate) in &node_outputs[p] {
-            // A source's rate is infinite, so the ratio is indeterminate —
-            // but it carries a single item, which takes the whole share.
-            let take = if available.is_finite() {
-                share * rate / n_pickers[p] as f64 / available
-            } else {
-                share
-            };
-            if take > 0.0 {
-                *input.entry(item).or_insert(0.0) += take;
-                *taken[p].entry(item).or_insert(0.0) += take;
+    let Some(&dest) = graph.successors[node_idx].first() else {
+        return input;
+    };
+    let dir = graph.nodes[node_idx].direction;
+    let mut preds = graph.predecessors[node_idx].clone();
+    preds.sort_by_key(|&p| {
+        let pred = &graph.nodes[p];
+        pred.id
+            .lane
+            .is_some_and(|lane| lane != Lane::on_side(pred.direction, dir).unwrap_or(Lane::Left))
+    });
+    let into_assembler = graph.nodes[dest].entity_kind == Item::AssemblingMachine1;
+    let groups: Vec<&[usize]> = if into_assembler {
+        vec![&preds]
+    } else {
+        preds.chunks(1).collect()
+    };
+    let available = |p: usize, item: Item| {
+        node_outputs[p].get(&item).copied().unwrap_or(0.0) / n_pickers[p] as f64
+    };
+
+    let mut hand = graph.nodes[node_idx].entity_kind.flow_rate();
+    for group in groups {
+        let mut items: Vec<Item> = group
+            .iter()
+            .flat_map(|&p| node_outputs[p].keys().copied())
+            .collect();
+        items.sort_by_key(|&item| item as usize);
+        items.dedup();
+        let claims: Vec<(f64, f64)> = items
+            .iter()
+            .map(|&item| {
+                let supply: f64 = group.iter().map(|&p| available(p, item)).sum();
+                // A source's rate is infinite, but it carries a single item,
+                // so any weight gives it the whole hand.
+                let weight = if into_assembler {
+                    demand[dest].get(item)
+                } else if supply.is_finite() {
+                    supply
+                } else {
+                    1.0
+                };
+                (supply.min(room[dest].get(item)), weight)
+            })
+            .collect();
+        let takes = water_fill(&claims, hand);
+        for (&item, &take) in items.iter().zip(&takes) {
+            if take <= 0.0 {
+                continue;
             }
+            let mut left = take;
+            for &p in group {
+                let from_p = left.min(available(p, item));
+                if from_p > 0.0 {
+                    *taken[p].entry(item).or_insert(0.0) += from_p;
+                    left -= from_p;
+                }
+            }
+            *input.entry(item).or_insert(0.0) += take;
+            room[dest].consume(item, take);
+            hand -= take;
         }
     }
     input
@@ -505,6 +645,7 @@ mod tests {
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
+                    direction: Direction::North,
                     recipe_item: None,
                     anchor: (0, 0),
                     output: HashMap::new(),
@@ -514,6 +655,7 @@ mod tests {
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
+                    direction: Direction::North,
                     recipe_item: None,
                     anchor: (1, 0),
                     output: HashMap::new(),
@@ -742,13 +884,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pickup_splits_evenly_across_lanes() {
-        // Both lanes are in the hand's reach, so each item gets half the
-        // 0.86 capacity — and the inserter's approach does not change that:
-        // in-line at (3,1) and perpendicular at (2,2) read the same.
-        for (ins, sink, dir) in [
-            ((3, 1), (4, 1), Direction::East),
-            ((2, 2), (2, 3), Direction::South),
+    fn test_pickup_prefers_near_lane() {
+        // Neither lane runs dry, so each hand takes only its near lane: the
+        // belt's left (iron) in-line at (3,1), the lane on its own side
+        // (copper) perpendicular at (2,2).
+        for (ins, sink, dir, near) in [
+            ((3, 1), (4, 1), Direction::East, Item::IronPlate),
+            ((2, 2), (2, 3), Direction::South, Item::CopperPlate),
         ] {
             for sink_item in [Item::IronPlate, Item::CopperPlate] {
                 let w = make_two_lane_belt_world(|w| {
@@ -758,9 +900,10 @@ mod tests {
                 let g = build_graph(&w);
                 let (output, _) = calc_throughput(&g);
                 assert_eq!(output.len(), 1);
+                let expected = if sink_item == near { 0.86 } else { 0.0 };
                 assert!(
-                    (output[0].achieved - 0.43).abs() < 1e-9,
-                    "inserter {ins:?} sink {sink_item:?}: expected 0.43, got {:?}",
+                    (output[0].achieved - expected).abs() < 1e-9,
+                    "inserter {ins:?} sink {sink_item:?}: expected {expected}, got {:?}",
                     output
                 );
             }
@@ -769,8 +912,8 @@ mod tests {
 
     #[test]
     fn test_pickup_falls_back_to_other_lane() {
-        // Only one lane carries items, so the even split has nothing to
-        // share with: the loaded lane covers the whole 0.86.
+        // Only the far lane carries items, so the hand reaches across for
+        // the whole 0.86.
         let mut w = World::empty(5, 4);
         w.place(1, 0, Item::Source, Direction::South, Some(Item::IronPlate));
         // A bare belt stub behind (1,1) keeps it straight (two feeders → the

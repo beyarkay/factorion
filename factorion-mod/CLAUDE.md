@@ -56,7 +56,18 @@ against the engine's prediction. Full sequence, from nothing to a report:
    inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
    smelting recipes → 0, and impossible >15/s rates from degenerate
    sink-loop factories. Transport (belts/splitters/undergrounds) should be
-   exact.
+   exact. Intentional engine simplifications that also show up here:
+   - **Mixed-lane jams.** An item nobody drains (e.g. an ingredient the
+     assembler already holds enough of) backs up its lane in-game and
+     blocks anything trying to sideload onto it, often jamming the factory
+     to 0 (`mixed_belt_pickup.yaml`); the engine lets the hand keep taking
+     in recipe proportion.
+   - **Starved assemblers.** An assembler short of one ingredient still
+     draws the others at the rate its output inserters could drain, so a
+     shared belt downstream of it is under-counted.
+   - **Sideload refill.** An inserter picking from the tile a lane is
+     sideloaded onto leaves a gap the game refills on the same tile; the
+     engine charges the pickup to the lane (≈7.5 → 6.64 downstream).
 
 6. **After editing the mod Lua**, re-host to reload it (see *Reloading the
    mod after editing*) before the next run.
