@@ -1,13 +1,7 @@
-"""factorion: environment utilities (datatypes + helpers).
-
-Plain Python module — was previously a marimo notebook, but the notebook
-interface was never used outside of factorion.py itself, so the cell
-wrappers have been stripped and identifiers are exported directly.
-"""
+"""factorion: environment utilities (datatypes + helpers)."""
 
 import base64
 import functools
-import glob
 import hashlib
 import importlib.util
 import json
@@ -24,11 +18,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
-import plotly.graph_objects as go
 import torch
-import tqdm
-import wandb
-from torch.distributions import Categorical
 
 _RS_DIR = Path(__file__).resolve().parent / "factorion_rs"
 
@@ -72,9 +62,6 @@ if (_RS_DIR / "src").is_dir():
 
 import factorion_rs  # noqa: E402
 
-wandb.login()
-
-
 class Html:
     """Minimal HTML wrapper, replaces ``marimo.Html`` for renderers that
     inspected ``.text`` or ``.data`` on the returned object.
@@ -113,11 +100,6 @@ class Misc(Enum):
     NONE = 0
     UNDERGROUND_DOWN = 1
     UNDERGROUND_UP = 2
-
-
-class Dim(Enum):
-    X = 0
-    Y = 1
 
 
 class Direction(Enum):
@@ -365,32 +347,6 @@ def new_world(width=8, height=8):
     world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
     world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
     return world
-
-
-def add_entity(
-    world,
-    proto_str,
-    x,
-    y,
-    direction=Direction.NONE,
-    recipe="empty",
-    misc=Misc.NONE,
-):
-    proto = str2ent(proto_str)
-    EMPTY = str2ent("empty")
-    if proto is None:
-        proto = EMPTY
-    recipe_proto = str2ent(recipe)
-    if recipe_proto is None:
-        recipe_proto = EMPTY
-    assert world[x, y, Channel.ENTITIES.value] == EMPTY.value, (
-        f"Can't place {proto_str} at {x},{y} because {entities[world[x, y, Channel.ENTITIES.value]]} is there"
-    )
-    assert 0 <= x < len(world), f"{x=} is not in [0, {len(world)})"
-    assert 0 <= y < len(world[0]), f"{y=} is not in [0, {len(world[0])})"
-
-    world[x, y, Channel.ENTITIES.value] = proto.value
-    world[x, y, Channel.DIRECTION.value] = direction.value
 
 
 def world2html(world_WHC, highlights=None):
@@ -825,267 +781,6 @@ def plot_flow_network(G):
     )
 
     plt.show()
-
-
-def plot_loss_history(loss_history):
-    # Create a figure
-    fig = go.Figure()
-    # Add traces for each key in loss_history
-    for k in loss_history[-1].keys():
-        fig.add_trace(
-            go.Scatter(
-                x=list(
-                    range(len(loss_history))
-                ),  # X-axis: range of iterations
-                y=[
-                    float(v[k]) if k in v else np.nan for v in loss_history
-                ],  # Y-axis: values for the current key
-                mode="lines",  # Plot as lines
-                name=k,  # Legend label
-                line=dict(width=0.5),  # Set line width
-            )
-        )
-    # Update layout for better readability
-    fig.update_layout(
-        title="Loss History",  # Title of the plot
-        xaxis_title="Iteration",  # X-axis label
-        yaxis_title="Loss",  # Y-axis label
-        width=800,  # Set figure width
-        height=500,  # Set figure height
-    )
-    # Show the plot
-    fig.show()
-
-
-def normalise_world(world_T, og_world):
-    assert torch.is_tensor(world_T), (
-        f"world_T is {type(world_T)}, not a tensor"
-    )
-    assert torch.is_tensor(og_world), (
-        f"og_world is {type(og_world)}, not a tensor"
-    )
-    assert len(world_T.shape) == 3, (
-        f"Expected world_T to have 3 dimensions, but is of shape {world_T.shape}"
-    )
-    assert len(og_world.shape) == 3, (
-        f"Expected og_world to have 3 dimensions, but is of shape {og_world.shape}"
-    )
-    assert world_T.shape[0] == world_T.shape[1], (
-        f"Expected world_T to be square, but is of shape {world_T.shape}"
-    )
-    assert og_world.shape[0] == og_world.shape[1], (
-        f"Expected og_world to be square, but is of shape {og_world.shape}"
-    )
-
-    empty_entity_value = str2ent("empty").value
-
-    bulk_inserter_mask = (
-        world_T[:, :, Channel.ENTITIES.value] == str2ent("bulk_inserter").value
-    )
-    world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
-        empty_entity_value
-    )
-
-    stack_inserter_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("stack_inserter").value
-    )
-    world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = (
-        empty_entity_value
-    )
-
-    green_circ_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("electronic_circuit").value
-    )
-    world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
-
-    # Remove all transport belts without direction
-    belt_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("transport_belt").value
-    )
-    no_direction_mask = (
-        world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
-    )
-    world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = (
-        empty_entity_value
-    )
-
-    # Ensure the model can't just overwrite existing factories with a simpler thing.
-    tworld = og_world.clone().detach().to(torch.int64)
-    original_had_something = (
-        tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
-    )
-    for ch in list(Channel):
-        replacements = tworld[:, :, ch.value][original_had_something]
-        world_T[:, :, ch.value][original_had_something] = replacements
-    return world_T
-
-
-def get_min_belts(world_CWH):
-    assert world_CWH.shape[1] == world_CWH.shape[2], (
-        "Wrong shape: {world_CWH.shape}"
-    )
-    C, W, H = world_CWH.shape
-
-    stack_inserter_id = str2ent("stack_inserter").value
-    bulk_inserter_id = str2ent("bulk_inserter").value
-    coords1 = torch.where(
-        world_CWH[Channel.ENTITIES.value] == bulk_inserter_id
-    )
-    assert len(coords1[0]) == len(coords1[1]) == 1, (
-        f"Expected 1 bulk inserter, found {coords1} in world {world_CWH}"
-    )
-    w1, h1 = coords1[0][0], coords1[1][0]
-
-    coords2 = torch.where(
-        world_CWH[Channel.ENTITIES.value] == stack_inserter_id
-    )
-    assert len(coords2[0]) == len(coords2[1]) == 1, (
-        f"Expected 1 stack inserter, found {coords2} in world {world_CWH}"
-    )
-    w2, h2 = coords2[0][0], coords2[1][0]
-
-    # we want an estimate for how many belts are required, so get the
-    # coords of the transport belt tile closest to the source/sink
-    w1 = torch.clamp(w1, 1, W - 2)
-    h1 = torch.clamp(h1, 1, H - 2)
-    w2 = torch.clamp(w2, 1, W - 2)
-    h2 = torch.clamp(h2, 1, H - 2)
-
-    manhat_dist = torch.abs(w1 - w2) + torch.abs(h1 - h2)
-    min_belts = manhat_dist + 1
-    return min_belts
-
-
-def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
-    stack_inserter_value = str2ent("stack_inserter").value
-    bulk_inserter_value = str2ent("bulk_inserter").value
-    empty_value = str2ent("empty").value
-
-    if seed is not None:
-        np.random.seed(seed)
-    assert min_belts != [1], f"min_belts of [1] is sometimes unsatisfiable"
-    if min_belts is None:
-        min_belts = list(range(0, 64))
-    w = new_world(width=n, height=n)
-    boundary_tiles = []
-    for i in range(n):
-        for j in range(n):
-            if i in (0, n - 1) and j in (0, n - 1):
-                continue
-            if i in (0, n - 1) or j in (0, n - 1):
-                boundary_tiles.append((i, j))
-
-    # Put a source and a sink on one of the boundaries
-    source = boundary_tiles[np.random.choice(len(boundary_tiles))]
-    w[source[0], source[1], Channel.ENTITIES.value] = stack_inserter_value
-    # TODO not the most efficient, but it'll be okay for now
-    limit = 1000
-    while limit > 0:
-        # Find random location for the sink
-        sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
-        # Ensure the sink isn't on top of the source
-        if source == sink:
-            continue
-        # Add the sink to the world
-        w[sink[0], sink[1], Channel.ENTITIES.value] = bulk_inserter_value
-        # Calculate the manhatten distance
-        min_belt = get_min_belts(torch.tensor(w).permute(2, 0, 1))
-        # If manhatten distance is acceptable and source != sink, we've got
-        # our world
-        if (source != sink) and (min_belt in min_belts):
-            break
-        # else, remove the sink from the world and try again
-        w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
-    assert limit > 0, "Infinite loop blocked"
-
-    if source_item is not None:
-        w[source[0], source[1], Channel.ITEMS.value] = source_item
-    if sink_item is not None:
-        w[sink[0], sink[1], Channel.ITEMS.value] = sink_item
-
-    # Figure out the direction of the source + sink
-    for x, y, is_source in [(*source, True), (*sink, False)]:
-        if x == 0:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.EAST if is_source else Direction.WEST
-            ).value
-        if x == n - 1:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.WEST if is_source else Direction.EAST
-            ).value
-        if y == 0:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.SOUTH if is_source else Direction.NORTH
-            ).value
-        if y == n - 1:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.NORTH if is_source else Direction.SOUTH
-            ).value
-
-    return torch.tensor(w).to(torch.float)
-
-
-def sample_world(probabilities):
-    assert torch.is_tensor(probabilities), (
-        f"probabilities is {type(probabilities)} not torch.Tensor"
-    )
-    distribution = Categorical(probs=probabilities)
-    samples = distribution.sample()
-    # make the directions fit the expected values
-    d_direction = samples[:, :, Channel.DIRECTION.value]
-    mask = d_direction > 0
-    d_direction[mask] = d_direction[mask] * 4 - 4
-    d_direction[~mask] = -1
-    return samples
-
-
-def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
-    torch.manual_seed(42)
-    evals = []
-    iterator = torch.randint(0, 2**16 - 1, (num_evaluations,)).tolist()
-    if pbar:
-        iterator = tqdm.tqdm(iterator)
-    for seed in iterator:
-        original_world = get_new_world(seed, n=4)
-        probabilities = actor(original_world)
-        normalised_world = normalise_world(
-            sample_world(probabilities), original_world
-        )
-        value = critic(normalised_world.to(torch.float))
-        # FIXME(#161): still the old fixed /15.0 normalization. This is the
-        # legacy RL-from-scratch eval (no current callers) and its random
-        # get_new_world() inputs have no reference factory to normalize by, so
-        # there's no per-factory max to use here — left as-is intentionally.
-        throughput = torch.tensor(
-            factorion_rs.simulate_throughput(
-                normalised_world.to(torch.int64).numpy()
-            )[0]
-            / 15.0,
-            dtype=value.dtype,
-        )
-        num_entities = (
-            normalised_world[:, :, Channel.ENTITIES.value]
-            != str2ent("empty").value
-        ).sum()
-        evals.append(
-            {
-                "seed": seed,
-                "original_world": original_world,
-                "normalised_world": normalised_world,
-                "throughput": throughput,
-                "num_entities": num_entities,
-            }
-        )
-
-    avg_throughput = sum([eval["throughput"] for eval in evals]) / len(evals)
-    avg_num_entities = sum([eval["num_entities"] for eval in evals]) / len(
-        evals
-    )
-
-    return evals, avg_throughput, float(avg_num_entities)
 
 
 def build_graph_nx(world_WHC):
