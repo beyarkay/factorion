@@ -172,17 +172,6 @@ closing. Endpoint deltas understate a steady gap by about half and invert small
 per-lesson ones; seed std measured at another sample budget or architecture
 does not transfer.
 
-## Benchmarks
-
-All speed benchmarks live in **`tests/benchmarks/`** — read
-`tests/benchmarks/CLAUDE.md` for the playbook and
-`tests/benchmarks/EXPERIMENT_LOG.md` for what's been tried (read it before
-re-testing an idea). Two scripts cover everything: `bench_run.sh <kind>` (one
-run) and `bench_measure.sh <kind>` (repeat/aggregate → CSV + correctness gate),
-with `<kind>` ∈ `ppo-speed` (pure-speed fixed-iteration loop → `results.csv`),
-`ppo-quality` (time-to-quality finetune → `quality_results.csv`), `sft` (SFT
-training loop → `sft_bench_results.csv`).
-
 ## Linting
 
 ```bash

@@ -286,7 +286,7 @@ def str2item(s):
     )
 
 
-@functools.cache  # pure fn of `s` (entities is import-time constant); see EXPERIMENT_LOG.md
+@functools.cache  # pure fn of `s`: entities is an import-time constant
 def str2ent(s):
     if s is None:
         print(f"WARN: given string  is None")
@@ -749,7 +749,7 @@ def plot_flow_network(G):
     # Lazy imports: matplotlib + networkx are visualization-only (this function
     # and build_graph_nx). Importing them at module scope cost ~0.44s on every
     # `import factorion` — paid by sft/rl training that never plots. Deferring
-    # them here keeps those import-bound entry points (and the benchmarks) fast.
+    # them here keeps those import-bound entry points fast.
     import matplotlib.pyplot as plt
     import networkx as nx
 

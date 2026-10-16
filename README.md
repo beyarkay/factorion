@@ -313,7 +313,5 @@ work and how Factorion simplifies them.
 
 ## Experiments
 
-See [tests/benchmarks/EXPERIMENT_LOG.md](tests/benchmarks/EXPERIMENT_LOG.md) for a
-detailed log of benchmark results and speed experiments, and
-[tests/benchmarks/CLAUDE.md](tests/benchmarks/CLAUDE.md) for how to run the
-benchmarks.
+See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md): one line per experiment PR,
+idea → result.
