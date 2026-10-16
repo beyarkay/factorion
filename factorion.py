@@ -145,9 +145,8 @@ for _val, _props in factorion_rs.py_items().items():
 # Post-unification, every grid-placeable entity is also an Item, so
 # `entities[v]` returns the same dataclass as `items[v]`. The Rust
 # binding hands us the canonical ordering: 1..5 = agent-placeable
-# (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
-# Source — placed last so the policy head can exclude them via
-# len(entities)-2), 8..12 = non-placeable items.
+# (TB, Inserter, AM1, UB, Splitter), 6..7 = the Sink and Source markers,
+# 8..12 = non-placeable items.
 entities = items
 # Backwards-compat alias for the now-unified Item dataclass.
 Entity = Item

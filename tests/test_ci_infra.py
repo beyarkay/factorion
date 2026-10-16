@@ -81,7 +81,7 @@ class TestRlCommand:
         cmd = rl_command(RlJob(sha=SHA, start_from="j0s5y2mc"))
         assert cmd[cmd.index("--start-from") + 1] == "j0s5y2mc"
         assert "--total-timesteps" not in cmd
-        forbidden = {"--learning-rate", "--seed", "--size", "--critic-warmup", "--ent-coef-start"}
+        forbidden = {"--lr", "--seed", "--size", "--temperature", "--sft-coef"}
         assert forbidden.isdisjoint(cmd)
 
     def test_total_timesteps_override(self):

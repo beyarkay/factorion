@@ -228,7 +228,7 @@ def _rope(t, cos, sin):
 
 
 class _AttnBlock(nn.Module):
-    """Pre-norm transformer block over grid cells with 2-D rotary position
+    """Pre-norm self-attention + MLP block over grid cells with 2-D rotary position
     embeddings (half of each head rotates with x, half with y): attention
     sees relative offsets only, so it is as size-agnostic as the convs."""
 
@@ -259,7 +259,7 @@ class DenoiserUNet(nn.Module):
     """UNet over the factory grid with self-attention at the bottleneck.
 
     `levels` resolutions (channels doubling, stride-2 downsamples), `blocks`
-    residual blocks per level and side, and `attn_layers` rotary transformer
+    residual blocks per level and side, and `attn_layers` rotary attention
     blocks over the bottleneck cells. Grids are padded with wall tiles to a
     multiple of the total stride and cropped back, so any size runs.
     """

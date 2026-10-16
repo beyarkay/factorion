@@ -2485,10 +2485,9 @@ class TestFullBlankActuallyEmptiesWorld:
 
     `_remove_entities` used to short-circuit on `inf` and return the entity
     count WITHOUT mutating the world tensor, so a "full blank" handed back the
-    fully-built factory. The PPO env always resets with `inf`, so every episode
-    started from a complete factory: the agent learned to declare end-of-turn on
-    step 1 and bank throughput 1.0 for building nothing. A full blank must
-    actually empty the grid down to the protected source/sink.
+    fully-built factory: every generation started from a complete factory and
+    scored throughput 1.0 for building nothing. A full blank must actually
+    empty the grid down to the protected source/sink.
     """
 
     @pytest.mark.parametrize("seed", range(8))

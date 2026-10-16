@@ -68,12 +68,12 @@ def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
 # ── End-of-run metrics ─────────────────────────────────────────────
 # A run's W&B summary holds ONE logged point per metric — the last, or
 # whatever single statistic define_metric picked. That is noise for a
-# stochastic policy (eval/thput@N swings between neighbouring evals), so
+# stochastic model (eval/thput@N swings between neighbouring evals), so
 # reporting it decides comparisons on where a run happened to stop, or on its
 # single luckiest eval. Reports average the tail of the history instead.
 
 # Enough points to average out eval noise, few enough that the tail is all one
-# policy: on a 40M-step run 2% is still ~25 evals, where 10% would reach 4M
+# model: on a 40M-step run 2% is still ~25 evals, where 10% would reach 4M
 # steps back and average in iterates that are genuinely worse.
 TAIL_FRACTION = 0.02
 TAIL_MIN_POINTS = 3
@@ -549,7 +549,7 @@ def compare_renders(
     main_group: str, pr_group: str, per_kind: Optional[int] = None
 ) -> str:
     """Qualitative companion to `compare_report`: the factories each side's
-    policy actually builds, side by side wherever they disagree.
+    model actually builds, side by side wherever they disagree.
 
     Every seed of both sides is rolled out over ONE shared factory set (the
     lowest common seed's), so a factory is only reported as different when the
