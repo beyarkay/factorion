@@ -11,7 +11,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import LessonKind, blank_entities, build_factory, str2ent  # noqa: E402
-from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL, Factory  # noqa: E402
+from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL, Channel, Factory  # noqa: E402
 from denoise import (  # noqa: E402
     STATE_CHANNELS,
     DenoiserUNet,
@@ -123,7 +123,10 @@ class TestCorrupt:
         assert all(torch.equal(a, b) for a, b in zip(kept, clean))
         noisy = corrupt(clean, free, torch.ones(4), prior)
         noisy_state = tokens_to_state(state, free, *noisy)
-        assert torch.equal(noisy_state[~free.unsqueeze(1).expand_as(noisy_state)], state.long()[~free.unsqueeze(1).expand_as(noisy_state)])
+        # Fixed tiles keep their tokens; only their power follows the noise's poles.
+        tokens = [c for c in range(STATE_CHANNELS) if c != Channel.POWER.value]
+        fixed = ~free.unsqueeze(1).expand(-1, len(tokens), -1, -1)
+        assert torch.equal(noisy_state[:, tokens][fixed], state.long()[:, tokens][fixed])
         assert (noisy[0][free] != clean[0][free]).any()
 
 

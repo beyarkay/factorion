@@ -1149,7 +1149,8 @@ class TestFactoryYaml:
         assert "factory: |\n" in text
         assert "\n- {x: " in text
         # `Header` is deny_unknown_fields, so a stray key is a parse error.
-        assert set(doc) <= {"description", "items", "throughput", "factory"}
+        assert set(doc) <= {"description", "simulate_power", "items", "throughput", "factory"}
+        assert doc["simulate_power"] is True
         assert all(set(b) == {"x", "y", "item"} for b in doc["items"])
         assert all(set(t) == {"item", "per_second"} for t in doc["throughput"])
         # The grid is the canonical renderer's, not a second implementation.

@@ -36,7 +36,9 @@ from factorion import (
     build_factory,
     entities,
     items,
+    POLE_ENT_IDS,
     recipes,
+    refresh_power,
     str2ent,
     str2item,
 )
@@ -101,6 +103,7 @@ _INVALID_REASON_KEYS = (
     'placed_on_masked_tile', 'replaced_source_or_sink', 'placed_source_or_sink',
     'place_asm_mach_wo_recipe', 'placement_wo_direction', 'direction_wo_entity',
     'ug_belt_wo_up_or_down', 'placement_with_unneeded_misc', 'too_wide', 'too_tall',
+    'pole_with_direction',
 )
 
 # Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
@@ -112,6 +115,7 @@ _CH_DIR = Channel.DIRECTION.value
 _CH_ITEMS = Channel.ITEMS.value
 _CH_MISC = Channel.MISC.value
 _CH_FOOTPRINT = Channel.FOOTPRINT.value
+_CH_POWER = Channel.POWER.value
 # Footprint is two-valued (UNAVAILABLE / AVAILABLE) and exhaustive, so
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
@@ -140,7 +144,8 @@ def apply_placement_action(
     Placements overwrite: every entity the footprint touches is removed whole
     first, so ``empty`` deletes the entity under ``xy`` and any other entity
     replaces what it lands on. Walls (which include a lesson's protected
-    entities) and sources/sinks can't be edited.
+    entities) and sources/sinks can't be edited. Moving a pole refreshes the
+    POWER channel.
 
     Returns ``(is_invalid, invalid_reason_key, placed_action)``. The final item
     is the human-readable action record used by the environment, or ``None``
@@ -166,10 +171,12 @@ def apply_placement_action(
     if entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM_VAL:
         return True, "place_asm_mach_wo_recipe", None
     if (
-        entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID)
+        entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID, *POLE_ENT_IDS)
         and direc == _DIR_NONE_VAL
     ):
         return True, "placement_wo_direction", None
+    if entity_id in POLE_ENT_IDS and direc != _DIR_NONE_VAL:
+        return True, "pole_with_direction", None
     if entity_id == _EMPTY_ENT_ID and direc != _DIR_NONE_VAL:
         return True, "direction_wo_entity", None
     if misc == _MISC_NONE_VAL and entity_id == _UG_BELT_ENT_ID:
@@ -217,6 +224,9 @@ def apply_placement_action(
         )
         if occupied else []
     )
+    moves_pole = entity_id in POLE_ENT_IDS or any(
+        int(world_np[_CH_ENT, tx, ty]) in POLE_ENT_IDS for tx, ty in cleared
+    )
     for tx, ty in cleared:
         world_np[_CH_ENT, tx, ty] = _EMPTY_ENT_ID
         world_np[_CH_DIR, tx, ty] = _DIR_NONE_VAL
@@ -228,6 +238,8 @@ def apply_placement_action(
             world_np[_CH_DIR, tx, ty] = direc
             world_np[_CH_ITEMS, tx, ty] = item_id
             world_np[_CH_MISC, tx, ty] = misc
+    if moves_pole:
+        refresh_power(world_CWH)
 
     placed_action = {
         "entity": entities[entity_id].name,
@@ -1496,6 +1508,8 @@ class AgentCNN(nn.Module):
         self.register_buffer(
             "assembler_recipe_mask", assembler_recipe_mask, persistent=False
         )
+        self.pole_ids: torch.Tensor
+        self.register_buffer("pole_ids", torch.tensor(POLE_ENT_IDS), persistent=False)
 
         # --- Input encoding for the nominal (categorical) channels ---
         # The observation's ENTITIES/DIRECTION/ITEMS/MISC channels hold raw
@@ -1504,16 +1518,16 @@ class AgentCNN(nn.Module):
         # is meaningless — the ids are nominal labels. Instead we encode each
         # channel categorically before the conv: a learned embedding for the
         # two wide vocabularies (entity/item, ~68 each) and a one-hot for the
-        # two narrow ones (direction=5, misc=3). FOOTPRINT is genuinely binary,
-        # so it stays a scalar channel. The embedding vocab covers the *full*
+        # two narrow ones (direction=5, misc=3). FOOTPRINT and POWER are
+        # genuinely binary, so they stay scalar channels. The embedding vocab covers the *full*
         # catalog (len(entities)/len(items)) — the input can carry the env-only
         # source/sink ids even though the entity head never emits them.
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
         # Encoder input channels after categorical expansion: two embeddings +
-        # two one-hots + the scalar footprint.
-        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
+        # two one-hots + the scalar footprint and power.
+        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 2
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1599,7 +1613,7 @@ class AgentCNN(nn.Module):
         """Expand the raw (B, len(Channel), W, H) observation into the conv's
         input by encoding the nominal channels categorically: learned
         embeddings for entity/item, one-hots for direction/misc, and the raw
-        footprint scalar. Returns (B, self.input_channels, W, H).
+        footprint and power scalars. Returns (B, self.input_channels, W, H).
 
         The channels carry category ids as floats; we cast to long to index.
         The clamp is a defensive no-op on valid observations (ids are bounded
@@ -1618,7 +1632,8 @@ class AgentCNN(nn.Module):
         dir_oh = F.one_hot(dir_idx, self.num_directions).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
-        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+        power = x_BCWH[:, _CH_POWER:_CH_POWER + 1]
+        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint, power], dim=1)
 
     # All consumers (PPO, SFT, the builder UI, the mod server) go through these
     # four helpers, so an architecture change lands in one place.
@@ -1666,16 +1681,17 @@ class AgentCNN(nn.Module):
     def semantic_head_log_probs(self, logits_d_BD, logits_i_BI, logits_m_BM, ent_B):
         """Apply the action grammar implied by the selected entity.
 
-        Empty and the rotation-invariant assembler use direction NONE. Other
-        placeable entities use cardinal directions. Only assemblers carry a
+        Empty, the rotation-invariant assembler and poles use direction NONE.
+        Other placeable entities use cardinal directions. Only assemblers carry a
         recipe item, and only underground belts carry DOWN/UP misc state.
         """
         is_empty_B = ent_B == _EMPTY_ENT_ID
         is_assembler_B = ent_B == _ASM_MACHINE_ENT_ID
         is_underground_B = ent_B == _UG_BELT_ENT_ID
+        is_pole_B = torch.isin(ent_B, self.pole_ids)
 
         direction_mask_BD = torch.zeros_like(logits_d_BD, dtype=torch.bool)
-        uses_none_direction_B = is_empty_B | is_assembler_B
+        uses_none_direction_B = is_empty_B | is_assembler_B | is_pole_B
         direction_mask_BD[:, _DIR_NONE_VAL] = uses_none_direction_B
         direction_mask_BD[:, 1:] = (~uses_none_direction_B).unsqueeze(1)
 

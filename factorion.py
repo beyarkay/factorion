@@ -102,6 +102,10 @@ class Channel(Enum):
     MISC = 3
     # 1 if you can build there, 0 if you can't
     FOOTPRINT = 4
+    # 1 if the tile is powered (wiki/electric-network.md). Derived from the
+    # poles for the models' input — refresh_power() after moving a pole; the
+    # engine recomputes it and never reads it.
+    POWER = 5
 
 
 class Footprint(Enum):
@@ -337,6 +341,10 @@ def str2ent(s):
 _EMPTY_ENT_VAL = str2ent("empty").value
 _SOURCE_ENT_VAL = str2ent("source").value
 _SINK_ENT_VAL = str2ent("sink").value
+# Poles have no facing: they're stored with Direction.NONE.
+POLE_ENT_IDS = tuple(
+    str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "substation")
+)
 _EMPTY_ITEM_VAL = str2item("empty").value
 
 
@@ -719,7 +727,7 @@ def blueprint2world(bp):
                 f"{bp_dir} at ({cx},{cy})"
             )
             continue
-        model_dir = _BP_DIR_TO_MODEL[bp_dir]
+        model_dir = Direction.NONE if proto.value in POLE_ENT_IDS else _BP_DIR_TO_MODEL[bp_dir]
 
         # Multi-tile entities rotate footprint when facing E/W.
         w, h = proto.width, proto.height
@@ -772,7 +780,9 @@ def blueprint2world(bp):
                     world[x, y, Channel.MISC.value] = misc.value
 
     # Return (C, W, H) to match the encoder's input shape.
-    return np.transpose(world, (2, 0, 1))
+    world_CWH = np.transpose(world, (2, 0, 1))
+    refresh_power(torch.from_numpy(world_CWH))
+    return world_CWH
 
 
 def read_blueprint_file(path):
@@ -1088,7 +1098,7 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
     return evals, avg_throughput, float(avg_num_entities)
 
 
-def build_graph_nx(world_WHC):
+def build_graph_nx(world_WHC, all_powered=False):
     """Build the factory connection graph as a networkx ``DiGraph``.
 
     The Rust engine (``factorion_rs.py_build_graph``) is the single source of
@@ -1101,12 +1111,12 @@ def build_graph_nx(world_WHC):
     entity-connection rules.
 
     Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
-    ``factorion_rs.simulate_throughput`` takes.
+    ``factorion_rs.simulate_throughput`` takes; ``all_powered`` as there.
     """
     import networkx as nx  # lazy: networkx is visualization-only (see top imports)
 
     arr = world_WHC.numpy() if hasattr(world_WHC, "numpy") else np.asarray(world_WHC)
-    nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64))
+    nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64), all_powered)
     G = nx.DiGraph()
     G.add_nodes_from(nodes)
     G.add_edges_from((nodes[i], nodes[j]) for i, j in edges)
@@ -1116,9 +1126,10 @@ def build_graph_nx(world_WHC):
 def count_dangling_inserters(world_CWH) -> tuple[int, int]:
     """(inserters with no input, inserters with no output) per the engine's
     factory graph. A finished factory should have zero of each: every inserter
-    the agent places should both pick up from and drop onto something."""
+    the agent places should both pick up from and drop onto something. Power
+    is ignored: this counts wiring, and an unpowered inserter has no node."""
     arr = world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
-    nodes, edges = factorion_rs.py_build_graph(arr)
+    nodes, edges = factorion_rs.py_build_graph(arr, all_powered=True)
     fed = {dst for _, dst in edges}
     draining = {src for src, _ in edges}
     inserters = [i for i, label in enumerate(nodes) if label[0] in "il"]
@@ -1265,6 +1276,15 @@ def build_factory(
     )
 
 
+def refresh_power(world: torch.Tensor) -> None:
+    """Rewrite the POWER channel of a ``(C, W, H)`` world or ``(B, C, W, H)``
+    batch, in place, from its poles."""
+    batch = world if world.dim() == 4 else world[None]
+    worlds_BWHC = batch.permute(0, 2, 3, 1).to("cpu", torch.int64).contiguous().numpy()
+    powered = torch.from_numpy(factorion_rs.py_power_map(worlds_BWHC))
+    batch[:, Channel.POWER.value] = powered.to(batch.device, batch.dtype)
+
+
 def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
     """Render a factory into the two-character ASCII grid format (the same
     format the textual test fixtures use).
@@ -1325,6 +1345,7 @@ def blank_entities(
         num_missing_entities,
         protected_positions=set(factory.protected_positions),
     )
+    refresh_power(partial)
     return partial, min_entities_required
 
 

@@ -32,7 +32,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import factorion_rs
-from factorion import Direction, Factory, LESSON_IS_TRIAL, LessonKind, Misc, count_dangling_inserters, entities, items
+from factorion import (
+    Direction,
+    Factory,
+    LESSON_IS_TRIAL,
+    LessonKind,
+    Misc,
+    POLE_ENT_IDS,
+    count_dangling_inserters,
+    entities,
+    items,
+    refresh_power,
+)
 from ppo import (
     _ASM_MACHINE_ENT_ID,
     _CH_DIR,
@@ -40,6 +51,7 @@ from ppo import (
     _CH_FOOTPRINT,
     _CH_ITEMS,
     _CH_MISC,
+    _CH_POWER,
     _EMPTY_ENT_ID,
     _ENTITY_FOOTPRINT_AREAS,
     _ENTITY_UNIT_COSTS,
@@ -52,7 +64,7 @@ from ppo import (
 )
 
 # The model's state is the world's channels plus the part map.
-CH_PART = _CH_FOOTPRINT + 1
+CH_PART = _CH_POWER + 1
 STATE_CHANNELS = CH_PART + 1
 
 TYPES: tuple[tuple[int, int, int], ...] = (
@@ -62,8 +74,14 @@ TYPES: tuple[tuple[int, int, int], ...] = (
         for e in _VALID_ENTITY_ACTION_IDS
         if e != _EMPTY_ENT_ID
         # Generators store a facing on assemblers; NONE is what a placement
-        # action writes. Both are legal worlds.
-        for d in (range(len(Direction)) if e == _ASM_MACHINE_ENT_ID else range(1, len(Direction)))
+        # action writes. Both are legal worlds. Poles have no facing.
+        for d in (
+            range(len(Direction))
+            if e == _ASM_MACHINE_ENT_ID
+            else (Direction.NONE.value,)
+            if e in POLE_ENT_IDS
+            else range(1, len(Direction))
+        )
         for m in ((Misc.UNDERGROUND_DOWN.value, Misc.UNDERGROUND_UP.value) if e == _UG_BELT_ENT_ID else (Misc.NONE.value,))
     ),
 )
@@ -166,13 +184,25 @@ def state_to_tokens(state):
 
 
 def tokens_to_state(cond, free, typ, recipe, part):
-    """`cond` with every free tile replaced by its tokens."""
+    """`cond` with every free tile replaced by its tokens, powered by its own
+    poles."""
     L = _luts(cond.device)
     edm = L.types[typ]
     tok = torch.stack(
-        [edm[..., 0], edm[..., 1], L.recipes[recipe], edm[..., 2], cond[:, _CH_FOOTPRINT].long(), part], dim=1
+        [
+            edm[..., 0],
+            edm[..., 1],
+            L.recipes[recipe],
+            edm[..., 2],
+            cond[:, _CH_FOOTPRINT].long(),
+            cond[:, _CH_POWER].long(),
+            part,
+        ],
+        dim=1,
     )
-    return torch.where(free.unsqueeze(1), tok, cond.long())
+    state = torch.where(free.unsqueeze(1), tok, cond.long())
+    refresh_power(state)
+    return state
 
 
 def noise_tokens(prior, shape, generator=None):
@@ -287,11 +317,11 @@ class DenoiserUNet(nn.Module):
         if io == "token":
             self.head_sizes = [N_TYPES, N_RECIPES, N_PARTS]
             self.part_embed = nn.Embedding(N_PARTS, embed_dim)
-            in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 2
+            in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 3
         elif io == "factored":
             # `AgentCNN._encode_input`'s encoding and its per-channel heads.
             self.head_sizes = [N_ENT_HEAD, len(Direction), len(items), len(Misc)]
-            in_ch = 2 * embed_dim + len(Direction) + len(Misc) + 1
+            in_ch = 2 * embed_dim + len(Direction) + len(Misc) + 2
         else:
             raise ValueError(f"io must be 'token' or 'factored', got {io!r}")
         self.ent_embed = nn.Embedding(len(entities), embed_dim)
@@ -333,6 +363,7 @@ class DenoiserUNet(nn.Module):
             F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
             F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
             s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
+            s[:, _CH_POWER : _CH_POWER + 1].float(),
         ]
         if self.io == "factored":
             return torch.cat([ent, item, *onehots], dim=1)
@@ -521,6 +552,7 @@ def legalize(
     for c, col in ((_CH_ENT, 0), (_CH_DIR, 1), (_CH_MISC, 2)):
         world[c][single] = _TYPES_NP[flat, col][single]
     world[_CH_ITEMS][single] = 0
+    refresh_power(torch.from_numpy(world))
     return world
 
 

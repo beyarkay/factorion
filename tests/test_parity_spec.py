@@ -52,6 +52,9 @@ KNOWN_PROTOTYPES = {
     "inserter",
     "long-handed-inserter",
     "assembling-machine-1",
+    "small-electric-pole",
+    "medium-electric-pole",
+    "substation",
 }
 
 
@@ -144,7 +147,7 @@ def test_spec_inserter_direction_is_flipped():
         dir_ch = np.asarray(world[Channel.DIRECTION.value])
         for e in spec["entities"]:
             model_dir = int(dir_ch[e["tile_x"], e["tile_y"]])
-            bp_dir = model_dir * 4 - 4
+            bp_dir = max(model_dir * 4 - 4, 0)  # a pole's NONE emits 0
             if "inserter" in e["name"]:
                 assert e["direction"] == (bp_dir + 8) % 16, (kind.name, seed, e)
             else:

@@ -111,7 +111,7 @@ def set_splitter(world, x, y, direction, item_name="empty"):
     set_multi_tile_entity(world, "splitter", x, y, direction, item_name)
 
 
-def build_factory_graph(world_WHC):
+def build_factory_graph(world_WHC, all_powered=False):
     """Build a factory's connection graph as a networkx ``DiGraph``.
 
     The single indirection point for graph construction across the test
@@ -120,9 +120,9 @@ def build_factory_graph(world_WHC):
     the engine's entity-connection rules. Delegates to the Rust engine via
     ``factorion.build_graph_nx`` (issue #178).
     """
-    return build_graph_nx(world_WHC)
+    return build_graph_nx(world_WHC, all_powered)
 
 
-def rs_throughput(world):
+def rs_throughput(world, all_powered=False):
     """Throughput via the Rust engine's Python bindings."""
-    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64), all_powered)

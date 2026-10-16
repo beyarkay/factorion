@@ -301,9 +301,9 @@ class TestCategoricalInputEncoding:
 
     def test_encoded_shape(self, agent):
         """_encode_input expands len(Channel) into the conv's input channels:
-        two embeddings + two one-hots + footprint."""
+        two embeddings + two one-hots + footprint + power."""
         d = agent.cat_embed_dim
-        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1
+        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 2
         enc = agent._encode_input(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert enc.shape == (2, agent.input_channels, 5, 5)
 

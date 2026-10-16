@@ -23,6 +23,7 @@ from helpers import (
     build_factory_graph,
     world2html,
 )
+from factorion import POLE_ENT_IDS
 
 
 DIRS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -2901,7 +2902,7 @@ class TestMemoriseRecipesEntityDirections:
         for x in range(world.shape[1]):
             for y in range(world.shape[2]):
                 v = ent[x, y].item()
-                if v != str2ent("empty").value:
+                if v != str2ent("empty").value and v not in POLE_ENT_IDS:
                     assert dirs[x, y].item() != Direction.NONE.value, (
                         f"seed={seed}: entity {entities[v].name} at ({x},{y}) "
                         f"has NONE dir"

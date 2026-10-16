@@ -15,17 +15,23 @@ edge-cases that random fuzz testing is unlikely to hit:
 - Large belt grids
 """
 
+import functools
+
 import pytest
 
 from helpers import (
     Direction,
     Misc,
     make_world,
-    rs_throughput,
+    rs_throughput as _rs_throughput,
     set_assembler,
     set_entity,
-    build_factory_graph,
+    build_factory_graph as _build_factory_graph,
 )
+
+# Item flow alone: these hand-built worlds have no poles.
+build_factory_graph = functools.partial(_build_factory_graph, all_powered=True)
+rs_throughput = functools.partial(_rs_throughput, all_powered=True)
 
 
 # ── Zigzag / curved belt paths ──────────────────────────────────────────────

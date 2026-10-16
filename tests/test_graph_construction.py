@@ -21,6 +21,8 @@ Two layers of coverage:
   positive throughput, so the graph *must* connect each source to a sink.
 """
 
+import functools
+
 import networkx as nx
 import pytest
 
@@ -33,12 +35,15 @@ from factorion import (
     count_dangling_inserters,
 )
 from helpers import (
-    build_factory_graph,
+    build_factory_graph as _build_factory_graph,
     make_world,
     set_assembler,
     set_entity,
     set_splitter,
 )
+
+# Item flow alone: these hand-built worlds have no poles.
+build_factory_graph = functools.partial(_build_factory_graph, all_powered=True)
 
 
 # Entity-name → grid-registry char, for the canonical ``<char>@x,y`` node
