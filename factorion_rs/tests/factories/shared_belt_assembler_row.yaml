@@ -2,15 +2,15 @@ description: |
   Three assemblers drinking two ingredients off ONE shared belt. The two
   sources sideload onto opposite sides of the northbound column at x=2 —
   copper_cable from the west onto its left lane, iron_plate from the east
-  onto its right — and each assembler's lone input inserter takes an even
-  0.43 of each. electronic_circuit wants 3 cable : 1 plate, so cable binds
-  at 0.43/3 and every machine runs at 0.1433/s; three of them put 0.43/s
-  into the sink.
+  onto its right. An assembler refuses an ingredient it already holds
+  enough of, so each machine's lone input inserter reaches both lanes and
+  fills in the recipe's 3 cable : 1 plate: 0.86 i/s is 0.215 circuits/s per
+  machine, and three of them put 0.645/s into the sink.
 
   The column is nowhere near its 7.5/lane cap and the three pickups only
   draw 0.86 each, so the whole row is inserter-limited: an assembler pays
   for sharing the belt with its neighbours only through the hand, never
-  through the belt. Feeding cable to both lanes would triple the row.
+  through the belt.
 items:
 - { x: 0, y: 9, item: copper_cable }
 - { x: 2, y: 9, item: iron_plate }
@@ -19,7 +19,7 @@ items:
 - { x: 4, y: 6, item: electronic_circuit }
 - { x: 8, y: 9, item: electronic_circuit }   # sink
 throughput:
-- { item: electronic_circuit, per_second: 0.43 }
+- { item: electronic_circuit, per_second: 0.645 }
 factory: |
   .. .. b^ i> aaaaaaaa .. ..
   .. .. b^ .. aa    aa .. ..
@@ -35,7 +35,7 @@ factory: |
 description: |
   The same row fed without the dog-leg: both sources sideload straight onto
   the bottom of the column instead of merging a tile to the west first. The
-  lanes separate identically, so the row still delivers 0.43/s — routing
+  lanes separate identically, so the row still delivers 0.645/s — routing
   geometry cannot matter once each ingredient owns a lane.
 items:
 - { x: 1, y: 9, item: copper_cable }
@@ -45,7 +45,7 @@ items:
 - { x: 4, y: 6, item: electronic_circuit }
 - { x: 8, y: 9, item: electronic_circuit }
 throughput:
-- { item: electronic_circuit, per_second: 0.43 }
+- { item: electronic_circuit, per_second: 0.645 }
 factory: |
   .. .. b^ i> aaaaaaaa .. ..
   .. .. b^ .. aa    aa .. ..
@@ -61,7 +61,7 @@ factory: |
 description: |
   The third approach: each source runs north onto its own belt, curves
   inward, and sideloads onto the column from opposite sides. Two curves and
-  two sideloads instead of two bare sideloads, and again 0.43/s — the curves
+  two sideloads instead of two bare sideloads, and again 0.645/s — the curves
   preserve lanes, so the mix arriving at every inserter is unchanged.
 items:
 - { x: 1, y: 9, item: copper_cable }
@@ -71,7 +71,7 @@ items:
 - { x: 4, y: 6, item: electronic_circuit }
 - { x: 8, y: 9, item: electronic_circuit }
 throughput:
-- { item: electronic_circuit, per_second: 0.43 }
+- { item: electronic_circuit, per_second: 0.645 }
 factory: |
   .. .. b^ i> aaaaaaaa .. ..
   .. .. b^ .. aa    aa .. ..

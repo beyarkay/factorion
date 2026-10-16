@@ -7,15 +7,13 @@ description: |
   battery feeds it in-line from behind (both lanes), iron_gear_wheel arrives
   perpendicular from the north and sideloads onto the right lane alone.
 
-  The inserter at (8,4) halves its 0.86 i/s over the two lanes, then halves
-  the right lane's 0.43 again between the two items riding it — so battery
-  collects 0.43 + 0.215 while gears get 0.215, and the gears bind at
-  0.215/40 = 0.00538 roboports/s. Battery is over-supplied precisely because
-  it occupies both lanes.
+  The assembler refuses an ingredient it already holds enough of, so the
+  inserter at (8,4) fills in the recipe's 40 gears : 45 batteries from both
+  lanes at once: its 0.86 i/s is 0.86/85 = 0.0101 roboports/s.
 
-  Neither split may starve the other side: giving the whole swing to the
-  in-line battery, or the whole right lane to the first item on it, scores
-  this fully-connected factory zero.
+  In Factorio this jams to zero: the batteries the machine refuses back up
+  the right lane, so no gear can sideload onto it. The engine does not model
+  a lane jammed by an item nobody drains (a known divergence).
 items:
 - { x: 0, y: 9, item: advanced_circuit }
 - { x: 8, y: 0, item: steel_plate }
@@ -24,7 +22,7 @@ items:
 - { x: 5, y: 4, item: personal_roboport }   # assembler recipe (anchor = top-left)
 - { x: 10, y: 9, item: personal_roboport }  # sink
 throughput:
-- { item: personal_roboport, per_second: 0.005375 }
+- { item: personal_roboport, per_second: 0.010117647058823528 }
 factory: |
   .. .. .. .. .. .. .. .. Sv .. ..
   .. .. .. .. .. .. .. .. bv .. ..
@@ -43,8 +41,8 @@ description: |
   different recipe: pipe and steel_plate share the belt into (4,2) — steel
   in-line along y=2 from (10,0), pipe sideloading in from (5,1) — while
   electronic_circuit and iron_gear_wheel each get an inserter of their own.
-  The shared hand yields steel 0.645 and pipe 0.215, so pipe binds at
-  0.215/10 = 0.0215 pumpjacks/s.
+  The shared hand fills in the recipe's 5 steel : 10 pipe, so it binds at
+  0.86/15 = 0.0573 pumpjacks/s (Factorio jams it, as above).
 items:
 - { x: 0, y: 0, item: pumpjack }             # sink
 - { x: 2, y: 0, item: electronic_circuit }
@@ -53,7 +51,7 @@ items:
 - { x: 0, y: 10, item: iron_gear_wheel }
 - { x: 1, y: 2, item: pumpjack }             # assembler recipe (anchor = top-left)
 throughput:
-- { item: pumpjack, per_second: 0.0215 }
+- { item: pumpjack, per_second: 0.05733333333333333 }
 factory: |
   K< b< Sv .. .. Sv .. .. .. .. Sv
   .. i^ iv .. .. bv .. .. .. .. bv
@@ -72,16 +70,15 @@ description: |
   copper_cable curves onto both lanes of the south belt then sideloads onto
   the west belt's right lane, iron_plate feeds that belt in-line, and one
   inserter carries both into an electronic_circuit assembler (3 cable : 1
-  plate). Iron rides both lanes and collects 0.645; cable rides one and
-  collects 0.215, so the cable-hungry side binds at 0.215/3 = 0.0717
-  circuits/s.
+  plate) in recipe proportion, 0.86/4 = 0.215 circuits/s (Factorio jams it,
+  as above).
 items:
 - { x: 5, y: 0, item: copper_cable }
 - { x: 5, y: 1, item: iron_plate }
 - { x: 0, y: 0, item: electronic_circuit }  # assembler recipe (anchor = top-left)
 - { x: 1, y: 4, item: electronic_circuit }  # sink
 throughput:
-- { item: electronic_circuit, per_second: 0.07166666666666667 }
+- { item: electronic_circuit, per_second: 0.215 }
 factory: |
   aaaaaaaa .. bv S<
   aa    aa i< b< S<
