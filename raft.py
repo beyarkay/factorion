@@ -154,8 +154,8 @@ def train_raft(args: PpoArgs, ckpt_path: str):
             name=run_name,
             group=args.wandb_group,
             tags=["raft", *(args.tags or [])],
-            id=args.wandb_run_id,
-            resume="allow" if args.wandb_run_id else None,
+            id=args.start_from_wandb or args.wandb_run_id,
+            resume="must" if args.start_from_wandb else "allow" if args.wandb_run_id else None,
         )
         wandb.define_metric("*", step_metric="global_step")
 
