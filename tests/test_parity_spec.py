@@ -322,6 +322,19 @@ def test_batch_leaves_a_ring_of_free_tiles_around_each_factory():
             assert x1 < a0 or a1 < x0 or y1 < b0 or b1 < y0, "two factory rings overlap"
 
 
+def test_batch_keeps_grids_beyond_each_others_pole_supply():
+    """A substation on a grid's edge supplies 8 tiles past it, so a closer
+    neighbour's machines would draw power the engine never gives them."""
+    spec = build_batch_spec(_batch_worlds())
+    grids = [
+        (f["offset_x"], f["offset_y"], f["offset_x"] + f["width"], f["offset_y"] + f["height"])
+        for f in spec["factories"]
+    ]
+    for i, (x0, y0, x1, y1) in enumerate(grids):
+        for a0, b0, a1, b1 in grids[i + 1:]:
+            assert x1 + 8 <= a0 or a1 + 8 <= x0 or y1 + 8 <= b0 or b1 + 8 <= y0
+
+
 def test_batch_preserves_all_factories_and_ids():
     worlds = _batch_worlds()
     spec = build_batch_spec(worlds)

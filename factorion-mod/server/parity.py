@@ -193,8 +193,10 @@ def world_to_parity_spec(world_CWH, *, run_id: str, **timing) -> dict:
 
 def build_batch_spec(factory_worlds, *, run_id: str = "batch", **timing) -> dict:
     """Assemble many factories into one spec, each tiled in its own square
-    cell, one tile wider on every side than the largest grid so the mod's
-    ring of off-map poles around each grid fits between factories.
+    cell 8 tiles wider than the largest grid: a substation's supply area
+    reaches 8 tiles past the edge of its grid, so neighbours sit that far
+    apart lest one factory's poles power another's machines. The mod's ring
+    of off-map poles around each grid fits in the gap.
 
     `factory_worlds` is a list of (run_id, world_CWH). Factories are laid
     out in a near-square col×row grid; factory k sits centred in cell
@@ -205,7 +207,7 @@ def build_batch_spec(factory_worlds, *, run_id: str = "batch", **timing) -> dict
     cols = math.ceil(math.sqrt(n)) if n else 1
     rows = math.ceil(n / cols) if n else 1
     converted = [(fid, *_convert_world(world)) for fid, world in factory_worlds]
-    pitch = max((max(w, h) for *_, w, h in converted), default=0) + 2
+    pitch = max((max(w, h) for *_, w, h in converted), default=0) + 8
 
     factories = []
     for idx, (fid, ents, sources, sinks, w, h) in enumerate(converted):
