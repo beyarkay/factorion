@@ -2929,16 +2929,22 @@ remote.add_interface("factorion", {
     local failure = helpers.json_to_table(error_json) or {}
     if failure.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model_loading = nil
+    if storage.model and storage.model.checkpoint == failure.checkpoint then storage.model = nil end
     local still = storage.model and storage.model.checkpoint
-    if still then
-      inference.config().checkpoint = still
+    local fallback = not still and failure.checkpoint ~= inference.DEFAULTS.checkpoint
+      and inference.DEFAULTS.checkpoint
+    if still or fallback then
+      inference.config().checkpoint = still or fallback
       inference.reset_checkpoint_fields()
     else
       storage.model_error = tostring(failure.error)
     end
     inference.refresh_all(true)
     game.print(string.format("[Factorion] Could not load checkpoint %s: %s%s",
-      tostring(failure.checkpoint), tostring(failure.error), still and (". Still using " .. still .. ".") or ""))
+      tostring(failure.checkpoint), tostring(failure.error),
+      still and (". Still using " .. still .. ".")
+        or fallback and (". Loading the default, " .. fallback .. ", instead.") or ""))
+    if fallback then request_model_load() end
     return "ok"
   end,
 
