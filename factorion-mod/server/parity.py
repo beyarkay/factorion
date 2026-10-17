@@ -578,6 +578,8 @@ def main():
                     report.error = batch_error
                 elif fres is None:
                     report.error = "factory missing from batch result"
+                elif fres.get("error"):
+                    report.error = fres["error"]
                 else:
                     report.sinks = compare_sinks(
                         j["expected"], fres.get("sinks", []),
