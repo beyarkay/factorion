@@ -281,9 +281,18 @@ local function build_all(surface, force, spec)
   for fi, fac in ipairs(factories) do
     local ox = fac.offset_x or 0
     local oy = fac.offset_y or 0
+    local n_errors, n_watched = #errors, #watched
+    local n_sources, n_sinks = #sources, #sinks
+    -- create_entity raises on e.g. an unknown recipe; catch it so a bad
+    -- entity fails only its own factory instead of the whole batch.
+    local function create(params)
+      local ok, created = pcall(surface.create_entity, params)
+      if ok then return created end
+      table.insert(errors, string.format("[%s] %s", fac.run_id or fi, created))
+    end
 
     for _, e in ipairs(fac.entities or {}) do
-      local created = surface.create_entity({
+      local created = create({
         name = e.name,
         position = { ORIGIN_X + ox + e.x, ORIGIN_Y + oy + e.y },
         direction = e.direction,
@@ -315,7 +324,7 @@ local function build_all(surface, force, spec)
     end
 
     for _, s in ipairs(fac.sources or {}) do
-      local belt = surface.create_entity({
+      local belt = create({
         name = "transport-belt",
         position = { ORIGIN_X + ox + s.x + 0.5, ORIGIN_Y + oy + s.y + 0.5 },
         direction = s.direction,
@@ -335,7 +344,7 @@ local function build_all(surface, force, spec)
     end
 
     for _, s in ipairs(fac.sinks or {}) do
-      local belt = surface.create_entity({
+      local belt = create({
         name = "transport-belt",
         position = { ORIGIN_X + ox + s.x + 0.5, ORIGIN_Y + oy + s.y + 0.5 },
         direction = s.direction,
@@ -352,6 +361,14 @@ local function build_all(surface, force, spec)
           x = s.x, y = s.y, ox = ox, oy = oy, counts = {}, label = nil,
         })
       end
+    end
+
+    -- A failed factory is left unwatched: drop whatever of it was built.
+    if #errors > n_errors then
+      fac.error = table.concat(errors, "; ", n_errors + 1)
+      for i = #watched, n_watched + 1, -1 do watched[i] = nil end
+      for i = #sources, n_sources + 1, -1 do sources[i] = nil end
+      for i = #sinks, n_sinks + 1, -1 do sinks[i] = nil end
     end
   end
 
@@ -549,6 +566,7 @@ local function finish_run(run)
       warmup_ticks = run.warmup_ticks_used or 0,
       measure_ticks = measure_ticks,
       converged = run.converged or false,
+      error = fac.error,
       sinks = {},
       sources = {},
       entities = {},
@@ -773,10 +791,10 @@ function M.start(spec_json)
 
   local watched, sources, sinks, errors, factories =
     build_all(surface, force, spec)
-  if #errors > 0 then
-    for _, err in ipairs(errors) do
-      announce("BUILD FAILED: " .. err, COLOR_ERR)
-    end
+  for _, err in ipairs(errors) do
+    announce("BUILD FAILED: " .. err, COLOR_ERR)
+  end
+  if #sources == 0 or #sinks == 0 then
     return json_encode({ status = "error",
       error = table.concat(errors, "; ") })
   end
