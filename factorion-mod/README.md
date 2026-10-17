@@ -1,8 +1,8 @@
 # Factorion Mod
 
 A Factorio mod + local Python server that lets you ask a trained
-Factorion policy to design a factory layout from inside the game and
-place the predicted entities directly into the world as the model runs.
+Factorion model to design a factory layout from inside the game and
+place the predicted entities directly into the world.
 
 ## Round trip
 
@@ -81,7 +81,7 @@ factorion-mod/
 │   ├── locale/en/factorion.cfg
 │   └── prototypes/           ← endpoint belts, footprint tool, hotkeys, GPU server
 ├── server/                   ← local inference daemon + parity harness
-│   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
+│   ├── server.py             ← RCON poll loop → denoiser (best of 8 builds) → RCON push
 │   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
 │   ├── rcon.py               ← shared minimal Source-RCON client
 │   ├── blueprint.py          ← tensor → blueprint utility used by tests/tooling
@@ -108,12 +108,11 @@ factorion-mod/
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
 The model is chosen in-game: **Settings → Mod settings → Map → Factorion
-checkpoint** takes a bare W&B run id (default `mvbipbr0`), `entity/project/id`,
+checkpoint** takes a bare W&B run id (default `dr17bmik`), `entity/project/id`,
 or a local `.pt` path on the server's machine. On a new game or a change to
 the setting, the mod asks the server to load it; the server downloads the run's
-latest model artifact, reads its grid and encoder architecture from the W&B
-config, and reports the grid size back. The region tool then stamps a region
-of that size. Loaded models stay cached, so switching back is instant.
+latest model artifact and reports its grid size (`--grid-size`, default 15)
+back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
 
 For a manual or headless setup, start the server directly:
 
@@ -121,10 +120,6 @@ For a manual or headless setup, start the server directly:
 uv run python factorion-mod/server/server.py \
   --rcon-port 64502 --rcon-password <pw>
 ```
-
-For local files, an `agent.hp.json` sidecar with
-`{"grid_size": 15, "layers": [93, 69, 96], "kernel_size": 3}` is read
-automatically.
 
 3. In Factorio:
 
@@ -136,9 +131,10 @@ automatically.
      ordinary belts. Click each endpoint to choose its item, and hover it and
      press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
-   - Each predicted entity is placed directly into the marked region as soon
-     as the model emits it. When the model stops, chat reports how many
-     steps it took, how many were invalid, and why inference ended.
+   - The server generates eight factories around your markers, keeps the
+     highest-throughput one, and places its entities into the marked region
+     one by one, building around any entities already there. Chat then
+     reports how many it placed and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
 
@@ -269,8 +265,6 @@ Server-callable remote methods exposed by the mod:
   mining, rotation, copy/paste, blueprint, and Alt-mode behavior.
 - Model actions stream over RCON and create real entities in the player's
   world; rerun/reset cleanup is limited to entities created by the mod.
-- `eot_head` is wired as the iterative stop signal (PPO PR #103 landed
-  via the main-merge).
 
 ### What doesn't work / wasn't possible
 
@@ -291,10 +285,6 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
-- **Full multi-tile action masking.** The tile head masks occupied anchor
-  tiles, and Factorio rejects a streamed entity whose rotated footprint lies
-  outside the region or hits an entity crossing its edge. The model-side mask does not
-  yet pre-mask every invalid multi-tile anchor.
 - **Cross-platform `launch.sh` binary discovery**. macOS Steam install
   verified; Linux / Windows paths are heuristics. Override with
   `FACTORIO_BIN=…` if it can't find yours.

@@ -7,18 +7,18 @@ comes from `training_config.py`. Full grammar: `ci/README.md`.
 ```text
 # sweeps                            (also: --agents-per-pod N)
 /ci sweep sft --pods 4
-/ci sweep ppo --pods 4
+/ci sweep rl --pods 4
 
 # single runs
 /ci sft --num-samples 5M
-/ci ppo --start-from abc123 --total-timesteps 40M
+/ci rl --start-from abc123 --total-timesteps 40M
 
 # comparisons — N seeds/side; add `assert` lines for a pass/fail status
 /ci compare sft --seeds 3
 assert pr:val/thput@8 > main:val/thput@8
 assert pr:val/acc >= 0.5
 
-/ci compare ppo --start-from abc123 --total-timesteps 40M --seeds 3
+/ci compare rl --start-from abc123 --total-timesteps 40M --seeds 3
 assert pr:eval/thput@8 > main:eval/thput@8
 
 # pods
@@ -39,10 +39,9 @@ throughput disagrees.
 
 ## GPUs: `--gpu-type`
 
-`sft`, `ppo`, `compare` and `sweep` all take `--gpu-type "<RunPod GPU id>"`.
+`sft`, `rl`, `compare` and `sweep` all take `--gpu-type "<RunPod GPU id>"`.
 SFT work (`sft`, `compare sft`, `sweep sft`) defaults to the RTX 6000 Ada;
-PPO defaults to the RTX 2000 Ada, because its rollout is CPU-bound and a bigger
-card buys nothing. A card in the lineup (`GPU_FALLBACKS` in `ci/config.py`)
+RL defaults to the RTX 2000 Ada. A card in the lineup (`GPU_FALLBACKS` in `ci/config.py`)
 falls back to the lineup entries after it when it's unavailable. Any other id
 is used exactly and fails if it can't be scheduled. A `compare`'s or `sweep`'s
 pods all run on the card the first one landed on. Check the actual card in

@@ -2,28 +2,22 @@
 the POWER channel follows every pole placement, and an unpowered factory
 makes nothing (wiki/electric-network.md)."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 import torch
 
-from helpers import TINY_ARCH, Channel, Direction, LessonKind, Misc, blank_entities, build_factory, str2ent
+from helpers import Channel, Direction, LessonKind, Misc, blank_entities, build_factory, str2ent
 import factorion_rs
-from factorion import POLE_ENT_IDS, count_unpowered
-from ppo import AgentCNN, apply_placement_action
+from denoise import TYPES
+from factorion import POLE_ENT_IDS, apply_placement_action, count_unpowered
 
 POWER = Channel.POWER.value
 MEDIUM_POLE = str2ent("medium_electric_pole").value
-SOURCE, SINK = str2ent("source").value, str2ent("sink").value
 
 
 def _place(world, x, y, entity, direction=Direction.NONE):
     return apply_placement_action(
-        world,
-        {"xy": (x, y), "entity": entity, "direction": direction.value, "item": 0, "misc": Misc.NONE.value},
-        source_id=SOURCE,
-        sink_id=SINK,
+        world, {"xy": (x, y), "entity": entity, "direction": direction.value, "item": 0, "misc": Misc.NONE.value}
     )
 
 
@@ -62,11 +56,9 @@ def test_blanking_unpowers_the_grid():
 
 def test_placing_and_removing_a_pole_moves_power():
     world = _empty_world(15)
-    is_invalid, _, _ = _place(world, 0, 0, MEDIUM_POLE)
-    assert not is_invalid
+    assert _place(world, 0, 0, MEDIUM_POLE) is None
     assert world[POWER, :4, :4].all() and world[POWER].sum() == 16
-    is_invalid, _, _ = _place(world, 0, 0, str2ent("empty").value)
-    assert not is_invalid
+    assert _place(world, 0, 0, str2ent("empty").value) is None
     assert not world[POWER].any()
 
 
@@ -83,16 +75,9 @@ def test_a_pole_too_far_from_the_edge_powers_nothing():
 
 def test_a_pole_has_no_facing():
     world = _empty_world(5)
-    assert _place(world, 2, 2, MEDIUM_POLE, Direction.EAST)[:2] == (True, "pole_with_direction")
+    assert _place(world, 2, 2, MEDIUM_POLE, Direction.EAST) == "pole_with_direction"
     assert not world[Channel.ENTITIES.value].any()
 
 
-def test_policy_places_poles_facing_nowhere():
-    envs = SimpleNamespace(single_observation_space=SimpleNamespace(shape=(len(Channel), 5, 5)))
-    agent = AgentCNN(envs, **TINY_ARCH)
-    ent = torch.tensor([MEDIUM_POLE, str2ent("inserter").value])
-    logp_dir, _, _ = agent.semantic_head_log_probs(
-        torch.zeros(2, len(Direction)), torch.zeros(2, agent.num_items), torch.zeros(2, agent.num_misc), ent
-    )
-    assert torch.isfinite(logp_dir[0]).tolist() == [d == Direction.NONE for d in Direction]
-    assert not torch.isfinite(logp_dir[1, Direction.NONE.value])
+def test_the_denoiser_places_poles_facing_nowhere():
+    assert {d for e, d, _ in TYPES if e in POLE_ENT_IDS} == {Direction.NONE.value}

@@ -52,6 +52,7 @@ from factorion import (  # noqa: E402
     LessonKind,
     Misc,
     POLE_ENT_IDS,
+    apply_placement_action,
     blank_entities,
     build_factory,
     build_graph_nx,
@@ -75,7 +76,7 @@ from denoise import (  # noqa: E402
     tokens_to_state,
     world_to_state,
 )
-from ppo import _resolve_wandb_checkpoint, apply_placement_action  # noqa: E402
+from sft import resolve_checkpoint  # noqa: E402
 from training_config import SftArgs  # noqa: E402
 
 
@@ -250,32 +251,26 @@ def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
 
 
 def _apply_prediction(grid: list[list[dict]], prediction: dict) -> dict:
-    """Apply a model prediction through the rollout environment's placement path.
+    """Apply a placement through :func:`factorion.apply_placement_action`.
 
     The browser intentionally does not know entity dimensions or footprint
-    rules. It sends the current grid and predicted action here; this function
-    converts their names to action IDs and delegates the actual validation and
-    mutation to :func:`ppo.apply_placement_action`, the same function used by
-    :meth:`ppo.FactorioEnv.step`.
+    rules. It sends the current grid and placement here; this function
+    converts their names to ids and delegates validation and mutation.
     """
     world_CWH = build_world(grid).permute(2, 0, 1).contiguous()
     name_to_value = {it.name: it.value for it in items.values()}
-    action = {
-        "xy": (int(prediction["x"]), int(prediction["y"])),
-        "entity": name_to_value[prediction["entity"]],
-        "direction": Direction[prediction["direction"]].value,
-        "item": name_to_value[prediction["item"]],
-        "misc": Misc[prediction["misc"]].value,
-        "eot": 0,
-    }
-    is_invalid, invalid_reason, _placed_action = apply_placement_action(
+    invalid_reason = apply_placement_action(
         world_CWH,
-        action,
-        source_id=name_to_value["stack_inserter"],
-        sink_id=name_to_value["bulk_inserter"],
+        {
+            "xy": (int(prediction["x"]), int(prediction["y"])),
+            "entity": name_to_value[prediction["entity"]],
+            "direction": Direction[prediction["direction"]].value,
+            "item": name_to_value[prediction["item"]],
+            "misc": Misc[prediction["misc"]].value,
+        },
     )
     return {
-        "applied": not is_invalid,
+        "applied": invalid_reason is None,
         "invalid_reason": invalid_reason,
         "grid": world_CWH_to_grid(world_CWH),
     }
@@ -306,7 +301,7 @@ def _unit_anchor(grid: list[list[dict]], x: int, y: int) -> tuple[int, int]:
 
 
 def _place_by_hand(grid: list[list[dict]], x: int, y: int, cell: dict) -> dict:
-    """Place `cell` at (x, y) through the rollout placement path, so multi-tile
+    """Place `cell` at (x, y) through `apply_placement_action`, so multi-tile
     entities land and clear whole. Hand edits get two allowances that path
     refuses: 1x1 source/sink markers are written directly, and an assembler may
     be placed before its recipe is chosen."""
@@ -671,24 +666,14 @@ def _model_info() -> dict:
 
 
 def _swap_model(value: str, project: str, entity: Optional[str]) -> dict:
-    """Resolve `value` to a local .pt path, load it, return new model
-    info. Called by the /load_model POST endpoint so the user can
-    switch models without restarting the server.
-
-    Auto-detects local-vs-wandb: an existing path on disk is loaded as
-    local; otherwise the value is treated as a wandb run id. If both
-    fail the error from the wandb resolver bubbles up (wandb's error
-    is usually the more informative one — "no such file" tells the
-    user nothing they don't already know)."""
+    """Load `value` (a local .pt path or a W&B run id) and return the new
+    model info. Called by the /load_model POST endpoint so the user can
+    switch models without restarting the server."""
     global _CHECKPOINT_SOURCE
     value = (value or "").strip()
     if not value:
         raise ValueError("value cannot be empty")
-    if Path(value).exists():
-        path = value
-        source: dict = {"kind": "local", "path": value}
-    else:
-        path, source = _resolve_wandb_checkpoint(value, project, entity)
+    path, source = resolve_checkpoint(value, project, entity)
     _load_checkpoint(path, source.get("config"))
     _CHECKPOINT_SOURCE = source
     return _model_info()
@@ -699,7 +684,7 @@ def _legalize(model: DenoiserUNet, cond: torch.Tensor, toks, conf: torch.Tensor)
     typ, rec, part = (t.cpu().numpy() for t in toks)
     cond_np, conf_np = cond.cpu().numpy().astype(np.int64), conf.float().cpu().numpy()
     return [
-        legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i])
+        legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i], conf_np[i])
         for i in range(len(cond_np))
     ]
 
@@ -2910,7 +2895,7 @@ def main(args: Args) -> None:
     if args.checkpoint and args.wandb_run:
         raise SystemExit("pass either --checkpoint or --wandb-run, not both")
     if args.wandb_run:
-        ckpt_path, source = _resolve_wandb_checkpoint(
+        ckpt_path, source = resolve_checkpoint(
             args.wandb_run, args.wandb_project, args.wandb_entity,
         )
         _load_checkpoint(ckpt_path, source.get("config"))

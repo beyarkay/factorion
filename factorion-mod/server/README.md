@@ -1,11 +1,11 @@
 # Factorion server
 
-Loads the trained Factorion `AgentCNN` checkpoint named by the mod's
+Loads the trained Factorion denoiser checkpoint named by the mod's
 "Factorion checkpoint" setting (local or directly from a W&B run), polls a
-running
-Factorio instance over RCON for prediction requests, runs iterative
-sampled inference, and streams each predicted entity back via the same RCON
-connection for immediate placement in the world.
+running Factorio instance over RCON for prediction requests, generates eight
+factories around each request's markers (its existing entities are walls to
+build around), and streams the highest-throughput one's entities back via
+the same RCON connection for immediate placement in the world.
 
 ## Run
 
@@ -17,9 +17,8 @@ Factorio's GUI RCON config, and waits for a hosted game:
 ./start-mod.sh
 ```
 
-Placement pacing and every sampling knob (temperature, top-k, top-p, stop
-rule and threshold, max steps, seed) are map settings under **Settings → Mod
-settings → Map**; each request carries their current values. Each prediction
+Placement pacing and the sampling temperature and seed are set in game;
+each request carries their current values. Each prediction
 draws a fresh seed (reported in chat) unless the seed setting fixes one.
 
 Manual path:
@@ -44,11 +43,8 @@ Required flags for the server:
   launched with.
 
 The checkpoint setting accepts a W&B run id, `entity/project/id`, or a local
-`torch.save(agent.state_dict(), ...)` file. W&B runs supply grid and
-architecture metadata automatically. For a local file, put a sidecar JSON next
-to the checkpoint named `agent.hp.json`
-with `{"grid_size": 15, "layers": [93, 69, 96], "kernel_size": 3}`, the
-server reads it automatically.
+`.pt` checkpoint saved by `sft.py` or `rl.py`. The denoiser runs at any grid
+size; `--grid-size` (default 15) is the region the mod plans.
 
 ## Protocol
 
@@ -63,7 +59,7 @@ or the next queued message. A new game or a change to the checkpoint setting
 queues
 
 ```json
-{ "type": "load_model", "checkpoint": "mvbipbr0" }
+{ "type": "load_model", "checkpoint": "dr17bmik" }
 ```
 
 which the server answers with `model_loaded` (`checkpoint`, run `name`,
@@ -74,7 +70,7 @@ prediction request:
 {
   "type": "predict",
   "request_id": "1234-5-7",
-  "checkpoint": "mvbipbr0",
+  "checkpoint": "dr17bmik",
   "grid_size": 15,
   "entities": [
     { "name": "transport-belt", "x": 2, "y": 3, "direction": 2 },
@@ -98,7 +94,7 @@ including their complete rotated footprint, recipes, and underground-belt
 input/output state. Inserter directions are converted from Factorio's drop
 direction to the model's pickup direction.
 
-After every accepted action, the server sends:
+For each entity of the chosen build, the server sends:
 
 ```
 /silent-command rcon.print(remote.call(
@@ -108,8 +104,8 @@ After every accepted action, the server sends:
 The placement contains the Factorio prototype, center position relative to the
 region, rotated footprint, direction, and optional recipe or underground-belt
 type. The mod looks up the requesting player and creates the entity on that
-player's surface. The server then calls `finish_prediction` with the step
-count, invalid-step count, stop reason, and any server error; rerunning or resetting removes only entities created by this protocol.
+player's surface. The server then calls `finish_prediction` with the number
+of entities placed, the stop reason, and any server error; rerunning or resetting removes only entities created by this protocol.
 
 ## Reconnect
 
@@ -124,11 +120,12 @@ Spin up `nc` as a fake RCON endpoint to verify the wire format, or run
 just the inference path:
 
 ```python
-from server import action_to_placement, load_agent, run_inference
+from denoise import load_denoiser
+from server import action_to_placement, run_inference
 import torch
-agent = load_agent(...)
-obs, stats = run_inference(
-    agent, fake_req, device=torch.device("cpu"),
+model = load_denoiser("sft_checkpoint.pt")
+world, stats = run_inference(
+    model, fake_req, device=torch.device("cpu"),
     on_placement=lambda action: print(action_to_placement(action)) or True,
 )
 print(stats)

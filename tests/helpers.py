@@ -26,8 +26,6 @@ from factorion import (  # noqa: E402
     build_factory,
     build_graph_nx,
     entities,
-    find_belt_path,
-    find_belt_paths_with_source_sink_orient,
     items,
     recipes,
     render_factory,
@@ -38,14 +36,9 @@ from factorion import (  # noqa: E402
 
 
 # ── Test model size ──────────────────────────────────────────────────────────
-# A CPU forward through the production attention stack (attn_dim 288, 8 heads,
-# 8 layers) costs more than everything else a model test does, and these tests
-# exercise the code path rather than the capacity. The two spellings must stay
-# in sync: tests save a checkpoint through the AgentCNN kwargs and load it back
-# through a SharedArgs-configured model.
-_TINY_ATTN: dict[str, Any] = dict(attn_dim=32, attn_heads=4, attn_layers=1)
-TINY_ARCH: dict[str, Any] = dict(layers=(16, 16, 16), **_TINY_ATTN)
-TINY_ARCH_ARGS: dict[str, Any] = dict(layer1=16, layer2=16, layer3=16, **_TINY_ATTN)
+# These tests exercise the denoiser's code paths, not its capacity; a CPU
+# forward through the production size costs more than the rest of a test.
+TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

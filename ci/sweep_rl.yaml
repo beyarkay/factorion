@@ -1,6 +1,6 @@
-# ci/sweep_ppo.yaml — RAFT finetuning of the denoiser (raft.py, via ppo.py)
+# ci/sweep_rl.yaml — RL fine-tuning of the denoiser (rl.py)
 #
-# Launched with: /ci sweep ppo
+# Launched with: /ci sweep rl
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
@@ -10,12 +10,12 @@
 # across runs from the same base.
 #
 # Ranges bracket #484's hand-tuned defaults:
-#   - raft_lr: 1e-3 diverged under the policy gradient; RAFT has only seen 2.5e-4.
-#   - raft_groups x raft_group_size: the best of a larger group is a better
-#     target (best-of-k was still rising at 32), fewer groups fewer targets.
-#   - raft_temperature: 1.5 beat 1.0 on eval/thput@8; 2.0 widened best-of-32
+#   - lr: 1e-3 diverged under the policy gradient; RAFT has only seen 2.5e-4.
+#   - groups x group_size: the best of a larger group is a better target
+#     (best-of-k was still rising at 32), fewer groups fewer targets.
+#   - temperature: 1.5 beat 1.0 on eval/thput@8; 2.0 widened best-of-32
 #     further.
-#   - raft_sft_coef: 0.3 beat 1.0 on eval/thput@8; 0 hurt eval/thput@1.
+#   - sft_coef: 0.3 beat 1.0 on eval/thput@8; 0 hurt eval/thput@1.
 #   - entity_cost_scale: 0 rewards throughput alone, which is what eval scores.
 #
 # 3M timesteps is ~90 optimizer steps at 64 factories x 32 builds, where #484's
@@ -28,26 +28,26 @@ metric:
   goal: maximize
 
 parameters:
-  raft_lr:
+  lr:
     distribution: log_uniform_values
     min: 5e-5
     max: 1e-3
-  raft_groups:
+  groups:
     values: [32, 64, 128]
-  raft_group_size:
+  group_size:
     values: [16, 32, 64]
-  raft_temperature:
+  temperature:
     distribution: uniform
     min: 1.0
     max: 2.0
-  raft_sft_coef:
+  sft_coef:
     distribution: log_uniform_values
     min: 0.05
     max: 1.0
   entity_cost_scale:
     values: [0.0, 0.001]
 
-program: ppo.py
+program: rl.py
 
 command:
   - ${env}
