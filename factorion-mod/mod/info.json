@@ -5,7 +5,7 @@
   "author": "beyarkay",
   "contact": "https://github.com/beyarkay/factorion/issues",
   "homepage": "https://github.com/beyarkay/factorion",
-  "description": "Place sources and sinks, and a factory-designing ML model running on your computer builds the factory between them. Needs the companion factorion-server program: chat tells you the command.",
+  "description": "This mod integrates with a real neural network that has learnt how to build optimal high-throughput factories. Specify a build region, input ingredients, and a desired product, and `factorion` will generate assembling machines, belts, and inserters to meet your requirements.",
   "factorio_version": "2.0",
   "dependencies": ["base >= 2.0.0", "? space-age"]
 }
