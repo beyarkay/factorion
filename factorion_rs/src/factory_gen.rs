@@ -16,7 +16,7 @@
 //! blanking bookkeeping a training lesson needs).
 
 use crate::graph::{build_graph, unit_anchors};
-use crate::power::{PlacedPole, PowerMap};
+use crate::power::{Outside, PlacedPole, PowerMap};
 use crate::rng::Rng;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
@@ -5559,6 +5559,7 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
         .collect();
     let mut unpowered: Vec<&Vec<Cell>> = units.iter().collect();
     let mut placed: Vec<PlacedPole> = Vec::new();
+    let outside = Outside::of(world);
     while !unpowered.is_empty() {
         let free: Vec<Cell> = (0..w as i64)
             .flat_map(|x| (0..h as i64).map(move |y| (x, y)))
@@ -5573,7 +5574,7 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
         };
         let live = |&(x, y): &Cell| {
             PlacedPole::new(kind, x, y).is_some_and(|pole| {
-                pole.reaches_off_map(w as i64, h as i64) || placed.iter().any(|p| p.wires_to(&pole))
+                outside.reached_by(&pole) || placed.iter().any(|p| p.wires_to(&pole))
             })
         };
         let scored: Vec<(Cell, usize, bool)> =

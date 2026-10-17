@@ -1,5 +1,6 @@
 """Tests for SFT pre-training pipeline."""
 
+import itertools
 import json
 import os
 import re
@@ -14,11 +15,14 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from helpers import TINY
+from helpers import TINY, rs_throughput
 from denoise import load_denoiser
+from factorion import Channel, LessonKind
 from sft import (
     SftArgs,
     _artifact_name,
+    _iter_factories,
+    boxed_factory,
     _humanize_count,
     _humanize_lr,
     build_lr_schedule,
@@ -27,7 +31,9 @@ from sft import (
 )
 
 # Generation eval shrunk to a couple of short chains per factory.
-FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2)
+FAST_EVAL: dict[str, Any] = dict(
+    eval_seeds_per_kind=1, box_eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2
+)
 
 
 class TestNoiseLevels:
@@ -39,12 +45,32 @@ class TestNoiseLevels:
         assert (t == 1).float().mean() == pytest.approx(0.3, abs=0.02)
 
 
+class TestBoxedFactory:
+    def test_lesson_keeps_its_throughput_inside_its_box(self):
+        shapes = set()
+        for kind in (LessonKind.OPPOSITE_SIDES_1IN, LessonKind.ROUTE_BELTS):
+            boxed = [f for seed in range(8) if (f := boxed_factory(kind, seed, 32)) is not None]
+            assert boxed, kind
+            for f in boxed:
+                buildable = f.world_CWH[Channel.FOOTPRINT.value].bool()
+                xs, ys = torch.nonzero(buildable, as_tuple=True)
+                w, h = int(xs.max() - xs.min()) + 1, int(ys.max() - ys.min()) + 1
+                assert int(buildable.sum()) == w * h
+                assert not f.world_CWH[Channel.ENTITIES.value][~buildable].any()
+                assert rs_throughput(f.world_CWH.permute(1, 2, 0))[0] == f.max_throughput > 0
+                shapes.add(w == h)
+        assert shapes == {True, False}
+
+    def test_stream_yields_boxed_factories(self):
+        states = itertools.islice(_iter_factories(32, 1, 0, 1, box_frac=1.0), 4)
+        assert any((s[Channel.FOOTPRINT.value] == 0).any() for s in states)
+
+
 class TestTrainSFTEndToEnd:
     def test_trains_evaluates_and_checkpoints(self, tmp_path):
         ckpt, summary = tmp_path / "ckpt.pt", tmp_path / "summary.json"
         args = SftArgs(
-            size=15, num_samples=64, batch_size=16, eval_seeds_per_kind=1,
-            eval_best_of=2, gen_steps=2, gen_refine=2,
+            size=15, num_samples=64, batch_size=16, **FAST_EVAL,
             checkpoint_path=str(ckpt), summary_path=str(summary), **TINY,
         )
         model = train_sft(args)
@@ -211,6 +237,7 @@ class TestTrackedArtifact:
 
         n = args.eval_best_of
         assert f"val/thput@{n}" in logged
+        assert f"val/box/thput@{n}" in logged
         assert f"val/inserters_no_input@{n}" in logged
         assert f"val/unpowered@{n}" in logged
         assert any(k.endswith(f"/MOVE_ONE_ITEM/thput@{n}") for k in logged)
