@@ -133,6 +133,12 @@ local function area_center_tile(area)
 end
 
 local MASK_TILE = "factorion-mask"
+
+-- A tile in a chunk the map hasn't generated is invalid.
+local function is_painted(surface, x, y)
+  local tile = surface.get_tile(x, y)
+  return tile.valid and tile.name == MASK_TILE
+end
 local MASK_OUTLINE_COLOR = { r = 0.2, g = 0.45, b = 1.0, a = 1 }
 local MASK_TOO_BIG_COLOR = { r = 1.0, g = 0.25, b = 0.2, a = 1 }
 -- Runs overlap by half a line width so their corners meet.
@@ -215,7 +221,7 @@ local function flood_paint(surface, start, size, window, blocked)
     local under = x >= x0 and x <= x1 and y >= y0 and y <= y1
     local inside = not window or (x >= window.x and x < window.x + size
       and y >= window.y and y < window.y + size)
-    return inside and not under and surface.get_tile(x, y).name == MASK_TILE
+    return inside and not under and is_painted(surface, x, y)
   end
   local area, queue = { [tile_key(start.x, start.y)] = start }, { start }
   local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
@@ -269,7 +275,7 @@ end
 local function touching_paint(server, size)
   local surface = server.surface
   local x0, y0, x1, y1 = tile_box(server)
-  local function painted(x, y) return surface.get_tile(x, y).name == MASK_TILE end
+  local function painted(x, y) return is_painted(surface, x, y) end
   local sides = { north = {}, south = {}, west = {}, east = {} }
   for x = x0, x1 do
     if painted(x, y0 - 1) then table.insert(sides.north, { x = x, y = y0 - 1 }) end
@@ -311,7 +317,7 @@ end
 -- that end when bigger than the grid; or nil and why.
 local function cable_paint(server, cable, size)
   local surface = server.surface
-  if surface.get_tile(cable.x, cable.y).name ~= MASK_TILE then
+  if not is_painted(surface, cable.x, cable.y) then
     return nil, "a data cable ends outside the build region"
   end
   local start = { x = cable.x, y = cable.y }
@@ -748,7 +754,7 @@ local function node_at(surface, area)
     or surface.find_entities_filtered({ area = area, type = "electric-pole" })[1]
   if entity then return entity end
   local x, y = area_center_tile(area)
-  if surface.get_tile(x, y).name == MASK_TILE then return { x = x, y = y } end
+  if is_painted(surface, x, y) then return { x = x, y = y } end
 end
 
 local function add_link(surface, a, b)
@@ -1447,7 +1453,7 @@ local function restore_links(server, links, direction)
     if offset.kind == "tile" then
       -- Only onto paint, which may not be where the blueprint had it.
       local tile = { x = math.floor(at.x), y = math.floor(at.y) }
-      if server.surface.get_tile(tile.x, tile.y).name == MASK_TILE then add_link(server.surface, server, tile) end
+      if is_painted(server.surface, tile.x, tile.y) then add_link(server.surface, server, tile) end
     else
       local other
       for _, entity in pairs(server.surface.find_entities_filtered({ position = at, radius = 0.1 })) do
