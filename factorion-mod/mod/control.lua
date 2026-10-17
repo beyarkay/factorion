@@ -3028,7 +3028,7 @@ script.on_nth_tick(10, function()
     if game.tick - tick >= 10 then
       storage.outlines_changed[index] = nil
       local surface = game.get_surface(index)
-      if surface then draw_mask_outline(surface) end
+      if surface then with_memo(function() draw_mask_outline(surface) end) end
     end
   end
   service_gpu_servers()
