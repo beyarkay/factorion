@@ -199,6 +199,9 @@ class SftArgs(SharedArgs):
     """sampling temperature of the ancestral steps"""
     eval_seeds_per_kind: int = 64
     """held-out factories per training lesson kind (and per trial kind)"""
+    box_eval_seeds_per_kind: int = 16
+    """held-out factories per kind built inside a random box, logged under
+    val/box/"""
     eval_batch_chains: int = 2048
     """chains denoised per batched forward"""
     eval_every_n_samples: Optional[int] = None

@@ -31,7 +31,9 @@ from sft import (
 )
 
 # Generation eval shrunk to a couple of short chains per factory.
-FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2)
+FAST_EVAL: dict[str, Any] = dict(
+    eval_seeds_per_kind=1, box_eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2
+)
 
 
 class TestNoiseLevels:
@@ -68,8 +70,7 @@ class TestTrainSFTEndToEnd:
     def test_trains_evaluates_and_checkpoints(self, tmp_path):
         ckpt, summary = tmp_path / "ckpt.pt", tmp_path / "summary.json"
         args = SftArgs(
-            size=15, num_samples=64, batch_size=16, eval_seeds_per_kind=1,
-            eval_best_of=2, gen_steps=2, gen_refine=2,
+            size=15, num_samples=64, batch_size=16, **FAST_EVAL,
             checkpoint_path=str(ckpt), summary_path=str(summary), **TINY,
         )
         model = train_sft(args)
@@ -236,6 +237,7 @@ class TestTrackedArtifact:
 
         n = args.eval_best_of
         assert f"val/thput@{n}" in logged
+        assert f"val/box/thput@{n}" in logged
         assert f"val/inserters_no_input@{n}" in logged
         assert f"val/unpowered@{n}" in logged
         assert any(k.endswith(f"/MOVE_ONE_ITEM/thput@{n}") for k in logged)

@@ -435,10 +435,12 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
     return out
 
 
-def build_eval_factories(args) -> list[tuple[int, LessonKind, Factory]]:
+def build_eval_factories(args, boxed=False) -> list[tuple[int, LessonKind, Factory]]:
     """The held-out (seed, kind, Factory) set: `eval_seeds_per_kind` factories
     of every training kind (trials included), each kind from its own seed
-    range far below the training seeds."""
+    range far below the training seeds; `boxed`, `box_eval_seeds_per_kind`
+    each built inside a random box (`boxed_factory`)."""
+    n = args.box_eval_seeds_per_kind if boxed else args.eval_seeds_per_kind
     out = []
     for ki, kind in enumerate(LessonKind):
         if kind not in TRAINING_KINDS:
@@ -446,9 +448,9 @@ def build_eval_factories(args) -> list[tuple[int, LessonKind, Factory]]:
         base = 9_000_000 + args.seed + ki * 100_000
         found = 0
         for s in range(base, base + 5000):
-            if found == args.eval_seeds_per_kind:
+            if found == n:
                 break
-            factory = build_factory(size=args.size, kind=kind, seed=s)
+            factory = boxed_factory(kind, s, args.size) if boxed else build_factory(size=args.size, kind=kind, seed=s)
             if factory is not None:
                 out.append((s, kind, factory))
                 found += 1
@@ -490,6 +492,7 @@ def train_sft(args: SftArgs):
 
     train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
     factories = build_eval_factories(args)
+    box_factories = build_eval_factories(args, boxed=True)
     val_states = torch.stack(
         [torch.from_numpy(world_to_state(f.world_CWH)) for _, k, f in factories if not LESSON_IS_TRIAL[k]]
     )
@@ -594,6 +597,8 @@ def train_sft(args: SftArgs):
         metrics |= val_denoise_metrics(ema, val_states, args, device)
         t_gen = time.time()
         metrics |= generation_metrics(ema, factories, args, device)
+        box = generation_metrics(ema, box_factories, args, device)
+        metrics |= {k.replace("val/", "val/box/", 1): v for k, v in box.items()}
         metrics |= {
             "train/samples_seen": samples_seen,
             "train/global_step": step,
