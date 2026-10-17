@@ -1,11 +1,11 @@
 {
   "name": "factorion",
-  "version": "0.6.3",
-  "title": "Factorion",
-  "author": "Factorion",
-  "contact": "",
-  "homepage": "",
-  "description": "Bridge to a locally-running Factorion ML model: select a footprint with sources and sinks, then watch the policy place its predicted factory directly into the world.",
+  "version": "0.0.0",
+  "title": "Factorion (alpha)",
+  "author": "beyarkay",
+  "contact": "https://github.com/beyarkay/factorion/issues",
+  "homepage": "https://github.com/beyarkay/factorion",
+  "description": "Place sources and sinks, and a factory-designing ML model running on your computer builds the factory between them. Needs the companion factorion-server program: chat tells you the command.",
   "factorio_version": "2.0",
   "dependencies": ["base >= 2.0.0", "? space-age"]
 }
