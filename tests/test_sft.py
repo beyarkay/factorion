@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import TINY, rs_throughput
 from denoise import load_denoiser
-from factorion import Channel, LessonKind, build_factory
+from factorion import Channel, LessonKind
 from sft import (
     SftArgs,
     _artifact_name,
@@ -47,19 +47,19 @@ class TestNoiseLevels:
 
 class TestBoxedFactory:
     def test_lesson_keeps_its_throughput_inside_its_box(self):
+        shapes = set()
         for kind in (LessonKind.OPPOSITE_SIDES_1IN, LessonKind.ROUTE_BELTS):
-            boxed = [(seed, f) for seed in range(6) if (f := boxed_factory(kind, seed, 32)) is not None]
+            boxed = [f for seed in range(8) if (f := boxed_factory(kind, seed, 32)) is not None]
             assert boxed, kind
-            for seed, f in boxed:
+            for f in boxed:
                 buildable = f.world_CWH[Channel.FOOTPRINT.value].bool()
                 xs, ys = torch.nonzero(buildable, as_tuple=True)
                 w, h = int(xs.max() - xs.min()) + 1, int(ys.max() - ys.min()) + 1
-                assert int(buildable.sum()) == w * h and 5 <= min(w, h) and max(w, h) <= 32
+                assert int(buildable.sum()) == w * h
                 assert not f.world_CWH[Channel.ENTITIES.value][~buildable].any()
-                square = build_factory(size=min(w, h), kind=kind, seed=seed)
-                assert square is not None
-                thput = [rs_throughput(x.world_CWH.permute(1, 2, 0))[0] for x in (f, square)]
-                assert thput[0] == thput[1] > 0
+                assert rs_throughput(f.world_CWH.permute(1, 2, 0))[0] == f.max_throughput > 0
+                shapes.add(w == h)
+        assert shapes == {True, False}
 
     def test_stream_yields_boxed_factories(self):
         states = itertools.islice(_iter_factories(32, 1, 0, 1, box_frac=1.0), 4)

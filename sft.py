@@ -51,7 +51,6 @@ from factorion import (
     TRAINING_KINDS,
     LessonKind,
     build_factory,
-    count_unpowered,
     refresh_power,
 )
 
@@ -117,27 +116,27 @@ _MIN_BOX = 5
 
 
 def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
-    """A lesson inside a random w × h box (5 ≤ w, h ≤ size) of a size × size
-    grid, every tile outside the box unbuildable. Generators only build
-    squares, so the factory is min(w, h) square, placed at random within the
-    box. None when the kind doesn't fit or the move unpowers it."""
+    """A lesson built on a random s × s square (5 ≤ s ≤ size) placed at random
+    in a size × size grid, buildable only inside a random box between the
+    factory's bounding box and the square, so the box takes whatever shape the
+    factory has. Inside the square, every pole keeps its power. None when the
+    kind doesn't fit the square."""
     rng = random.Random(seed)
-    w, h = rng.randint(_MIN_BOX, size), rng.randint(_MIN_BOX, size)
-    s = min(w, h)
+    s = rng.randint(_MIN_BOX, size)
     factory = build_factory(size=s, kind=kind, seed=seed)
     if factory is None:
         return None
-    bx, by = rng.randint(0, size - w), rng.randint(0, size - h)
-    fx, fy = bx + rng.randint(0, w - s), by + rng.randint(0, h - s)
+    xs, ys = torch.nonzero(factory.world_CWH[Channel.ENTITIES.value], as_tuple=True)
+    x0, x1 = rng.randint(0, int(xs.min())), rng.randint(int(xs.max()), s - 1)
+    y0, y1 = rng.randint(0, int(ys.min())), rng.randint(int(ys.max()), s - 1)
+    ox, oy = rng.randint(0, size - s), rng.randint(0, size - s)
     world = torch.zeros((factory.world_CWH.shape[0], size, size), dtype=factory.world_CWH.dtype)
-    world[Channel.FOOTPRINT.value, bx : bx + w, by : by + h] = Footprint.AVAILABLE.value
-    world[:, fx : fx + s, fy : fy + s] = factory.world_CWH
+    world[:, ox : ox + s, oy : oy + s] = factory.world_CWH
+    inside = torch.zeros((size, size), dtype=torch.bool)
+    inside[ox + x0 : ox + x1 + 1, oy + y0 : oy + y1 + 1] = True
+    world[Channel.FOOTPRINT.value][~inside] = Footprint.UNAVAILABLE.value
     refresh_power(world)
-    # A pole that drew power from the square's edge may now face buildable
-    # box tiles instead.
-    if count_unpowered(world):
-        return None
-    protected = frozenset((x + fx, y + fy) for x, y in factory.protected_positions)
+    protected = frozenset((x + ox, y + oy) for x, y in factory.protected_positions)
     return replace(factory, world_CWH=world, protected_positions=protected)
 
 
@@ -164,8 +163,8 @@ def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0):
         kind = rng.choice(available)
         seed += num_workers
         if rng.random() < box_frac:
-            # A box too small for the kind says nothing about the full grid, so
-            # it doesn't count towards dropping the kind.
+            # A square too small for the kind says nothing about the full grid,
+            # so it doesn't count towards dropping the kind.
             boxed = boxed_factory(kind, seed, size)
             if boxed is not None:
                 yield torch.from_numpy(world_to_state(boxed.world_CWH))
