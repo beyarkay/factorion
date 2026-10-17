@@ -2190,7 +2190,6 @@ local function gather_request(state, region, members)
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = region.fp.w,
-    step_delay_s  = 0,
     temperature   = config.temperature,
     steps         = config.steps,
     refine        = config.refine,
