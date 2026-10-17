@@ -19,6 +19,7 @@ import os
 import random
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +32,8 @@ import tyro
 from torch.utils.data import DataLoader, IterableDataset
 
 from denoise import (
+    _SINK_ENT_ID,
+    _SOURCE_ENT_ID,
     DenoiserUNet,
     N_TYPES,
     _luts,
@@ -44,10 +47,14 @@ from denoise import (
 )
 from factorion import (
     LESSON_IS_TRIAL,
+    Channel,
     Factory,
+    Footprint,
     TRAINING_KINDS,
     LessonKind,
     build_factory,
+    count_unpowered,
+    refresh_power,
 )
 
 from training_config import RlArgs, SftArgs, wsd_multiplier
@@ -108,8 +115,69 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _iter_factories(size, base_seed, worker_id, num_workers):
-    """Yield the uint8 state of fresh lesson factories forever.
+_MIN_SQUARE, _MAX_SQUARE = 10, 24
+# Most free rows/columns a box leaves beside its factory, per side.
+_MAX_GAP = 8
+_MAX_OBSTACLES = 8
+
+
+def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
+    """A lesson built on a random s × s square (10 ≤ s ≤ 24), buildable only
+    inside a box around the factory: 0..g free rows/columns on each side, with
+    g itself random up to `_MAX_GAP` so boxes range from cramped to roomy. The
+    box lands anywhere in a size × size grid, every tile outside it
+    unbuildable. Up to `_MAX_OBSTACLES` 3×3, 2×2 or 1×1 blocks or 3..10-long
+    lines land at random in the box, and their empty tiles become unbuildable
+    too, as if holding entities that can't be moved. None when the kind
+    doesn't fit the square, or the box reaches past the square and so unpowers
+    a machine (a pole may have drawn power from the square's edge)."""
+    rng = random.Random(seed)
+    s = rng.randint(min(_MIN_SQUARE, size), min(_MAX_SQUARE, size))
+    factory = build_factory(size=s, kind=kind, seed=seed)
+    if factory is None:
+        return None
+    xs, ys = torch.nonzero(factory.world_CWH[Channel.ENTITIES.value], as_tuple=True)
+    g = rng.randint(0, _MAX_GAP)
+
+    def edges(lo: int, hi: int) -> tuple[int, int]:
+        # Box edges in the square's frame, no wider than the grid.
+        before = min(rng.randint(0, g), size - (hi - lo + 1))
+        after = min(rng.randint(0, g), size - (hi - lo + 1) - before)
+        return lo - before, hi + after
+
+    x0, x1 = edges(int(xs.min()), int(xs.max()))
+    y0, y1 = edges(int(ys.min()), int(ys.max()))
+    ox, oy = rng.randint(-x0, size - 1 - x1), rng.randint(-y0, size - 1 - y1)
+    world = torch.zeros((factory.world_CWH.shape[0], size, size), dtype=factory.world_CWH.dtype)
+    inside = torch.zeros((size, size), dtype=torch.bool)
+    inside[ox + x0 : ox + x1 + 1, oy + y0 : oy + y1 + 1] = True
+    world[Channel.FOOTPRINT.value][inside] = Footprint.AVAILABLE.value
+    # The square may hang off the grid, but only by tiles outside the box.
+    lo_x, lo_y = max(0, -ox), max(0, -oy)
+    hi_x, hi_y = min(s, size - ox), min(s, size - oy)
+    world[:, ox + lo_x : ox + hi_x, oy + lo_y : oy + hi_y] = factory.world_CWH[:, lo_x:hi_x, lo_y:hi_y]
+    world[Channel.FOOTPRINT.value][~inside] = Footprint.UNAVAILABLE.value
+    blocked = torch.zeros_like(inside)
+    for _ in range(rng.randint(0, _MAX_OBSTACLES)):
+        k = rng.randrange(4)
+        w, h = (3 - k, 3 - k) if k < 3 else rng.choice([(rng.randint(3, 10), 1), (1, rng.randint(3, 10))])
+        bx, by = rng.randint(ox + x0, ox + x1), rng.randint(oy + y0, oy + y1)
+        blocked[bx : bx + w, by : by + h] = True
+    ent = world[Channel.ENTITIES.value]
+    # A marker's neighbours stay free: a trial needs room beside each marker.
+    markers = ((ent == _SOURCE_ENT_ID) | (ent == _SINK_ENT_ID)).float()[None, None]
+    near_marker = nn.functional.max_pool2d(markers, 3, stride=1, padding=1)[0, 0].bool()
+    world[Channel.FOOTPRINT.value][blocked & (ent == 0) & ~near_marker] = Footprint.UNAVAILABLE.value
+    refresh_power(world)
+    if count_unpowered(world):
+        return None
+    protected = frozenset((x + ox, y + oy) for x, y in factory.protected_positions)
+    return replace(factory, world_CWH=world, protected_positions=protected)
+
+
+def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0):
+    """Yield the uint8 state of fresh lesson factories forever, `box_frac` of
+    them built inside a random box (`boxed_factory`).
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     concurrent workers never share a factory. Kinds are drawn uniformly.
@@ -129,6 +197,13 @@ def _iter_factories(size, base_seed, worker_id, num_workers):
     while True:
         kind = rng.choice(available)
         seed += num_workers
+        if rng.random() < box_frac:
+            # A square too small for the kind says nothing about the full grid,
+            # so it doesn't count towards dropping the kind.
+            boxed = boxed_factory(kind, seed, size)
+            if boxed is not None:
+                yield torch.from_numpy(world_to_state(boxed.world_CWH))
+            continue
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
             consecutive_fails[kind.name] += 1
@@ -155,15 +230,16 @@ class FactoryStream(IterableDataset):
     CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, base_seed):
+    def __init__(self, size, base_seed, box_frac):
         self.size = size
         self.base_seed = base_seed
+        self.box_frac = box_frac
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        return _iter_factories(self.size, self.base_seed, worker_id, num_workers)
+        return _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac)
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
@@ -393,10 +469,12 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
     return out
 
 
-def build_eval_factories(args) -> list[tuple[int, LessonKind, Factory]]:
+def build_eval_factories(args, boxed=False) -> list[tuple[int, LessonKind, Factory]]:
     """The held-out (seed, kind, Factory) set: `eval_seeds_per_kind` factories
     of every training kind (trials included), each kind from its own seed
-    range far below the training seeds."""
+    range far below the training seeds; `boxed`, `box_eval_seeds_per_kind`
+    each built inside a random box (`boxed_factory`)."""
+    n = args.box_eval_seeds_per_kind if boxed else args.eval_seeds_per_kind
     out = []
     for ki, kind in enumerate(LessonKind):
         if kind not in TRAINING_KINDS:
@@ -404,9 +482,9 @@ def build_eval_factories(args) -> list[tuple[int, LessonKind, Factory]]:
         base = 9_000_000 + args.seed + ki * 100_000
         found = 0
         for s in range(base, base + 5000):
-            if found == args.eval_seeds_per_kind:
+            if found == n:
                 break
-            factory = build_factory(size=args.size, kind=kind, seed=s)
+            factory = boxed_factory(kind, s, args.size) if boxed else build_factory(size=args.size, kind=kind, seed=s)
             if factory is not None:
                 out.append((s, kind, factory))
                 found += 1
@@ -448,6 +526,7 @@ def train_sft(args: SftArgs):
 
     train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
     factories = build_eval_factories(args)
+    box_factories = build_eval_factories(args, boxed=True)
     val_states = torch.stack(
         [torch.from_numpy(world_to_state(f.world_CWH)) for _, k, f in factories if not LESSON_IS_TRIAL[k]]
     )
@@ -464,7 +543,7 @@ def train_sft(args: SftArgs):
             attn_heads=args.attn_heads,
             dropout=args.dropout,
         )
-        prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1), 256))
+        prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1, args.box_frac), 256))
         model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     model.to(device)
@@ -481,7 +560,7 @@ def train_sft(args: SftArgs):
 
     workers = min(16, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, train_seed),
+        FactoryStream(args.size, train_seed, args.box_frac),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",
@@ -552,6 +631,8 @@ def train_sft(args: SftArgs):
         metrics |= val_denoise_metrics(ema, val_states, args, device)
         t_gen = time.time()
         metrics |= generation_metrics(ema, factories, args, device)
+        box = generation_metrics(ema, box_factories, args, device)
+        metrics |= {k.replace("val/", "val/box/", 1): v for k, v in box.items()}
         metrics |= {
             "train/samples_seen": samples_seen,
             "train/global_step": step,
