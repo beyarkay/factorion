@@ -44,7 +44,7 @@ def test_rl_trains_a_denoiser_checkpoint(tmp_path):
     torch.save({"arch": model.arch, "model": model.state_dict()}, start)
     proc = subprocess.run(
         [sys.executable, os.path.join(REPO, "rl.py"), "--start-from", str(start), "--groups", "2",
-         "--group-size", "2", "--total-timesteps", "64", "--eval-best-of", "1"],
+         "--group-size", "2", "--total-timesteps", "64", "--eval-best-of", "1", "--size", "15"],
         cwd=tmp_path,
         env={**os.environ, "CI": "1", "WANDB_MODE": "disabled"},
         capture_output=True, text=True, timeout=600,

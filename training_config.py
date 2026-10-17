@@ -54,7 +54,7 @@ class SharedArgs:
 
     seed: int = 1
     """seed of the experiment"""
-    size: int = 15
+    size: int = 32
     """the width and height of the factory grid"""
 
     track: bool = False

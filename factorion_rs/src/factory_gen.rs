@@ -21,7 +21,7 @@ use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recip
 use crate::world::World;
 use nonempty::NonEmpty;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 
 /// The lesson kinds. This is the single source of truth for the kind set:
@@ -336,35 +336,106 @@ fn find_belt_paths(
     type State = (i64, i64, i64);
     let start_state: State = (start.0, start.1, start_adir);
 
-    let mut dist: HashMap<State, u64> = HashMap::new();
-    // Every min-cost incoming edge of a state: the predecessor state plus the
-    // placement(s) emitted on that edge, so all shortest routes can enumerate.
-    let mut preds: HashMap<State, Vec<(State, Vec<UgPlacement>)>> = HashMap::new();
-    dist.insert(start_state, 0);
-    let mut counter: u64 = 0;
-    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
-    pq.push(Reverse((0, counter, start_state)));
-    counter += 1;
+    // Flat per-cell/per-state tables: hashing dominated the search on big grids.
+    let cell = |x: i64, y: i64| (x * size + y) as usize;
+    let idx = |(x, y, a): State| cell(x, y) * 5 + a as usize;
+    let mut blocked_grid = vec![false; (size * size) as usize];
+    for &c in blocked.iter().filter(|&&c| in_bounds(c)) {
+        blocked_grid[cell(c.0, c.1)] = true;
+    }
+    let is_blocked = |c: Cell| blocked_grid[cell(c.0, c.1)];
+    // Rejection sampling often walls `end` into a pocket, which the search
+    // below would only rule out after exhausting the grid. A backward flood
+    // fill over cells, blind to arrival direction (so a superset of the
+    // search's moves), rules it out in a few steps.
+    let open = |c: Cell| in_bounds(c) && !is_blocked(c);
+    let mut seen = vec![false; (size * size) as usize];
+    seen[cell(end.0, end.1)] = true;
+    let mut stack = vec![end];
+    loop {
+        let Some(c) = stack.pop() else {
+            return vec![];
+        };
+        if c == start {
+            break;
+        }
+        for d in DIRS {
+            let (dx, dy) = d.delta();
+            let back = |k: i64| (c.0 - dx * k, c.1 - dy * k);
+            // A tunnel entering `k` tiles back surfaces past its exit at
+            // `back(1)`, or exits straight onto `end`. Its entrance was itself
+            // arrived at along `d`, unless it is the start.
+            let tunnels = (2..=UNDERGROUND_MAX_OFFSET + 1).filter(|&k| {
+                allow_underground
+                    && (open(back(k + 1)) || back(k) == start)
+                    && ((k > 2 && open(back(1)))
+                        || (k <= UNDERGROUND_MAX_OFFSET && c == end && d == end_dir))
+            });
+            for f in std::iter::once(1).chain(tunnels).map(back) {
+                if open(f) && !seen[cell(f.0, f.1)] {
+                    seen[cell(f.0, f.1)] = true;
+                    stack.push(f);
+                }
+            }
+        }
+    }
+    let mut hugging_grid = vec![false; (size * size) as usize];
+    for &(hx, hy) in hug {
+        for (dx, dy) in BFS_DELTAS {
+            let c = (hx - dx, hy - dy);
+            if in_bounds(c) {
+                hugging_grid[cell(c.0, c.1)] = true;
+            }
+        }
+    }
+
+    let mut dist: Vec<u64> = vec![u64::MAX; (size * size * 5) as usize];
+    // Every min-cost incoming edge of a state, as its predecessor state, so all
+    // shortest routes can enumerate.
+    let mut preds: Vec<Vec<State>> = vec![Vec::new(); dist.len()];
+    dist[idx(start_state)] = 0;
+    // Dial's bucket queue: a ring of FIFO buckets, one per cost modulo its
+    // length, pops in (cost, push order) like a heap but in O(1). Every queued
+    // cost lies within one maximal edge cost of the one being popped.
+    const RING: u64 = 20 * (UNDERGROUND_MAX_OFFSET as u64 + 1) + 1;
+    let mut pq: Vec<VecDeque<State>> = vec![VecDeque::new(); RING as usize];
+    let mut queued: usize = 1;
+    pq[0].push_back(start_state);
+    let mut d_so_far: u64 = 0;
 
     // Record a min-cost edge into `ns`: reset predecessors on a strict
     // improvement, accumulate on a tie (equal-cost edges enumerate alternatives).
-    let mut relax = |dist: &mut HashMap<State, u64>,
-                     preds: &mut HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
-                     pq: &mut BinaryHeap<Reverse<(u64, u64, State)>>,
-                     ns: State,
-                     nd: u64,
-                     from: State,
-                     emit: Vec<UgPlacement>| {
-        let cur = *dist.get(&ns).unwrap_or(&u64::MAX);
-        if nd < cur {
-            dist.insert(ns, nd);
-            preds.insert(ns, vec![(from, emit)]);
-            pq.push(Reverse((nd, counter, ns)));
-            counter += 1;
-        } else if nd == cur {
-            preds.entry(ns).or_default().push((from, emit));
+    let relax = |dist: &mut Vec<u64>,
+                 preds: &mut Vec<Vec<State>>,
+                 pq: &mut Vec<VecDeque<State>>,
+                 queued: &mut usize,
+                 ns: State,
+                 nd: u64,
+                 from: State| {
+        let i = idx(ns);
+        if nd < dist[i] {
+            dist[i] = nd;
+            preds[i].clear();
+            preds[i].push(from);
+            pq[(nd % RING) as usize].push_back(ns);
+            *queued += 1;
+        } else if nd == dist[i] {
+            preds[i].push(from);
         }
     };
+    // The placement(s) an edge `from` → `to` emits: a belt on `from` for a
+    // one-tile step, else a tunnel from `from` surfacing just short of `to`.
+    fn edge(from: State, to: State) -> Vec<UgPlacement> {
+        let d = Direction::from_i64(to.2);
+        if (to.0 - from.0).abs() + (to.1 - from.1).abs() == 1 {
+            return vec![(from.0, from.1, d, Misc::None)];
+        }
+        let (dx, dy) = d.delta();
+        vec![
+            (from.0, from.1, d, Misc::UndergroundDown),
+            (to.0 - dx, to.1 - dy, d, Misc::UndergroundUp),
+        ]
+    }
 
     // Cheapest arrival(s) onto `end`: the state to backtrack from and the
     // entity/entities covering `end` itself (a belt facing `end_dir`, or a
@@ -372,8 +443,13 @@ fn find_belt_paths(
     let mut goal_cost: u64 = u64::MAX;
     let mut goal_arrivals: Vec<(State, Vec<UgPlacement>)> = Vec::new();
 
-    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
-        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
+    while queued > 0 {
+        let Some(state) = pq[(d_so_far % RING) as usize].pop_front() else {
+            d_so_far += 1;
+            continue;
+        };
+        queued -= 1;
+        if d_so_far > dist[idx(state)] {
             continue;
         }
         // All equal-cost arrivals pop before any strictly costlier state, so once
@@ -403,29 +479,19 @@ fn find_belt_paths(
         };
 
         // Normal surface belt step (no 180° reversal): this cell becomes a belt.
+        let hugging = hugging_grid[cell(cx, cy)];
         for d in DIRS {
             let (dx, dy) = d.delta();
             if back == Some((dx, dy)) {
                 continue;
             }
             let n = (cx + dx, cy + dy);
-            if !in_bounds(n) || blocked.contains(&n) {
+            if !in_bounds(n) || is_blocked(n) {
                 continue;
             }
             let ns: State = (n.0, n.1, d as i64);
-            let hugging = BFS_DELTAS
-                .iter()
-                .any(|&(hx, hy)| hug.contains(&(cx + hx, cy + hy)));
             let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
-            relax(
-                &mut dist,
-                &mut preds,
-                &mut pq,
-                ns,
-                nd,
-                state,
-                vec![(cx, cy, d, Misc::None)],
-            );
+            relax(&mut dist, &mut preds, &mut pq, &mut queued, ns, nd, state);
         }
 
         // Underground tunnel, continuing straight in the arrival direction.
@@ -434,7 +500,7 @@ fn find_belt_paths(
             let (dx, dy) = d.delta();
             for span in 2..=UNDERGROUND_MAX_OFFSET {
                 let exit_cell = (cx + dx * span, cy + dy * span);
-                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
+                if !in_bounds(exit_cell) || is_blocked(exit_cell) {
                     continue;
                 }
                 // Surface straight onto `end` (UG_UP → sink), no trailing belt.
@@ -458,23 +524,12 @@ fn find_belt_paths(
                     continue;
                 }
                 let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
-                if !in_bounds(surface) || blocked.contains(&surface) {
+                if !in_bounds(surface) || is_blocked(surface) {
                     continue;
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
                 let nd = d_so_far + 20 * (span as u64 + 1);
-                relax(
-                    &mut dist,
-                    &mut preds,
-                    &mut pq,
-                    ns,
-                    nd,
-                    state,
-                    vec![
-                        (cx, cy, d, Misc::UndergroundDown),
-                        (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
-                    ],
-                );
+                relax(&mut dist, &mut preds, &mut pq, &mut queued, ns, nd, state);
             }
         }
     }
@@ -494,12 +549,13 @@ fn find_belt_paths(
                 goal_arrivals.swap_remove(rng.choice_index(goal_arrivals.len()));
             let mut rev: Vec<UgPlacement> = Vec::new();
             while state != start_state {
-                let Some(ps) = preds.get(&state) else {
+                let ps = &preds[idx(state)];
+                if ps.is_empty() {
                     return vec![];
-                };
-                let (pstate, emit) = &ps[rng.choice_index(ps.len())];
-                rev.extend(emit.iter().rev().copied());
-                state = *pstate;
+                }
+                let pstate = ps[rng.choice_index(ps.len())];
+                rev.extend(edge(pstate, state).into_iter().rev());
+                state = pstate;
             }
             let mut path: Vec<UgPlacement> = rev.into_iter().rev().collect();
             path.extend(tail);
@@ -513,7 +569,8 @@ fn find_belt_paths(
     fn walk(
         state: State,
         start_state: State,
-        preds: &HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+        preds: &[Vec<State>],
+        idx: &dyn Fn(State) -> usize,
         acc: &mut Vec<UgPlacement>,
         tail: &[UgPlacement],
         results: &mut Vec<Vec<UgPlacement>>,
@@ -530,20 +587,14 @@ fn find_belt_paths(
             }
             return;
         }
-        let Some(ps) = preds.get(&state) else {
-            return;
-        };
-        for (pstate, emit) in ps {
+        for &pstate in &preds[idx(state)] {
             if results.len() >= limit {
                 return;
             }
-            for &p in emit.iter().rev() {
-                acc.push(p);
-            }
-            walk(*pstate, start_state, preds, acc, tail, results, limit);
-            for _ in emit {
-                acc.pop();
-            }
+            let emit = edge(pstate, state);
+            acc.extend(emit.iter().rev());
+            walk(pstate, start_state, preds, idx, acc, tail, results, limit);
+            acc.truncate(acc.len() - emit.len());
         }
     }
 
@@ -557,6 +608,7 @@ fn find_belt_paths(
             *gstate,
             start_state,
             &preds,
+            &idx,
             &mut acc,
             tail,
             &mut results,
@@ -4371,6 +4423,23 @@ fn build_mirrored(
         }
         belts.extend((out_a..out_b).map(|y| (col, y, Direction::South, Misc::None)));
 
+        let head_cells: Vec<Cell> = heads.iter().map(|&(c, _)| c).collect();
+        // The input belt must stay clear of the collector and its overshoot
+        // cell empty. Most draws fail this, so it scans the layout rather
+        // than first hashing it into `structure`.
+        let occupied = |c: &Cell| {
+            asm.iter()
+                .any(|&(ax, ay)| (ax..ax + 3).contains(&c.0) && (ay..ay + 3).contains(&c.1))
+                || inserters.iter().any(|(p, _)| p == c)
+                || belts.iter().any(|&(x, y, ..)| (x, y) == *c)
+        };
+        if lo < 0
+            || hi >= col
+            || occupied(&over)
+            || head_cells.iter().any(|c| !in_grid(*c, s) || occupied(c))
+        {
+            continue;
+        }
         let mut structure: HashSet<Cell> = asm
             .iter()
             .flat_map(|&(ax, ay)| {
@@ -4379,18 +4448,6 @@ fn build_mirrored(
             .collect();
         structure.extend(inserters.iter().map(|&(c, _)| c));
         structure.extend(belt_cells(&belts));
-        let head_cells: Vec<Cell> = heads.iter().map(|&(c, _)| c).collect();
-        // The input belt must stay clear of the collector and its overshoot
-        // cell empty.
-        if lo < 0
-            || hi >= col
-            || structure.contains(&over)
-            || head_cells
-                .iter()
-                .any(|c| !in_grid(*c, s) || structure.contains(c))
-        {
-            continue;
-        }
         let mut reserved = structure.clone();
         reserved.insert(over);
         reserved.extend(head_cells.iter().copied());
