@@ -941,7 +941,6 @@ def build_factory(
     *,
     seed: Optional[int] = None,
     random_item: bool = True,
-    max_entities: float = float("inf"),
 ) -> Optional[Factory]:
     """Build a complete, valid factory of the given lesson ``kind``.
 
@@ -961,9 +960,7 @@ def build_factory(
     else:
         rs_seed = random.randrange(2**63)
 
-    result = factorion_rs.build_factory(
-        size, kind.value, rs_seed, random_item, max_entities
-    )
+    result = factorion_rs.build_factory(size, kind.value, rs_seed, random_item)
     if result is None:
         return None
     world_WHC, total_entities, protected, max_throughput = result

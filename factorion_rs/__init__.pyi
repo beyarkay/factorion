@@ -49,6 +49,5 @@ def build_factory(
     kind: int,
     seed: int,
     random_item: bool = True,
-    max_entities: float = float("inf"),
 ) -> tuple[NDArray[np.int64], int, list[tuple[int, int]], float] | None: ...
 def render_factory(world: NDArray[np.int64]) -> str: ...

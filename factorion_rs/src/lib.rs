@@ -338,19 +338,17 @@ type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>, f64);
 /// exhausted. Raises `ValueError` for an unknown lesson kind.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
-#[pyo3(signature = (size, kind, seed, random_item=true, max_entities=f64::INFINITY))]
+#[pyo3(signature = (size, kind, seed, random_item=true))]
 fn build_factory(
     py: Python<'_>,
     size: usize,
     kind: i64,
     seed: i64,
     random_item: bool,
-    max_entities: f64,
 ) -> PyResult<Option<PyFactory>> {
     let lesson = LessonKind::from_i64(kind)
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown kind {kind}")))?;
-    let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item, max_entities)
-    {
+    let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item) {
         Some(b) => b,
         None => return Ok(None),
     };

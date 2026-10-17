@@ -660,70 +660,51 @@ fn place_belts(world: &mut World, belts: &[UgPlacement]) {
 
 /// Build a complete, valid factory of the given lesson `kind` on a
 /// `size × size` grid, seeding the RNG from `seed`. `random_item` picks a
-/// random transported item (vs a fixed default); `max_entities` caps the
-/// entity count. Returns `None` when rejection sampling is exhausted.
+/// random transported item (vs a fixed default). Returns `None` when
+/// rejection sampling is exhausted.
 pub fn build_factory(
     size: usize,
     kind: LessonKind,
     seed: u64,
     random_item: bool,
-    max_entities: f64,
 ) -> Option<BuiltFactory> {
     let mut rng = Rng::seeded(seed);
     match kind {
-        LessonKind::MoveOneItem => build_move_one_item(size, &mut rng, random_item, max_entities),
-        LessonKind::MoveOneItemChaos => {
-            build_move_one_item_chaos(size, &mut rng, random_item, max_entities)
-        }
-        LessonKind::SplitterSplit => {
-            build_splitter_split(size, &mut rng, random_item, max_entities)
-        }
+        LessonKind::MoveOneItem => build_move_one_item(size, &mut rng, random_item),
+        LessonKind::MoveOneItemChaos => build_move_one_item_chaos(size, &mut rng, random_item),
+        LessonKind::SplitterSplit => build_splitter_split(size, &mut rng, random_item),
         LessonKind::SplitterMergeSideloaded => {
-            build_splitter_merge_sideloaded(size, &mut rng, random_item, max_entities)
+            build_splitter_merge_sideloaded(size, &mut rng, random_item)
         }
-        LessonKind::MoveViaUgBelt => {
-            build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
-        }
+        LessonKind::MoveViaUgBelt => build_move_via_ug_belt(size, &mut rng, random_item),
         LessonKind::Memorise1IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 1, MEMORISE_MAX_ARM_BELTS)
+            build_memorise_recipes(size, &mut rng, 1, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::Memorise2IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 2, MEMORISE_MAX_ARM_BELTS)
+            build_memorise_recipes(size, &mut rng, 2, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::Memorise3IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 3, MEMORISE_MAX_ARM_BELTS)
+            build_memorise_recipes(size, &mut rng, 3, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::Memorise4IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 4, MEMORISE_MAX_ARM_BELTS)
+            build_memorise_recipes(size, &mut rng, 4, MEMORISE_MAX_ARM_BELTS)
         }
-        LessonKind::CrossUnderBelt => {
-            build_cross_under_belt(size, &mut rng, random_item, max_entities)
-        }
-        LessonKind::RouteBelts => build_route_belts(size, &mut rng, max_entities, false),
-        LessonKind::RouteBeltsBus => build_route_belts(size, &mut rng, max_entities, true),
-        LessonKind::OppositeSides1In => {
-            build_factory_1_ingredient(size, &mut rng, max_entities, false)
-        }
-        LessonKind::SameSide1In => build_factory_1_ingredient(size, &mut rng, max_entities, true),
-        LessonKind::Splitter1In => build_splitter_1in(size, &mut rng, max_entities),
-        LessonKind::OppositeFeeds2In => build_opposite_feeds_2in(size, &mut rng, max_entities),
-        LessonKind::DirectInsert2In => build_direct_insert_2in(size, &mut rng, max_entities),
-        LessonKind::IntermediateBelt2In => {
-            build_intermediate_belt_2in(size, &mut rng, max_entities)
-        }
-        LessonKind::Mirrored1In => build_mirrored(size, &mut rng, max_entities, false),
-        LessonKind::Mirrored2In => build_mirrored(size, &mut rng, max_entities, true),
-        LessonKind::ReachOver2In => {
-            build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
-        }
-        LessonKind::SharedBelt2In => {
-            build_factory_2_ingredients(size, &mut rng, max_entities, Feed::Shared)
-        }
-        LessonKind::UgWeave2In => {
-            build_factory_2_ingredients(size, &mut rng, max_entities, Feed::Weave)
-        }
-        LessonKind::ReachOver3In => build_factory_n_ingredients(size, &mut rng, max_entities, 3),
-        LessonKind::ReachOver4In => build_factory_n_ingredients(size, &mut rng, max_entities, 4),
+        LessonKind::CrossUnderBelt => build_cross_under_belt(size, &mut rng, random_item),
+        LessonKind::RouteBelts => build_route_belts(size, &mut rng, false),
+        LessonKind::RouteBeltsBus => build_route_belts(size, &mut rng, true),
+        LessonKind::OppositeSides1In => build_factory_1_ingredient(size, &mut rng, false),
+        LessonKind::SameSide1In => build_factory_1_ingredient(size, &mut rng, true),
+        LessonKind::Splitter1In => build_splitter_1in(size, &mut rng),
+        LessonKind::OppositeFeeds2In => build_opposite_feeds_2in(size, &mut rng),
+        LessonKind::DirectInsert2In => build_direct_insert_2in(size, &mut rng),
+        LessonKind::IntermediateBelt2In => build_intermediate_belt_2in(size, &mut rng),
+        LessonKind::Mirrored1In => build_mirrored(size, &mut rng, false),
+        LessonKind::Mirrored2In => build_mirrored(size, &mut rng, true),
+        LessonKind::ReachOver2In => build_factory_2_ingredients(size, &mut rng, Feed::ReachOver),
+        LessonKind::SharedBelt2In => build_factory_2_ingredients(size, &mut rng, Feed::Shared),
+        LessonKind::UgWeave2In => build_factory_2_ingredients(size, &mut rng, Feed::Weave),
+        LessonKind::ReachOver3In => build_factory_n_ingredients(size, &mut rng, 3),
+        LessonKind::ReachOver4In => build_factory_n_ingredients(size, &mut rng, 4),
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
         LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
@@ -914,12 +895,7 @@ fn draw_source_sink(
     })
 }
 
-fn build_move_one_item(
-    size: usize,
-    rng: &mut Rng,
-    random_item: bool,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_move_one_item(size: usize, rng: &mut Rng, random_item: bool) -> Option<BuiltFactory> {
     let s = size as i64;
     let pool = item_pool();
     let mut count = (500).max(size * size * 4);
@@ -964,9 +940,6 @@ fn build_move_one_item(
         let Some(chosen) = paths.into_iter().next() else {
             continue;
         };
-        if (chosen.len() as f64) > max_entities {
-            continue;
-        }
 
         place_belts(&mut world, &chosen);
         let Some(poles) = place_poles(&mut world) else {
@@ -988,7 +961,6 @@ fn build_move_one_item_chaos(
     size: usize,
     rng: &mut Rng,
     random_item: bool,
-    max_entities: f64,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
     let pool = item_pool();
@@ -1066,9 +1038,6 @@ fn build_move_one_item_chaos(
         let mut full_cells = cells_a.clone();
         full_cells.extend_from_slice(&cells_b[1..]);
         let full_belts = path_to_belts(&full_cells, sink_dir);
-        if (full_belts.len() as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
@@ -1225,12 +1194,7 @@ fn wire_arms(
 /// order), keep the wiring with the fewest placements, so no arm wraps the long
 /// way around. Arms may tunnel under an obstruction via undergrounds. Returns
 /// the plan, or `None` if this draw can't be wired.
-fn canonical_split(
-    size: usize,
-    rng: &mut Rng,
-    item_value: i64,
-    max_entities: f64,
-) -> Option<SplitterYPlan> {
+fn canonical_split(size: usize, rng: &mut Rng, item_value: i64) -> Option<SplitterYPlan> {
     let s = size as i64;
     // Need ≥2 rows above the splitter for prongs and ≥2 below for the base.
     if s < 5 {
@@ -1345,9 +1309,6 @@ fn canonical_split(
 
     let (total_belts, stem, arm1, arm2) = best?;
     let total_entities = total_belts + 1; // + splitter
-    if (total_entities as f64) > max_entities {
-        return None;
-    }
 
     Some(SplitterYPlan {
         item_value,
@@ -1413,12 +1374,7 @@ fn place_plan(plan: &SplitterYPlan, size: usize) -> Option<World> {
 /// prong sinks, from one canonical (base-toward-south-edge, north-facing)
 /// layout that a random number of 90° rotations then orients. The splitter is
 /// left removable (no protected positions) so the policy learns to place it.
-fn build_splitter_split(
-    size: usize,
-    rng: &mut Rng,
-    random_item: bool,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_splitter_split(size: usize, rng: &mut Rng, random_item: bool) -> Option<BuiltFactory> {
     let pool = item_pool();
     let mut count = (500).max(size * size * 10);
 
@@ -1431,7 +1387,7 @@ fn build_splitter_split(
 
     while count > 0 {
         count -= 1;
-        let plan = match canonical_split(size, rng, item_value, max_entities) {
+        let plan = match canonical_split(size, rng, item_value) {
             Some(p) => p,
             None => continue,
         };
@@ -1557,7 +1513,6 @@ fn build_splitter_merge_sideloaded(
     size: usize,
     rng: &mut Rng,
     random_item: bool,
-    max_entities: f64,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
     // Room for: sink + output belt north of the splitter, and gadgets +
@@ -1721,9 +1676,6 @@ fn build_splitter_merge_sideloaded(
         belts += out_path.len();
 
         let total_entities = belts + 1; // + splitter
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let Some(poles) = place_poles(&mut world) else {
             continue;
@@ -1776,12 +1728,7 @@ fn build_splitter_merge_sideloaded(
     None
 }
 
-fn build_move_via_ug_belt(
-    size: usize,
-    rng: &mut Rng,
-    random_item: bool,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Option<BuiltFactory> {
     let s = size as i64;
     let pool = item_pool();
     let mut count = (500).max(size * size * 8);
@@ -1997,9 +1944,6 @@ fn build_move_via_ug_belt(
         }
 
         let total_entities = 2 + path1.len() + path2.len();
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         // Mark only the wall as UNAVAILABLE; every other tile is buildable.
         for &(wx, wy) in &wall_tiles {
@@ -2045,7 +1989,6 @@ fn memorise_recipe_pool(n_ingredients: usize) -> Vec<(Item, Recipe)> {
 fn build_memorise_recipes(
     size: usize,
     rng: &mut Rng,
-    max_entities: f64,
     n_ingredients: usize,
     max_arm_belts: i64,
 ) -> Option<BuiltFactory> {
@@ -2231,9 +2174,6 @@ fn build_memorise_recipes(
         // Removable units: belts + inserters + the assembler (sources/sinks
         // are env-spawned and never blanked, so they don't count).
         let total_entities = inserters.len() + belts.len() + 1;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         place_assembler(&mut world, ax, ay, recipe_item_value);
@@ -2353,12 +2293,7 @@ fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
 /// north-face slots split between 1-2 plain inserters taking from the input
 /// lane and 1-2 long-handed inserters reaching from the machine over the
 /// input lane onto the output lane; the sink sits beyond the output lane.
-fn build_factory_1_ingredient(
-    size: usize,
-    rng: &mut Rng,
-    max_entities: f64,
-    same_side: bool,
-) -> Option<BuiltFactory> {
+fn build_factory_1_ingredient(size: usize, rng: &mut Rng, same_side: bool) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 7 rows: input lane, input inserters, 3 assembler
     // rows, output inserters, output lane.
@@ -2642,9 +2577,6 @@ fn build_factory_1_ingredient(
         // blank_entities), as do inserters, lane belts and route placements.
         let total_entities =
             lane_belts.len() + path1.len() + path2.len() + inserters.len() + n_asm as usize;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for &ax in &anchors {
@@ -2705,7 +2637,7 @@ fn build_factory_1_ingredient(
 /// The source sits anywhere above the splitter and the sink anywhere below
 /// the output lane, wired up by the UG-aware router (the sink route tries
 /// both output-lane directions); the world is then randomly rotated.
-fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+fn build_splitter_1in(size: usize, rng: &mut Rng) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 9 rows: the splitter's feed tile, the splitter,
     // input lane, input inserters, 3 assembler rows, output inserters, output
@@ -2880,9 +2812,6 @@ fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<B
             + path2.len()
             + inserters.len()
             + n_asm as usize;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for &ax in &anchors {
@@ -3014,12 +2943,7 @@ fn route_source_to_head(
 /// the shortest route kept. Tap counts, run lengths, the output-lane
 /// direction, and the routes all vary per seed, so throughput deliberately
 /// varies too.
-fn build_factory_2_ingredients(
-    size: usize,
-    rng: &mut Rng,
-    max_entities: f64,
-    feed: Feed,
-) -> Option<BuiltFactory> {
+fn build_factory_2_ingredients(size: usize, rng: &mut Rng, feed: Feed) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 columns: ingredient-A lane (far belt / weave
     // helper), ingredient-B lane (near belt / weave column), input inserters,
@@ -3434,9 +3358,6 @@ fn build_factory_2_ingredients(
             + path_k.len()
             + inserters.len()
             + n_asm as usize;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for i in 0..n_asm {
@@ -3574,7 +3495,7 @@ fn wire_markers(
 /// downstream tile starts the sink route). The
 /// sources and sink sit at any free cells, wired up by [`wire_markers`]; the
 /// world is then randomly flipped/rotated.
-fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+fn build_opposite_feeds_2in(size: usize, rng: &mut Rng) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows: A lane, A inserters, 3 assembler rows,
     // the south-face inserters, B lane, output lane.
@@ -3699,9 +3620,6 @@ fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Op
             + paths.iter().map(Vec::len).sum::<usize>()
             + inserters.len()
             + n_asm as usize;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for &ax in &anchors {
@@ -3807,7 +3725,7 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
 /// Lane directions are drawn per seed, the sources and sink sit at any free
 /// cells wired up by [`wire_markers`], and the world is then randomly
 /// flipped/rotated.
-fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+fn build_direct_insert_2in(size: usize, rng: &mut Rng) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows (raw lane, its inserters, 3 machine
     // rows, the product machines' south face, other-ingredient lane, output
@@ -3985,9 +3903,6 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
         // blank_entities); markers are never blanked and don't count.
         let total_entities =
             belts.len() + paths.iter().map(Vec::len).sum::<usize>() + inserters.len() + asm.len();
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for &(ax, ay, recipe_key) in &asm {
@@ -4054,11 +3969,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
 /// The north and output lanes' directions are drawn per seed, the sources
 /// and sink sit at any free cells wired up by [`wire_markers`], and the world
 /// is then randomly flipped/rotated.
-fn build_intermediate_belt_2in(
-    size: usize,
-    rng: &mut Rng,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_intermediate_belt_2in(size: usize, rng: &mut Rng) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows: north lanes, their inserters, 3 machine
     // rows, the south-face inserters, the intermediate belt, output lane.
@@ -4265,9 +4176,6 @@ fn build_intermediate_belt_2in(
             + inserters.len()
             + asm.len()
             + usize::from(shared);
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for &(ax, recipe_key) in &asm {
@@ -4330,12 +4238,7 @@ fn build_intermediate_belt_2in(
 /// The input belt's direction is drawn per seed, the sources and sink sit at
 /// any free cells wired up by [`wire_markers`], and the world is then
 /// randomly flipped/rotated.
-fn build_mirrored(
-    size: usize,
-    rng: &mut Rng,
-    max_entities: f64,
-    two_in: bool,
-) -> Option<BuiltFactory> {
+fn build_mirrored(size: usize, rng: &mut Rng, two_in: bool) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 13 rows: output lane, output inserters, 3
     // machine rows, input inserters, the shared input belt, and the same
@@ -4489,9 +4392,6 @@ fn build_mirrored(
         // blank_entities); markers are never blanked and don't count.
         let total_entities =
             belts.len() + paths.iter().map(Vec::len).sum::<usize>() + inserters.len() + asm.len();
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for &(ax, ay) in &asm {
@@ -4558,12 +4458,7 @@ fn build_mirrored(
 ///
 /// The sources sit at any free cells and the sink beyond the output exit,
 /// wired up by the UG-aware router as in REACH_OVER_2IN.
-fn build_factory_n_ingredients(
-    size: usize,
-    rng: &mut Rng,
-    max_entities: f64,
-    n: usize,
-) -> Option<BuiltFactory> {
+fn build_factory_n_ingredients(size: usize, rng: &mut Rng, n: usize) -> Option<BuiltFactory> {
     let s = size as i64;
     let recipes = am1_recipes(n)?;
     // A side-loaded far head needs a column west of the far belt for its
@@ -4740,9 +4635,6 @@ fn build_factory_n_ingredients(
             + paths.iter().map(Vec::len).sum::<usize>()
             + inserters.len()
             + n_asm as usize;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         let mut world = World::empty(size, size);
         for i in 0..n_asm {
@@ -4890,12 +4782,7 @@ fn pick_endpoint(
 /// items, so gating on
 /// `tp >= belt_flow` (both delivered) and no orphan tiles rejects a crossing that
 /// fails to connect.
-fn build_cross_under_belt(
-    size: usize,
-    rng: &mut Rng,
-    random_item: bool,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_cross_under_belt(size: usize, rng: &mut Rng, random_item: bool) -> Option<BuiltFactory> {
     let s = size as i64;
     if s < 5 {
         return None;
@@ -5018,9 +4905,6 @@ fn build_cross_under_belt(
         }
 
         let total_entities = cross_path.len();
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
 
         // Protect the obstruction cut so blank_entities never removes it.
         let mut protected_positions: Vec<(usize, usize)> = obstruction_tiles
@@ -5168,12 +5052,7 @@ fn nearest_port(cell: Cell, ports: [Cell; 2]) -> Cell {
 /// only where it must, hugging the belts already laid. A `bus` lines the
 /// sources up side by side, and the sinks likewise in the same order, and
 /// routes them in line order, so they run as a tidy bundle.
-fn build_route_belts(
-    size: usize,
-    rng: &mut Rng,
-    max_entities: f64,
-    bus: bool,
-) -> Option<BuiltFactory> {
+fn build_route_belts(size: usize, rng: &mut Rng, bus: bool) -> Option<BuiltFactory> {
     let s = size as i64;
     let pool = item_pool();
     let full = Item::TransportBelt.flow_rate();
@@ -5351,9 +5230,6 @@ fn build_route_belts(
             continue;
         }
         let total_entities = laid.len() + splitters;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
         for route in &routes {
             place_belts(&mut world, route);
         }
@@ -5690,7 +5566,7 @@ mod tests {
         // A handful of seeds should all produce positive-throughput factories.
         let mut built = 0;
         for seed in 0..50u64 {
-            if let Some(f) = build_factory(10, LessonKind::MoveOneItem, seed, true, f64::INFINITY) {
+            if let Some(f) = build_factory(10, LessonKind::MoveOneItem, seed, true) {
                 assert!(world_throughput(&f.world) > 0.0, "seed={seed}");
                 assert!(f.total_entities >= 1);
                 built += 1;
@@ -5760,7 +5636,7 @@ mod tests {
         for (kind, n_ingredients) in MEMORISE_KINDS {
             let mut built = 0;
             for seed in 0..50u64 {
-                if let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) {
+                if let Some(f) = build_factory(11, kind, seed, true) {
                     assert!(world_throughput(&f.world) > 0.0, "{kind:?} seed={seed}");
 
                     let mut n_inserter = 0;
@@ -5808,7 +5684,7 @@ mod tests {
         for (kind, _) in MEMORISE_KINDS {
             let mut lengths: HashSet<usize> = HashSet::new();
             for seed in 0..80u64 {
-                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(11, kind, seed, true) else {
                     continue;
                 };
                 let world = &f.world;
@@ -5890,7 +5766,7 @@ mod tests {
         for kind in kinds {
             let mut checked = 0;
             for seed in 0..60u64 {
-                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(15, kind, seed, true) else {
                     continue;
                 };
                 for x in 0..f.world.width() {
@@ -5924,9 +5800,7 @@ mod tests {
         // per side (4-6 total per machine).
         let mut built = 0;
         for seed in 0..50u64 {
-            let Some(f) =
-                build_factory(11, LessonKind::OppositeSides1In, seed, true, f64::INFINITY)
-            else {
+            let Some(f) = build_factory(11, LessonKind::OppositeSides1In, seed, true) else {
                 continue;
             };
             built += 1;
@@ -5985,9 +5859,7 @@ mod tests {
         let per_side = 3.0 * Item::Inserter.flow_rate();
         let mut checked = 0;
         for seed in 0..50u64 {
-            let Some(f) =
-                build_factory(11, LessonKind::OppositeSides1In, seed, true, f64::INFINITY)
-            else {
+            let Some(f) = build_factory(11, LessonKind::OppositeSides1In, seed, true) else {
                 continue;
             };
             let recipe_item = (0..f.world.width())
@@ -6026,7 +5898,7 @@ mod tests {
         ] {
             let mut built = 0;
             for seed in 0..50u64 {
-                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(11, kind, seed, true) else {
                     continue;
                 };
                 built += 1;
@@ -6128,7 +6000,7 @@ mod tests {
         // shared face.
         for size in [11usize, 15] {
             for seed in 0..20u64 {
-                let f = build_factory(size, LessonKind::SameSide1In, seed, true, f64::INFINITY)
+                let f = build_factory(size, LessonKind::SameSide1In, seed, true)
                     .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
@@ -6151,7 +6023,7 @@ mod tests {
         // erasing the splitter zeroes throughput (the source feeds only it).
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
-                let f = build_factory(size, LessonKind::Splitter1In, seed, true, f64::INFINITY)
+                let f = build_factory(size, LessonKind::Splitter1In, seed, true)
                     .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
@@ -6186,14 +6058,8 @@ mod tests {
         // throughput.
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
-                let f = build_factory(
-                    size,
-                    LessonKind::OppositeFeeds2In,
-                    seed,
-                    true,
-                    f64::INFINITY,
-                )
-                .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
+                let f = build_factory(size, LessonKind::OppositeFeeds2In, seed, true)
+                    .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
@@ -6222,7 +6088,7 @@ mod tests {
         // throughput — the product really is crafted in two stages.
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
-                let f = build_factory(size, LessonKind::DirectInsert2In, seed, true, f64::INFINITY)
+                let f = build_factory(size, LessonKind::DirectInsert2In, seed, true)
                     .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
@@ -6267,14 +6133,8 @@ mod tests {
         let (mut shared, mut split) = (0, 0);
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
-                let f = build_factory(
-                    size,
-                    LessonKind::IntermediateBelt2In,
-                    seed,
-                    true,
-                    f64::INFINITY,
-                )
-                .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
+                let f = build_factory(size, LessonKind::IntermediateBelt2In, seed, true)
+                    .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
@@ -6330,7 +6190,7 @@ mod tests {
             for size in [15usize] {
                 let mut built = 0;
                 for seed in 0..20u64 {
-                    let Some(f) = build_factory(size, kind, seed, true, f64::INFINITY) else {
+                    let Some(f) = build_factory(size, kind, seed, true) else {
                         continue;
                     };
                     built += 1;
@@ -6379,7 +6239,7 @@ mod tests {
         ] {
             let mut built = 0;
             for seed in 0..20u64 {
-                let Some(f) = build_factory(size, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(size, kind, seed, true) else {
                     continue;
                 };
                 built += 1;
@@ -6443,7 +6303,7 @@ mod tests {
             LessonKind::UgWeave2In,
         ] {
             for seed in 0..20u64 {
-                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(11, kind, seed, true) else {
                     continue;
                 };
                 for x in 0..f.world.width() {
@@ -6511,7 +6371,7 @@ mod tests {
             let mut built = 0;
             let mut expansion_seen = false;
             for seed in 0..50u64 {
-                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(12, kind, seed, true) else {
                     continue;
                 };
                 built += 1;
@@ -6637,7 +6497,7 @@ mod tests {
 
     /// Build a CROSS_UNDER_BELT factory, panicking on the rare reject.
     fn build_cub(size: usize, seed: u64) -> BuiltFactory {
-        build_factory(size, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY)
+        build_factory(size, LessonKind::CrossUnderBelt, seed, true)
             .unwrap_or_else(|| panic!("seed={seed} failed to build"))
     }
 
@@ -6711,7 +6571,7 @@ mod tests {
         let belt_flow = Item::TransportBelt.flow_rate();
         let mut built = 0;
         for seed in 0..60u64 {
-            let f = match build_factory(12, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY) {
+            let f = match build_factory(12, LessonKind::CrossUnderBelt, seed, true) {
                 Some(f) => f,
                 None => continue,
             };
@@ -6734,7 +6594,7 @@ mod tests {
     fn test_cross_under_belt_two_distinct_items() {
         // The obstruction and crossing carry different items (independent flows).
         for seed in 0..30u64 {
-            let f = match build_factory(12, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY) {
+            let f = match build_factory(12, LessonKind::CrossUnderBelt, seed, true) {
                 Some(f) => f,
                 None => continue,
             };
@@ -6861,7 +6721,7 @@ mod tests {
         // Regression: `build_move_one_item` used to enumerate every shortest
         // route, which at size 20 exhausted memory within ~100 seeds.
         for seed in 0..100u64 {
-            build_factory(20, LessonKind::MoveOneItem, seed, true, f64::INFINITY);
+            build_factory(20, LessonKind::MoveOneItem, seed, true);
         }
     }
 
@@ -7151,13 +7011,7 @@ mod tests {
         // stay at 15 — one source alone saturated it).
         let mut built = 0;
         for seed in 0..60u64 {
-            let Some(f) = build_factory(
-                12,
-                LessonKind::SplitterMergeSideloaded,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
+            let Some(f) = build_factory(12, LessonKind::SplitterMergeSideloaded, seed, true) else {
                 continue;
             };
             built += 1;
@@ -7236,13 +7090,7 @@ mod tests {
         // two or more belts away.
         let (mut built, mut far) = (0, 0);
         for seed in 0..60u64 {
-            let Some(f) = build_factory(
-                12,
-                LessonKind::SplitterMergeSideloaded,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
+            let Some(f) = build_factory(12, LessonKind::SplitterMergeSideloaded, seed, true) else {
                 continue;
             };
             built += 1;
@@ -7264,13 +7112,7 @@ mod tests {
         // tiles get used across seeds.
         let (mut tile0, mut tile1) = (0u32, 0u32);
         for seed in 0..80u64 {
-            let Some(f) = build_factory(
-                12,
-                LessonKind::SplitterMergeSideloaded,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
+            let Some(f) = build_factory(12, LessonKind::SplitterMergeSideloaded, seed, true) else {
                 continue;
             };
             let w = &f.world;
@@ -7329,7 +7171,7 @@ mod tests {
             }
             let mut checked = 0;
             for seed in 0..20u64 {
-                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(15, kind, seed, true) else {
                     continue;
                 };
                 checked += 1;
@@ -7354,7 +7196,7 @@ mod tests {
     fn test_every_lesson_powers_every_entity() {
         for &kind in all_lesson_kinds() {
             for seed in 0..20u64 {
-                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(15, kind, seed, true) else {
                     continue;
                 };
                 let power = PowerMap::of(&f.world);
@@ -7416,7 +7258,7 @@ mod tests {
             let (mut splitters, mut tunnels, mut unmatched) = (0, 0, 0);
             let mut sink_counts: HashSet<usize> = HashSet::new();
             for seed in 0..60u64 {
-                let f = build_factory(15, kind, seed, true, f64::INFINITY)
+                let f = build_factory(15, kind, seed, true)
                     .unwrap_or_else(|| panic!("{kind:?} seed={seed}: not built"));
                 let w = &f.world;
                 let mut lines: HashMap<Item, Vec<(Cell, Direction)>> = HashMap::new();
@@ -7517,7 +7359,7 @@ mod tests {
                 continue;
             }
             for seed in 0..10u64 {
-                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(15, kind, seed, true) else {
                     continue;
                 };
                 assert_eq!(
@@ -7542,7 +7384,7 @@ mod tests {
         ] {
             let mut checked = 0;
             for seed in 0..20u64 {
-                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(12, kind, seed, true) else {
                     continue;
                 };
                 checked += 1;
@@ -7583,7 +7425,7 @@ mod tests {
         ] {
             let mut checked = 0;
             for seed in 0..20u64 {
-                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(12, kind, seed, true) else {
                     continue;
                 };
                 checked += 1;
@@ -7626,7 +7468,7 @@ mod tests {
         // sources face their side-load tile instead, so it is excluded.
         for &kind in &[LessonKind::SplitterSplit] {
             for seed in 0..30u64 {
-                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(12, kind, seed, true) else {
                     continue;
                 };
                 let (mut sx2, mut sy2, mut n) = (0i64, 0i64, 0i64);
