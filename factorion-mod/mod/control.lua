@@ -827,7 +827,12 @@ local function mask_tiles_changed(event)
       changed = true
     end
   end
-  if changed then draw_mask_outline(game.get_surface(event.surface_index)) end
+  if changed then
+    -- Painting raises an event per brush stroke or robot-laid tile, and a
+    -- redraw scans the whole surface, so redraw once the painting pauses.
+    storage.outlines_changed = storage.outlines_changed or {}
+    storage.outlines_changed[event.surface_index] = game.tick
+  end
 end
 
 script.on_event({
@@ -3014,6 +3019,13 @@ script.on_event(defines.events.on_tick, function()
 end)
 
 script.on_nth_tick(10, function()
+  for index, tick in pairs(storage.outlines_changed or {}) do
+    if game.tick - tick >= 10 then
+      storage.outlines_changed[index] = nil
+      local surface = game.get_surface(index)
+      if surface then draw_mask_outline(surface) end
+    end
+  end
   service_gpu_servers()
   inference.refresh_all(false)
   for _, player in pairs(game.connected_players) do
