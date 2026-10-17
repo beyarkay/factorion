@@ -113,27 +113,35 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-_MIN_SQUARE = 10
+_MIN_SQUARE, _MAX_SQUARE = 10, 24
+# Most free rows/columns a box leaves beside its factory, per side.
+_MAX_GAP = 8
 
 
 def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
-    """A lesson built on a random s × s square (10 ≤ s ≤ size), buildable only
-    inside a random w × h box: each side uniform between the factory's extent
-    and `size`, the factory anywhere within it, the box anywhere in a
-    size × size grid, every tile outside it unbuildable. None when the kind
-    doesn't fit the square, or the box reaches past the square and so unpowers
-    a machine (a pole may have drawn power from the square's edge)."""
+    """A lesson built on a random s × s square (10 ≤ s ≤ 24), buildable only
+    inside a box around the factory: 0..g free rows/columns on each side, with
+    g itself random up to `_MAX_GAP` so boxes range from cramped to roomy. The
+    box lands anywhere in a size × size grid, every tile outside it
+    unbuildable. None when the kind doesn't fit the square, or the box reaches
+    past the square and so unpowers a machine (a pole may have drawn power
+    from the square's edge)."""
     rng = random.Random(seed)
-    s = rng.randint(min(_MIN_SQUARE, size), size)
+    s = rng.randint(min(_MIN_SQUARE, size), min(_MAX_SQUARE, size))
     factory = build_factory(size=s, kind=kind, seed=seed)
     if factory is None:
         return None
     xs, ys = torch.nonzero(factory.world_CWH[Channel.ENTITIES.value], as_tuple=True)
-    # Box edges in the square's frame.
-    w = rng.randint(int(xs.max() - xs.min()) + 1, size)
-    h = rng.randint(int(ys.max() - ys.min()) + 1, size)
-    x0, y0 = rng.randint(int(xs.max()) - w + 1, int(xs.min())), rng.randint(int(ys.max()) - h + 1, int(ys.min()))
-    x1, y1 = x0 + w - 1, y0 + h - 1
+    g = rng.randint(0, _MAX_GAP)
+
+    def edges(lo: int, hi: int) -> tuple[int, int]:
+        # Box edges in the square's frame, no wider than the grid.
+        before = min(rng.randint(0, g), size - (hi - lo + 1))
+        after = min(rng.randint(0, g), size - (hi - lo + 1) - before)
+        return lo - before, hi + after
+
+    x0, x1 = edges(int(xs.min()), int(xs.max()))
+    y0, y1 = edges(int(ys.min()), int(ys.max()))
     ox, oy = rng.randint(-x0, size - 1 - x1), rng.randint(-y0, size - 1 - y1)
     world = torch.zeros((factory.world_CWH.shape[0], size, size), dtype=factory.world_CWH.dtype)
     inside = torch.zeros((size, size), dtype=torch.bool)
