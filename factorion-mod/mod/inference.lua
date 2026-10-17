@@ -275,7 +275,7 @@ function M.open(player, server)
   local row = table_.add({ type = "flow", name = "checkpoint_row", direction = "horizontal" })
   row.add({
     type = "textfield", name = "checkpoint", text = config.checkpoint,
-    tooltip = "W&B run id of a denoiser SFT run (e.g. dr17bmik, or entity/project/id) or a local .pt path on the server's machine.",
+    tooltip = "W&B run id of a denoiser SFT run (e.g. 3y1q7k0v, or entity/project/id) or a local .pt path on the server's machine.",
     tags = { factorion_gpu = "checkpoint" },
   })
   row.add({ type = "button", caption = "Load", tags = { factorion_gpu = "load" } })
