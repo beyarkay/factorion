@@ -95,11 +95,11 @@ end
 -- ----------------------------------------------------------------------------
 
 local function show_startup_message(player)
-  player.print("[Factorion] Ready. Craft a [item=factorion-planner], click a " ..
-    "tile with it to choose what to make, then click a tile for each source. " ..
-    "Paint the tiles the factory may use with [item=factorion-mask], put a " ..
-    "[item=factorion-gpu-server] against that build region and press Predict in its window. " ..
-    "Belt the ingredients into the source belts and carry the product away from the sink.")
+  player.print("[Factorion] Ready. Place [item=factorion-source-belt] and [item=factorion-sink-belt] " ..
+    "belts and click them to choose their items. Paint the tiles the factory may use with " ..
+    "[item=factorion-mask], put a [item=factorion-gpu-server] against that build region and " ..
+    "press Predict in its window. Belt the ingredients into the source belts and carry the " ..
+    "product away from the sink.")
 end
 
 script.on_event(defines.events.on_player_created, function(event)
@@ -1086,15 +1086,6 @@ local function open_marker_dialog(player, state, role, entity)
   player.opened = frame
 end
 
--- ----------------------------------------------------------------------------
--- planner: click a tile and pick the sink item, then click one tile per
--- ingredient source
--- ----------------------------------------------------------------------------
-
-local PLANNER = "factorion-planner"
-local PLAN_DIALOG = "factorion-plan-dialog"
-local PLAN_ITEM = "factorion-plan-item"
-
 -- The recipe an assembling machine 1 makes item with, preferring the one named
 -- after it; prototypes don't change while the game runs, so it's remembered.
 local recipes_for = {}
@@ -1116,214 +1107,11 @@ local function recipe_for(item)
   return fallback
 end
 
--- One source per ingredient item, in recipe order; nil plus a reason when
--- belts can't supply it.
-local function source_items(item)
-  local recipe = recipe_for(item)
-  if not recipe then
-    return nil, "no recipe an assembling machine 1 can craft makes [item=" .. item .. "]"
-  end
-  local items = {}
-  for _, ingredient in pairs(recipe.ingredients) do
-    if ingredient.type ~= "item" then
-      return nil, "[recipe=" .. recipe.name .. "] needs a fluid, which belts can't supply"
-    end
-    table.insert(items, ingredient.name)
-  end
-  return items
-end
-
--- A finished plan's belts belong to its factory, so only an unfinished
--- plan's are removed.
-local function remove_plan_markers(state)
-  for _, unit_number in ipairs(state.plan and not state.plan.done and state.plan.markers or {}) do
-    local entity = game.get_entity_by_unit_number(unit_number)
-    if entity and entity.valid then entity.destroy({ raise_destroy = true }) end
-  end
-  state.plan = nil
-end
-
-local PANEL = "factorion-panel"
-
-local function close_panel(player)
-  local frame = player and player.gui.screen[PANEL]
-  if frame then frame.destroy() end
-end
-
-local function open_panel(player)
-  close_panel(player)
-  local frame = player.gui.screen.add({
-    type = "frame", name = PANEL, caption = "Factorion", direction = "vertical",
-  })
-  frame.location = { 20, 200 }
-  return frame
-end
-
-local function show_source_panel(player, plan)
-  local item = plan.sources[plan.next]
-  local row = open_panel(player).add({ type = "flow", direction = "horizontal" })
-  row.style.vertical_align = "center"
-  row.add({ type = "sprite", sprite = "item/" .. item })
-  row.add({
-    type = "label",
-    caption = { "", string.format("Place source %d of %d: ", plan.next, #plan.sources),
-      prototypes.item[item].localised_name },
-  })
-end
-
-local function place_plan_marker(player, plan, role, item, tile)
-  local name = ENDPOINT_ENTITY_NAMES[role]
-  local position = { tile.x + 0.5, tile.y + 0.5 }
-  if not player.surface.can_place_entity({
-        name = name, position = position, force = player.force }) then
-    return false
-  end
-  local entity = player.surface.create_entity({
-    name = name, position = position, force = player.force,
-  })
-  if not entity then return false end
-  register_endpoint(entity, item)
-  table.insert(plan.markers, entity.unit_number)
-  table.insert(plan.tiles, { x = tile.x, y = tile.y, role = role, entity = entity })
-  return true
-end
-
-local function close_plan_dialog(player)
-  local frame = player.gui.screen[PLAN_DIALOG]
-  if frame then frame.destroy() end
-end
-
--- The planner leaves the cursor first, or clicking the item picker would drop
--- it into the picker.
-local function open_plan_dialog(player)
-  close_plan_dialog(player)
-  player.clear_cursor()
-  local frame = player.gui.screen.add({
-    type = "frame", name = PLAN_DIALOG, caption = "Plan a factory",
-    direction = "vertical",
-  })
-  frame.auto_center = true
-  frame.add({ type = "label", caption = "What should the factory make?" })
-  frame.add({
-    type = "choose-elem-button", name = PLAN_ITEM, elem_type = "item",
-    item = setting("factorion-default-sink-item"),
-  })
-  frame.add({
-    type = "button", caption = "Place sink", style = "confirm_button",
-    tags = { factorion_plan = "place_sink" },
-  })
-  player.opened = frame
-end
-
--- Exactly one fresh source belt per source, never a stack from the inventory.
-local function hand_source_belt(player)
-  local cursor = player.cursor_stack
-  if not cursor then return end
-  local name = ENDPOINT_ENTITY_NAMES.source
-  if not (cursor.valid_for_read and cursor.name == name) and not player.clear_cursor() then
-    return
-  end
-  cursor.set_stack({ name = name, count = 1 })
-end
-
-local function prompt_next_source(player, plan)
-  hand_source_belt(player)
-  show_source_panel(player, plan)
-  player.print(string.format(
-    "[Factorion] Place source %d of %d: [item=%s] (rotate it with R first if needed)",
-    plan.next, #plan.sources, plan.sources[plan.next]))
-end
-
--- The sink is placed for the player, so it is turned to face away from the
--- sources as in training; sources keep the rotation they were placed with.
-local function orient_sink(plan)
-  local cx, cy, sources = 0, 0, 0
-  for _, marker in ipairs(plan.tiles) do
-    if marker.role == "source" then
-      cx, cy, sources = cx + marker.x, cy + marker.y, sources + 1
-    end
-  end
-  cx, cy = cx / sources, cy / sources
-  for _, marker in ipairs(plan.tiles) do
-    if marker.role == "sink" and marker.entity.valid then
-      local dx, dy = marker.x - cx, marker.y - cy
-      if math.abs(dx) >= math.abs(dy) then
-        marker.entity.direction = dx >= 0 and defines.direction.east or defines.direction.west
-      else
-        marker.entity.direction = dy >= 0 and defines.direction.south or defines.direction.north
-      end
-    end
-  end
-end
-
-local function finish_plan(player, state)
-  local plan = state.plan
-  plan.done = true
-  orient_sink(plan)
-  close_panel(player)
-  player.print("[Factorion] Belts placed. Belt each ingredient into its source " ..
-    "and carry the product away from the sink. Paint the tiles the factory may use " ..
-    "with [item=factorion-mask], then put a [item=factorion-gpu-server] against " ..
-    "that build region and press Predict in its window.")
-end
-
--- A source belt the player places while a plan is waiting for sources becomes
--- the next one; their rotation is kept.
-local function plan_source_built(player_index, entity)
-  local state = ensure_player_state(player_index)
-  local plan = state.plan
-  if not (plan and plan.sources and not plan.done) then return end
-  local player = game.get_player(player_index)
-  register_endpoint(entity, plan.sources[plan.next])
-  table.insert(plan.markers, entity.unit_number)
-  table.insert(plan.tiles, {
-    x = math.floor(entity.position.x), y = math.floor(entity.position.y),
-    role = "source", entity = entity,
-  })
-  plan.next = plan.next + 1
-  if plan.next > #plan.sources then
-    finish_plan(player, state)
-  else
-    prompt_next_source(player, plan)
-  end
-end
-
-local function place_sink(player, state)
-  local frame = player.gui.screen[PLAN_DIALOG]
-  local item = frame and frame[PLAN_ITEM].elem_value
-  local plan = state.plan
-  if not item or not plan then return end
-  local sources, reason = source_items(item)
-  if not sources then
-    player.print("[Factorion] Can't plan that: " .. reason .. ".")
-    return
-  end
-  close_plan_dialog(player)
-  if not place_plan_marker(player, plan, "sink", item, plan.sink_tile) then
-    player.print("[Factorion] That tile is blocked; click another one.")
-    state.plan = nil
-    return
-  end
-  plan.sources, plan.next = sources, 1
-  prompt_next_source(player, plan)
-end
-
-
 local function handle_tool_selection(event)
   if event.item == DATA_CABLE then
     local player = game.get_player(event.player_index)
     if player then cable_select(event, player) end
-    return
   end
-  if event.item ~= PLANNER then return end
-  local state = ensure_player_state(event.player_index)
-  local player = game.get_player(event.player_index)
-  if not player then return end
-  local x, y = area_center_tile(event.area)
-  remove_plan_markers(state)
-  close_panel(player)
-  state.plan = { sink_tile = { x = x, y = y }, markers = {}, tiles = {} }
-  open_plan_dialog(player)
 end
 
 script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
@@ -1340,21 +1128,10 @@ script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
   draw_cable_preview(player)
 end)
 
--- Right-clicking with the planner cancels the plan.
 script.on_event(defines.events.on_player_alt_selected_area, function(event)
   if event.item == DATA_CABLE then
     local player = game.get_player(event.player_index)
     if player then cable_cut(event, player) end
-    return
-  end
-  if event.item ~= PLANNER then return end
-  local state = ensure_player_state(event.player_index)
-  local player = game.get_player(event.player_index)
-  remove_plan_markers(state)
-  if player then
-    close_panel(player)
-    close_plan_dialog(player)
-    player.print("[Factorion] Plan cleared.")
   end
 end)
 
@@ -1377,17 +1154,7 @@ script.on_event(defines.events.on_gui_click, function(event)
     if close == MARKER_DIALOG then ensure_player_state(event.player_index).picker = nil end
     return
   end
-  if inference.on_gui_click(event) then return end
-  if event.element.valid and event.element.tags.factorion_plan == "place_sink" then
-    if player then place_sink(player, ensure_player_state(event.player_index)) end
-  end
-end)
-
-script.on_event("factorion-confirm-dialog", function(event)
-  local player = game.get_player(event.player_index)
-  if not player then return end
-  local state = ensure_player_state(event.player_index)
-  if player.gui.screen[PLAN_DIALOG] then place_sink(player, state) end
+  inference.on_gui_click(event)
 end)
 
 script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_changed)
@@ -1412,12 +1179,6 @@ end
 
 script.on_event(defines.events.on_gui_closed, function(event)
   if inference.on_gui_closed(event) then return end
-  if event.element and event.element.valid and event.element.name == PLAN_DIALOG then
-    event.element.destroy()
-    local state = ensure_player_state(event.player_index)
-    if state.plan and not state.plan.sources then state.plan = nil end
-    return
-  end
   if not event.element or not event.element.valid
       or event.element.name ~= MARKER_DIALOG then return end
   event.element.destroy()
@@ -1549,9 +1310,6 @@ local function entity_built(event)
   local item = event.tags and event.tags.factorion_item or (storage.removed_markers or {})[spot]
   if storage.removed_markers then storage.removed_markers[spot] = nil end
   register_endpoint(entity, item)
-  if role == "source" and event.player_index then
-    plan_source_built(event.player_index, entity)
-  end
 end
 
 script.on_event(defines.events.on_built_entity, entity_built)
@@ -2971,7 +2729,7 @@ remote.add_interface("factorion", {
     inference.refresh_all(true)
     game.print(string.format(
       "[Factorion] Model %s (%s) ready: it builds on build regions up to %dx%d " ..
-      "tiles. Plan a factory with the [item=factorion-planner].",
+      "tiles. Paint one with [item=factorion-mask] beside a [item=factorion-gpu-server].",
       model.checkpoint, tostring(model.name), model.grid_size, model.grid_size))
     return "ok"
   end,
