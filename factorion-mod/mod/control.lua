@@ -480,8 +480,7 @@ end
 -- Outlines each painted area of the surface, in alt-mode only, and flags
 -- the ones no GPU server reaches. An area bigger than the model's grid is
 -- outlined only where GPU servers would build, or in red when none would.
--- removed is a GPU server about to go.
-local function draw_mask_outline(surface, removed)
+local function draw_mask_outline(surface)
   storage.mask_outlines = storage.mask_outlines or {}
   for _, id in ipairs(storage.mask_outlines[surface.index] or {}) do
     local object = rendering.get_object_by_id(id)
@@ -547,10 +546,8 @@ local function draw_mask_outline(surface, removed)
   local size = storage.model and storage.model.grid_size
   local covered = {}
   for _, server in pairs(size and surface.find_entities_filtered({ name = inference.GPU_SERVER }) or {}) do
-    if server ~= removed then
-      for _, piece in ipairs(server_pieces(server, size) or {}) do
-        for key, tile in pairs(piece.area) do covered[key] = tile end
-      end
+    for _, piece in ipairs(server_pieces(server, size) or {}) do
+      for key, tile in pairs(piece.area) do covered[key] = tile end
     end
   end
   local seen = {}
@@ -594,6 +591,13 @@ local function draw_mask_outline(surface, removed)
       end
     end
   end
+end
+
+-- Painting, blueprints and cables change outlines an entity or tile at a
+-- time, and a redraw scans the whole surface, so redraw once they pause.
+local function outlines_changed(surface_index)
+  storage.outlines_changed = storage.outlines_changed or {}
+  storage.outlines_changed[surface_index] = game.tick
 end
 
 -- A cable node is a GPU server, an electric pole or a painted tile { x, y };
@@ -693,7 +697,7 @@ local function remove_links(cut)
       surfaces[link.surface] = true
     end
   end
-  for index in pairs(surfaces) do draw_mask_outline(game.surfaces[index]) end
+  for index in pairs(surfaces) do outlines_changed(index) end
   return removed
 end
 
@@ -759,7 +763,7 @@ local function add_link(surface, a, b)
   for _, node in ipairs({ a, b }) do
     if not is_tile(node) then script.register_on_object_destroyed(node) end
   end
-  draw_mask_outline(surface)
+  outlines_changed(surface.index)
 end
 
 local function prune_links()
@@ -827,12 +831,7 @@ local function mask_tiles_changed(event)
       changed = true
     end
   end
-  if changed then
-    -- Painting raises an event per brush stroke or robot-laid tile, and a
-    -- redraw scans the whole surface, so redraw once the painting pauses.
-    storage.outlines_changed = storage.outlines_changed or {}
-    storage.outlines_changed[event.surface_index] = game.tick
-  end
+  if changed then outlines_changed(event.surface_index) end
 end
 
 script.on_event({
@@ -1501,7 +1500,7 @@ local function entity_built(event)
     end
     local carried = event.tags and event.tags.factorion_links
     if carried then restore_links(entity, carried.links, carried.direction) end
-    draw_mask_outline(entity.surface)
+    outlines_changed(entity.surface.index)
   end
   if entity and entity.valid and storage.pending_links and #storage.pending_links > 0 then
     complete_pending_links(entity)
@@ -1591,7 +1590,7 @@ local function endpoint_entity_removed(event)
   if entity.type == "electric-pole" or entity.name == inference.GPU_SERVER then
     remove_links(touching("e" .. entity.unit_number))
   end
-  if entity.name == inference.GPU_SERVER then draw_mask_outline(entity.surface, entity) end
+  if entity.name == inference.GPU_SERVER then outlines_changed(entity.surface.index) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
   if config and config.item then
     storage.removed_markers = storage.removed_markers or {}
