@@ -1,26 +1,24 @@
-"""Qualitative diff of two policies: on the factories where they disagree,
+"""Qualitative diff of two denoisers: on the factories where they disagree,
 what does each one actually build?
 
 A compare report says whether a metric moved. This says *where* it moved and
-*what changed on the grid*: every checkpoint best-of-N rolls the same held-out
-factories, and each factory the two sides consistently disagree on is rendered
-side by side, biggest gap first — the view that tells "PPO learned X" apart
-from "PPO forgot Y".
+*what changed on the grid*: every checkpoint generates the same held-out
+factories best-of-N, and each factory the two sides consistently disagree on
+is rendered side by side, biggest gap first — the view that tells "RL learned
+X" apart from "RL forgot Y".
 
     uv run python -m ci compare-renders <pr_ckpts> <main_ckpts>
 
-where a checkpoint is a local .pt path (assumed to be the `training_config.py`
-architecture) or a W&B run id (whose own config is used).
+where a checkpoint is a local .pt path or a W&B run id (whose own generation
+settings are used).
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import fields
 from statistics import mean
-from types import SimpleNamespace
 
-from training_config import PpoArgs
+from training_config import RlArgs, SftArgs
 
 PER_KIND_DEFAULT = 50
 # Nobody reads the 40th-largest gap, and a wall of grids buries the ones that
@@ -30,56 +28,20 @@ MAX_RENDERS_DEFAULT = 25
 # equal rates; anything above this is a real disagreement.
 THPUT_TOL = 1e-6
 
-_ENV_ID = "factorion/FactorioEnv-v0-diff"
 
-
-def _resolve(spec: str) -> tuple[str, dict]:
-    """A checkpoint spec's local path and its run's config ({} for a path)."""
-    from ppo import _resolve_wandb_checkpoint
-
-    if os.path.exists(spec):
-        return spec, {}
-    path, source = _resolve_wandb_checkpoint(spec, PpoArgs.wandb_project_name, PpoArgs.wandb_entity)
-    return path, source.get("config", {})
-
-
-def load_agent(spec: str, device):
-    """Load a checkpoint into an `AgentCNN` built to its run's architecture."""
-    import gymnasium as gym
+def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[dict]:
+    """Generate `spec`'s best-of-N build of `per_kind` held-out factories per
+    LessonKind. The factory set is SFT's eval set at this seed, so two
+    checkpoints collected at the same seed and grid size see exactly the
+    same factories."""
     import torch
 
-    from ppo import AgentCNN, layers_from_args, make_env
-
-    path, config = _resolve(spec)
-    args = PpoArgs(**{f.name: config[f.name] for f in fields(PpoArgs) if f.name in config})
-
-    if _ENV_ID not in gym.registry:
-        gym.register(id=_ENV_ID, entry_point="ppo:FactorioEnv")
-    envs = gym.vector.SyncVectorEnv([make_env(_ENV_ID, 0, False, args.size, "diff")])
-    agent = AgentCNN(
-        envs,
-        layers=layers_from_args(args),
-        kernel_size=args.kernel_size,
-        attn_dim=args.attn_dim,
-        attn_heads=args.attn_heads,
-        attn_layers=args.attn_layers,
-        attn_pos_embed=args.attn_pos_embed,
-    )
-    envs.close()
-    # PPO saves after torch.compile, which prefixes every parameter name.
-    state = torch.load(path, map_location="cpu", weights_only=True)
-    agent.load_state_dict({k.removeprefix("_orig_mod."): v for k, v in state.items()})
-    agent.to(device).eval()
-    return agent, args
-
-
-def _collect_denoiser(path: str, config: dict, *, seed: int, per_kind: int, device) -> list[dict]:
-    """`collect` for a denoiser checkpoint (sft.py), at its run's generation
-    settings."""
     from denoise import load_denoiser, run_denoise_eval
-    from sft import build_eval_factories
-    from training_config import SftArgs
+    from sft import build_eval_factories, resolve_checkpoint
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    path, source = resolve_checkpoint(spec, SftArgs.wandb_project_name, SftArgs.wandb_entity)
+    config = source.get("config", {})
     args = SftArgs(**{f.name: config[f.name] for f in fields(SftArgs) if f.name in config})
     args.seed, args.eval_seeds_per_kind = seed, per_kind
     records: list[dict] = []
@@ -91,43 +53,9 @@ def _collect_denoiser(path: str, config: dict, *, seed: int, per_kind: int, devi
         steps=args.gen_steps,
         refine=args.gen_refine,
         temperature=args.gen_temperature,
-        cost_scale=PpoArgs.entity_cost_scale,
+        cost_scale=RlArgs.entity_cost_scale,
         seed=seed,
         batch_chains=args.eval_batch_chains,
-        records=records,
-    )
-    return records
-
-
-def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[dict]:
-    """Best-of-N roll out `spec` over `per_kind` held-out factories per LessonKind.
-
-    The factory set is PPO's own eval set at this seed, so two checkpoints
-    collected at the same seed and grid size see exactly the same factories.
-    A denoiser checkpoint (sft.py) generates them from pure noise instead.
-    """
-    import torch
-
-    from ppo import _build_eval_set
-    from sft import run_rollout_eval
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    path, config = _resolve(spec)
-    if "arch" in torch.load(path, map_location="cpu", weights_only=True):
-        return _collect_denoiser(path, config, seed=seed, per_kind=per_kind, device=device)
-    agent, args = load_agent(spec, device)
-    eval_args = SimpleNamespace(
-        size=args.size, seed=seed, max_level=0, eval_seeds_per_kind=per_kind
-    )
-    seeds_to_kind = _build_eval_set(eval_args)
-    records: list[dict] = []
-    run_rollout_eval(
-        agent,
-        eval_args,  # ty: ignore[invalid-argument-type]
-        seeds_to_kind,
-        device,
-        max_seeds=len(seeds_to_kind),
-        best_of=PpoArgs.eval_best_of,
         records=records,
     )
     return records
@@ -246,7 +174,7 @@ def diff_markdown(
         f"## Factory diff: {main_label} vs {pr_label}",
         "",
         f"Every checkpoint rebuilt the same {len(keys)} held-out factories from "
-        f"a blank grid, stopping where its own EOT head fired. "
+        f"their markers. "
         f"{len(differing)} came out consistently different. {len(pr_runs)} run(s) "
         "per side; a factory counts as different only when every run on one side "
         "beat every run on the other, so a single seed wandering is not reported.",
@@ -295,7 +223,7 @@ def compare_checkpoints(
     per_kind: int = PER_KIND_DEFAULT,
     note: str = "",
 ) -> str:
-    """Roll out every checkpoint over ONE shared factory set and diff the sides.
+    """Generate every checkpoint over ONE shared factory set and diff the sides.
 
     `seed` picks the factory set, not the training seed of any checkpoint: all
     of them must rebuild the same factories for the per-factory comparison to

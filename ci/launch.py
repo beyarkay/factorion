@@ -257,7 +257,7 @@ def _launch_pod(job: Job, gpus: list[str], dry_run: bool, repo_url: str) -> dict
     # running older commits simply ignore it. Sweep agents mint their own ids.
     wandb_run_id = (
         "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
-        if job.KIND in ("sft", "ppo")
+        if job.KIND in ("sft", "rl")
         else None
     )
     info = {
@@ -278,7 +278,7 @@ def _launch_pod(job: Job, gpus: list[str], dry_run: bool, repo_url: str) -> dict
         # GitHub 401s anonymous git from RunPod, so the pod's clone must
         # authenticate. FCI_GITHUB_TOKEN wins because the workflow's automatic
         # GITHUB_TOKEN is revoked when the launching job ends — which, for the
-        # fire-and-forget sft/ppo path, is before a slow-booting pod clones.
+        # fire-and-forget sft/rl path, is before a slow-booting pod clones.
         "FCI_GITHUB_TOKEN": (
             os.environ.get("FCI_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
         ),

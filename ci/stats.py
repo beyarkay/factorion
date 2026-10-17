@@ -157,29 +157,3 @@ def paired_t_test(
     p_value = min(p_value, 1.0)
 
     return t_stat, df, p_value
-
-
-def cohens_d(a: list[float], b: list[float], paired: bool = False) -> float:
-    """Cohen's d effect size.
-
-    When paired=True, uses the standard deviation of the differences
-    (appropriate for paired designs).  Otherwise uses the pooled SD.
-    """
-    if paired:
-        if len(a) != len(b) or len(a) < 2:
-            return 0.0
-        diffs = [ai - bi for ai, bi in zip(a, b)]
-        sd = stdev(diffs)
-        if sd == 0:
-            return 0.0
-        return mean(diffs) / sd
-
-    n_a, n_b = len(a), len(b)
-    if n_a < 2 or n_b < 2:
-        return 0.0
-    var_a = stdev(a) ** 2
-    var_b = stdev(b) ** 2
-    pooled_std = math.sqrt(((n_a - 1) * var_a + (n_b - 1) * var_b) / (n_a + n_b - 2))
-    if pooled_std == 0:
-        return 0.0
-    return (mean(a) - mean(b)) / pooled_std

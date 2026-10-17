@@ -382,8 +382,6 @@ _CONNECTIVITY_KINDS = [
     LessonKind.MOVE_VIA_UG_BELT,
     LessonKind.SPLITTER_SPLIT,
     LessonKind.SPLITTER_MERGE_SIDELOADED,
-    # LessonKind.ASSEMBLE_1IN_1OUT,
-    # LessonKind.ASSEMBLE_2IN_1OUT,
 ]
 
 class TestGeneratedWorldConnectivity:

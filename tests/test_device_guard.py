@@ -1,5 +1,5 @@
 """End-to-end tests for the always-on CPU-fallback guard
-(``ppo.assert_device_ok``).
+(``sft.assert_device_ok``).
 
 A GPU host whose NVIDIA driver is too old for the installed torch CUDA build
 makes torch silently select ``cpu`` — training then "works" but crawls. The
@@ -11,7 +11,7 @@ CPU-only smoke tests.
 import pytest
 import torch
 
-from ppo import assert_device_ok
+from sft import assert_device_ok
 
 CPU = torch.device("cpu")
 MPS = torch.device("mps")

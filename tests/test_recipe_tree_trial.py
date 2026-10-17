@@ -30,17 +30,8 @@ from factorion import (  # noqa: E402
     recipes,
     str2ent,
 )
-from ppo import FactorioEnv  # noqa: E402
 
 SIZE = 10
-EVAL_ENV_ID = "factorion/FactorioEnv-v0-trial-eval-test"
-
-
-@pytest.fixture(scope="module")
-def registered_env():
-    import gymnasium as gym
-
-    gym.register(id=EVAL_ENV_ID, entry_point="ppo:FactorioEnv")
 
 
 TRIAL_KINDS = {
@@ -189,30 +180,6 @@ class TestTrialFactory:
             assert seen_expanded, "no seed ever expanded past the direct ingredients"
 
 
-class TestTrialEnv:
-    def test_env_episode_starts_from_the_markers(self):
-        """Blanking is a no-op on a trial, so the episode's start state is the
-        markers-only world, and normalization uses the analytic ceiling."""
-        env = FactorioEnv(size=SIZE, idx=0)
-        obs, info = env.reset(
-            seed=3, options={"kind": LessonKind.TRIAL_RECIPE_TREE_DEPTH_2}
-        )
-        assert info["kind"] == LessonKind.TRIAL_RECIPE_TREE_DEPTH_2.value
-        assert env._max_throughput > 0
-        assert env.min_entities_required == 0
-        assert (obs == env._solved_world_CWH.numpy()).all()
-        action = {
-            "xy": np.array([0, 0]),
-            "entity": 0,
-            "direction": 0,
-            "item": 0,
-            "misc": 0,
-        }
-        _obs, _r, terminated, truncated, info = env.step(action)
-        assert not terminated
-        assert info["thput_normed"] >= 0.0
-
-
 class TestTrialSftExclusion:
     def test_factory_stream_never_draws_a_trial(self):
         """A trial's world is only its markers; every training factory has
@@ -221,86 +188,6 @@ class TestTrialSftExclusion:
 
         from sft import _iter_factories
 
-        states = [s for s, _ in islice(_iter_factories(SIZE, 1, 0, 1), 40)]
+        states = list(islice(_iter_factories(SIZE, 1, 0, 1), 40))
         placeable = {str2ent(n).value for n in ("transport_belt", "inserter", "assembling_machine_1")}
         assert all(any(int(e) in placeable for e in s[0].flatten()) for s in states)
-
-
-class TestTrialEvalIsScoredApart:
-    """The held-out eval pools lessons and trials separately, so `eval/thput`
-    keeps meaning "how well does it rebuild a factory the generator can also
-    build" — the quantity the SFT baseline is quoted in."""
-
-    @staticmethod
-    def _seeds(kinds, per_kind=2, start=500):
-        """{seed: kind.value} for the given kinds, skipping rejected seeds."""
-        out: dict[int, int] = {}
-        seed = start
-        for kind in kinds:
-            found = 0
-            while found < per_kind and seed < start + 400:
-                if build_factory(size=SIZE, kind=kind, seed=seed) is not None:
-                    out[seed] = kind.value
-                    found += 1
-                seed += 1
-            assert found == per_kind, f"no buildable seeds for {kind.name}"
-        return out
-
-    @staticmethod
-    def _agent():
-        import gymnasium as gym
-        from helpers import TINY_ARCH
-        from ppo import AgentCNN, make_env
-
-        envs = gym.vector.SyncVectorEnv([make_env(EVAL_ENV_ID, 0, False, SIZE, "test")])
-        agent = AgentCNN(envs, **TINY_ARCH)
-        envs.close()
-        return agent
-
-    def _run(self, seeds):
-        import torch
-        from sft import run_rollout_eval
-        from training_config import SftArgs
-
-        args = SftArgs(seed=1, size=SIZE, max_level=2 * SIZE,
-                       layer1=16, layer2=16, layer3=16)
-        return run_rollout_eval(
-            self._agent(), args, seeds, device=torch.device("cpu"),
-            max_seeds=len(seeds),
-        )
-
-    def test_trials_do_not_enter_the_lesson_aggregate(self, registered_env):
-        lesson_only = self._seeds([LessonKind.MOVE_ONE_ITEM])
-        mixed = dict(lesson_only)
-        mixed.update(self._seeds([LessonKind.TRIAL_RECIPE_TREE_DEPTH_1], start=900))
-
-        # The ASSERT: adding trials to the eval set must not move eval/thput.
-        assert self._run(mixed)["overall"] == pytest.approx(
-            self._run(lesson_only)["overall"]
-        )
-
-    def test_trials_are_reported_under_their_own_keys(self, registered_env):
-        roll = self._run(self._seeds(list(TRIAL_KINDS)))
-        assert roll["trial_n"] == 2 * len(TRIAL_KINDS)
-        assert roll["trial_overall"] >= 0.0
-        # Only trials ran, so the lesson pool stays empty rather than
-        # silently reporting the trial score as the headline.
-        assert roll["overall"] == 0.0
-
-    def test_heldout_eval_surfaces_the_trial_metric(self, registered_env):
-        import torch
-        from ppo import PpoArgs, _run_heldout_eval
-
-        seeds = self._seeds(
-            [LessonKind.MOVE_ONE_ITEM, LessonKind.TRIAL_RECIPE_TREE_DEPTH_1]
-        )
-        metrics = _run_heldout_eval(
-            self._agent(),
-            PpoArgs(seed=1, size=SIZE, eval_num_envs=2, eval_best_of=3),
-            seeds,
-            torch.device("cpu"),
-        )
-        assert "eval/thput@3" in metrics
-        assert "eval/trial_thput@3" in metrics
-        assert "eval/TRIAL_RECIPE_TREE_DEPTH_1/thput@3" in metrics
-        assert all(k.endswith("@3") for k in metrics)
