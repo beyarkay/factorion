@@ -1,5 +1,6 @@
--- Inference settings shared by every GPU server, and the window that edits
--- them, shows the clicked server's state and builds its painted area.
+-- The checkpoint shared by every GPU server, each cluster's generation
+-- settings, and the window that edits them, shows the clicked server's state
+-- and builds its painted area.
 
 local gui = require("gui")
 
@@ -10,6 +11,9 @@ local FRAME = "factorion-gpu-gui"
 
 M.DEFAULTS = {
   checkpoint = "3y1q7k0v",
+}
+
+M.GENERATION = {
   temperature = 1,
   steps = 0,
   refine = 0,
@@ -141,7 +145,7 @@ end
 -- Load; describe, on_predict and on_clear get the window's GPU server and
 -- return a message (describe also returns whether Predict can run, its
 -- cluster and its region, if it has one); info returns the server's live state; settings its circuit
--- settings, and settings_changed shares an edit with its cluster.
+-- and generation settings, and settings_changed shares an edit with its cluster.
 M.on_load = function(_) end
 M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
@@ -158,6 +162,14 @@ function M.config()
     if storage.inference[key] == nil then storage.inference[key] = value end
   end
   return storage.inference
+end
+
+function M.generation(server)
+  local settings = M.settings(server)
+  for key, value in pairs(M.GENERATION) do
+    if settings[key] == nil then settings[key] = value end
+  end
+  return settings
 end
 
 local function model_caption()
@@ -281,10 +293,12 @@ function M.open(player, server)
   row.add({ type = "button", caption = "Load", tags = { factorion_gpu = "load" } })
   table_.add({ type = "empty-widget" })
   table_.add({ type = "label", name = "model_status" })
+  gui.heading(main, "Generation, shared by this cluster")
+  local generation, knobs = M.generation(server), main.add({ type = "table", name = "generation", column_count = 2 })
   for _, field in ipairs(NUMBER_FIELDS) do
-    table_.add({ type = "label", caption = field.caption, tooltip = field.tooltip })
-    table_.add({
-      type = "textfield", text = tostring(config[field.key]), numeric = true,
+    knobs.add({ type = "label", caption = field.caption, tooltip = field.tooltip })
+    knobs.add({
+      type = "textfield", text = tostring(generation[field.key]), numeric = true,
       allow_decimal = field.decimal or false, allow_negative = false,
       tooltip = field.tooltip, tags = { factorion_gpu = field.key },
     })
@@ -459,15 +473,21 @@ function M.on_gui_text_changed(event)
     status.caption = element.text ~= M.config().checkpoint and "Press Load or Enter to load " .. element.text
       or model_caption()
   end
+  local player = game.get_player(event.player_index)
+  local server = player and window_server(player)
   for _, field in ipairs(NUMBER_FIELDS) do
-    if field.key == tag then
+    if field.key == tag and server then
+      local generation = M.generation(server)
       local value = tonumber(element.text)
       local valid = value and value >= field.min and value <= field.max
         and (field.decimal or value == math.floor(value))
-      if valid then M.config()[tag] = value end
+      if valid then
+        generation[tag] = value
+        M.settings_changed(server)
+      end
       element.style = valid and "textbox" or "invalid_value_textfield"
       element.tooltip = valid and field.tooltip or string.format("%s must be %s from %s to %s; using %s.",
-        field.caption, field.decimal and "a number" or "a whole number", field.min, field.max, M.config()[tag])
+        field.caption, field.decimal and "a number" or "a whole number", field.min, field.max, generation[tag])
     end
   end
   return true

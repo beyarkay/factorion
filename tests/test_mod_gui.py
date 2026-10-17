@@ -308,6 +308,10 @@ def test_out_of_range_setting_turns_red_and_keeps_the_old_value(lua):
         """
         inference = require("inference")
         server = { valid = true, name = "factorion-gpu-server", unit_number = 7 }
+        local cluster_settings = { conditions = {} }
+        inference.settings = function() return cluster_settings end
+        shared = 0
+        inference.settings_changed = function() shared = shared + 1 end
         inference.open(player, server)
         """
     )
@@ -317,7 +321,7 @@ def test_out_of_range_setting_turns_red_and_keeps_the_old_value(lua):
     best_of.text = "100"
     assert g.inference.on_gui_text_changed(event(lua, best_of))
     assert best_of.style == "invalid_value_textfield" and "1 to 64; using 1" in best_of.tooltip
-    assert g.inference.config().best_of == 1
+    assert g.inference.generation(g.server).best_of == 1 and g.shared == 0
     best_of.text = "4"
     g.inference.on_gui_text_changed(event(lua, best_of))
-    assert best_of.style == "textbox" and g.inference.config().best_of == 4
+    assert best_of.style == "textbox" and g.inference.generation(g.server).best_of == 4 and g.shared == 1

@@ -1411,12 +1411,23 @@ script.on_event(defines.events.on_gui_opened, function(event)
   open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
 end)
 
+-- What copy-paste and blueprints carry of a server's settings.
+local CARRIED_SETTINGS = {
+  "conditions", "read_state", "state_signals", "circuit_endpoints",
+  "temperature", "steps", "refine", "best_of", "seed",
+}
+
 local function gpu_settings(entity)
   local state = storage.servers and storage.servers[entity.unit_number]
-  return state and {
-    conditions = state.conditions, read_state = state.read_state, state_signals = state.state_signals,
-    circuit_endpoints = state.circuit_endpoints,
-  }
+  if not state then return nil end
+  local carried = {}
+  for _, key in ipairs(CARRIED_SETTINGS) do carried[key] = state[key] end
+  return carried
+end
+
+local function apply_gpu_settings(entity, carried)
+  local state = server_state(entity)
+  for _, key in ipairs(CARRIED_SETTINGS) do state[key] = util.table.deepcopy(carried[key]) end
 end
 
 -- A server's data links, as offsets from it to the other end, for a
@@ -1499,11 +1510,7 @@ local function entity_built(event)
   end
   if entity and entity.valid and entity.name == inference.GPU_SERVER then
     local copied = event.tags and event.tags.factorion_gpu
-    if copied then
-      local state = server_state(entity)
-      state.conditions, state.read_state = copied.conditions, copied.read_state
-      state.state_signals, state.circuit_endpoints = copied.state_signals, copied.circuit_endpoints
-    end
+    if copied then apply_gpu_settings(entity, copied) end
     local carried = event.tags and event.tags.factorion_links
     if carried then restore_links(entity, carried.links, carried.direction) end
     outlines_changed(entity.surface.index)
@@ -1542,10 +1549,8 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
   local copied = event.source.name == inference.GPU_SERVER
     and event.destination.name == inference.GPU_SERVER and gpu_settings(event.source)
   if copied then
-    local state = server_state(event.destination)
-    state.conditions = util.table.deepcopy(copied.conditions)
-    state.read_state = copied.read_state
-    state.circuit_endpoints = copied.circuit_endpoints
+    apply_gpu_settings(event.destination, copied)
+    inference.settings_changed(event.destination)
   end
 end)
 
@@ -2117,8 +2122,8 @@ end
 
 -- Best of N runs N forward passes per step, shared out over the cluster's
 -- powered servers.
-local function step_seconds(servers)
-  return setting("factorion-forward-pass-time") * inference.config().best_of / math.max(1, #servers)
+local function step_seconds(server, servers)
+  return setting("factorion-forward-pass-time") * inference.generation(server).best_of / math.max(1, #servers)
 end
 
 local describe
@@ -2169,7 +2174,8 @@ function describe(server)
   local members = cluster(server)
   local on = powered(members)
   local speed = #on == 0 and "none powered" or string.format(
-    "%d powered: %.2f s per denoising step of best of %d", #on, step_seconds(on), inference.config().best_of)
+    "%d powered: %.2f s per denoising step of best of %d", #on, step_seconds(server, on),
+    inference.generation(server).best_of)
   local cluster_caption = #members == 1
     and string.format("No other GPU server touches, shares a build region with or is cabled to this one; %s.", speed)
     or string.format("Cluster of %d GPU servers predicting together, %s.", #members, speed)
@@ -2194,7 +2200,7 @@ local function gather_request(state, region, members)
     description = description .. string.format(", starting from the %d already there", #existing)
   end
 
-  local config = inference.config()
+  local config = inference.generation(state.entity)
   local request = {
     type          = "predict",
     request_id    = new_request_id(),
@@ -2234,7 +2240,7 @@ inference.on_predict = function(player, server, quiet)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = server.unit_number
   state.footprint = region.fp
-  state.step_ticks = math.max(1, math.floor(step_seconds(members) * 60 + 0.5))
+  state.step_ticks = math.max(1, math.floor(step_seconds(server, members) * 60 + 0.5))
   state.queue, state.finish, state.next_step_tick = {}, nil, nil
   state.player_index = player and player.index
   state.quiet = quiet
@@ -2242,7 +2248,7 @@ inference.on_predict = function(player, server, quiet)
     request_id = request.request_id, tick = game.tick, description = description,
   }
   -- Until the server streams the first step, the most it could take.
-  local config = inference.config()
+  local config = inference.generation(server)
   local most = (config.steps > 0 and config.steps or storage.model.gen_steps or 0)
     + (config.refine > 0 and config.refine or storage.model.gen_refine or 0)
   for _, member in ipairs(members) do
@@ -2256,8 +2262,8 @@ inference.on_predict = function(player, server, quiet)
       " json=" .. request_json)
   local changed = {}
   for _, knob in ipairs(SAMPLING_SUMMARY) do
-    local value = inference.config()[knob[1]]
-    if value ~= inference.DEFAULTS[knob[1]] then
+    local value = config[knob[1]]
+    if value ~= inference.GENERATION[knob[1]] then
       table.insert(changed, string.format(knob[2], value))
     end
   end
@@ -2541,10 +2547,11 @@ local function set_alert(entity, kind, offset)
   } or nil
 end
 
--- A cluster shares one set of circuit settings: every server keeps a copy,
--- and the most recently edited wins.
+-- A cluster shares one set of circuit and generation settings: every server
+-- keeps a copy, and the most recently edited wins.
 local SHARED_SETTINGS = {
   "conditions", "read_state", "state_signals", "circuit_endpoints", "circuit_player", "settings_tick",
+  "temperature", "steps", "refine", "best_of", "seed",
 }
 
 local function copy_settings(from, to)
