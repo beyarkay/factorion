@@ -17,7 +17,7 @@ graph: |
   S@1,4 -> l@1,2
   l@1,2 -> K@1,0
 factory: |
-  .. K^ ..
+  E. K^ ..
   .. .. ..
   .. l^ ..
   .. .. ..
@@ -36,7 +36,7 @@ graph: |
   S@0,0 -> l@2,0
   l@2,0 -> K@4,0
 factory: |
-  S> .. l> .. K>
+  S> E. l> .. K>
 ---
 description: |
   Reach-2 over a populated gap: belts sit in the skipped cells (1,0) and (3,0)
@@ -49,3 +49,4 @@ graph: |
   l@2,0 -> b@4,0
 factory: |
   b> b> l> b> b>
+  E. .. .. .. ..

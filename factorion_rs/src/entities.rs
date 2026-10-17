@@ -1238,6 +1238,7 @@ mod tests {
             3,
         );
         w.place(1, 1, Item::LongHandedInserter, Direction::East, None);
+        w.place(0, 0, Item::MediumElectricPole, Direction::None, None);
 
         let g = build_graph(&w);
         let lhi = g

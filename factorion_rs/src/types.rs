@@ -10,9 +10,12 @@ pub enum Channel {
     Items = 2,
     Misc = 3,
     Footprint = 4,
+    /// 1 where the tile is powered (see [`crate::power`]). Derived from the
+    /// poles for the models' input; the engine recomputes it, never reads it.
+    Power = 5,
 }
 
-pub const NUM_CHANNELS: usize = 5;
+pub const NUM_CHANNELS: usize = 6;
 
 impl Channel {
     pub fn index(self) -> usize {
@@ -158,11 +161,11 @@ impl Misc {
 ///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
 ///   6..=65  — mostly non-placeable items (recipe ingredients / products /
 ///             raw materials / non-modeled buildings exposed only as items).
-///             The one exception is `LongHandedInserter` (34): it carries a
-///             recipe like the others but is *also* a placeable entity (an
-///             inserter variant that reaches two tiles instead of one), so it
-///             returns `true` from `is_placeable`. Placeability is decided by
-///             `is_placeable`, not by id range.
+///             The exceptions are `LongHandedInserter` (34) and the electric
+///             poles (36, 37, 39): they carry recipes like the others but are
+///             *also* placeable entities, so they return `true` from
+///             `is_placeable`. Placeability is decided by `is_placeable`, not
+///             by id range.
 ///   last two — the Sink and Source markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Item {
@@ -482,7 +485,39 @@ impl Item {
                 | Item::Sink
                 | Item::Source
                 | Item::Splitter
+                | Item::SmallElectricPole
+                | Item::MediumElectricPole
+                | Item::Substation
         )
+    }
+
+    /// Whether this entity does nothing unless it is powered (see
+    /// [`crate::power`]). Sources and sinks stand in for the off-map world,
+    /// so they need no power.
+    pub fn needs_power(self) -> bool {
+        matches!(
+            self,
+            Item::Inserter | Item::LongHandedInserter | Item::AssemblingMachine1
+        )
+    }
+
+    /// The electric pole this entity is, if it is one.
+    pub fn pole(self) -> Option<Pole> {
+        match self {
+            Item::SmallElectricPole => Some(Pole {
+                supply: 2,
+                reach_x2: 15,
+            }),
+            Item::MediumElectricPole => Some(Pole {
+                supply: 3,
+                reach_x2: 18,
+            }),
+            Item::Substation => Some(Pole {
+                supply: 8,
+                reach_x2: 36,
+            }),
+            _ => None,
+        }
     }
 
     /// Whether this entity's tiles carry two independent belt lanes.
@@ -605,9 +640,21 @@ impl Item {
         match self {
             Item::AssemblingMachine1 => (3, 3),
             Item::Splitter => (2, 1),
+            Item::Substation => (2, 2),
             _ => (1, 1),
         }
     }
+}
+
+/// An electric pole's reach (wiki/electric-network.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pole {
+    /// How many tiles the square supply area extends past the pole's own
+    /// footprint on every side.
+    pub supply: i64,
+    /// Twice the wire reach (centre-to-centre), so the small pole's 7.5 is
+    /// an integer.
+    pub reach_x2: i64,
 }
 
 /// Every Item variant, in enum declaration order. Python's `items` dict is

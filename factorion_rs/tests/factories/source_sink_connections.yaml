@@ -167,162 +167,162 @@ factory: |
 description: inserter/N vs source/N
 graph: ""
 factory: |
-  .. i^ S^ ..
+  E. i^ S^ ..
 ---
 description: inserter/N vs source/E
 graph: ""
 factory: |
-  .. i^ S> ..
+  E. i^ S> ..
 ---
 description: inserter/N vs source/S
 graph: ""
 factory: |
-  .. i^ Sv ..
+  E. i^ Sv ..
 ---
 description: inserter/N vs source/W
 graph: ""
 factory: |
-  .. i^ S< ..
+  E. i^ S< ..
 ---
 description: inserter/N vs sink/N
 graph: ""
 factory: |
-  .. i^ K^ ..
+  E. i^ K^ ..
 ---
 description: inserter/N vs sink/E
 graph: ""
 factory: |
-  .. i^ K> ..
+  E. i^ K> ..
 ---
 description: inserter/N vs sink/S
 graph: ""
 factory: |
-  .. i^ Kv ..
+  E. i^ Kv ..
 ---
 description: inserter/N vs sink/W
 graph: ""
 factory: |
-  .. i^ K< ..
+  E. i^ K< ..
 ---
 description: inserter/E vs source/N
 graph: "i@1,0 -> S@2,0"
 factory: |
-  .. i> S^ ..
+  E. i> S^ ..
 ---
 description: inserter/E vs source/E
 graph: "i@1,0 -> S@2,0"
 factory: |
-  .. i> S> ..
+  E. i> S> ..
 ---
 description: inserter/E vs source/S
 graph: "i@1,0 -> S@2,0"
 factory: |
-  .. i> Sv ..
+  E. i> Sv ..
 ---
 description: inserter/E vs source/W
 graph: "i@1,0 -> S@2,0"
 factory: |
-  .. i> S< ..
+  E. i> S< ..
 ---
 description: inserter/E vs sink/N
 graph: "i@1,0 -> K@2,0"
 factory: |
-  .. i> K^ ..
+  E. i> K^ ..
 ---
 description: inserter/E vs sink/E
 graph: "i@1,0 -> K@2,0"
 factory: |
-  .. i> K> ..
+  E. i> K> ..
 ---
 description: inserter/E vs sink/S
 graph: "i@1,0 -> K@2,0"
 factory: |
-  .. i> Kv ..
+  E. i> Kv ..
 ---
 description: inserter/E vs sink/W
 graph: "i@1,0 -> K@2,0"
 factory: |
-  .. i> K< ..
+  E. i> K< ..
 ---
 description: inserter/S vs source/N
 graph: ""
 factory: |
-  .. iv S^ ..
+  E. iv S^ ..
 ---
 description: inserter/S vs source/E
 graph: ""
 factory: |
-  .. iv S> ..
+  E. iv S> ..
 ---
 description: inserter/S vs source/S
 graph: ""
 factory: |
-  .. iv Sv ..
+  E. iv Sv ..
 ---
 description: inserter/S vs source/W
 graph: ""
 factory: |
-  .. iv S< ..
+  E. iv S< ..
 ---
 description: inserter/S vs sink/N
 graph: ""
 factory: |
-  .. iv K^ ..
+  E. iv K^ ..
 ---
 description: inserter/S vs sink/E
 graph: ""
 factory: |
-  .. iv K> ..
+  E. iv K> ..
 ---
 description: inserter/S vs sink/S
 graph: ""
 factory: |
-  .. iv Kv ..
+  E. iv Kv ..
 ---
 description: inserter/S vs sink/W
 graph: ""
 factory: |
-  .. iv K< ..
+  E. iv K< ..
 ---
 description: inserter/W vs source/N
 graph: "S@2,0 -> i@1,0"
 factory: |
-  .. i< S^ ..
+  E. i< S^ ..
 ---
 description: inserter/W vs source/E
 graph: "S@2,0 -> i@1,0"
 factory: |
-  .. i< S> ..
+  E. i< S> ..
 ---
 description: inserter/W vs source/S
 graph: "S@2,0 -> i@1,0"
 factory: |
-  .. i< Sv ..
+  E. i< Sv ..
 ---
 description: inserter/W vs source/W
 graph: "S@2,0 -> i@1,0"
 factory: |
-  .. i< S< ..
+  E. i< S< ..
 ---
 description: inserter/W vs sink/N
 graph: "K@2,0 -> i@1,0"
 factory: |
-  .. i< K^ ..
+  E. i< K^ ..
 ---
 description: inserter/W vs sink/E
 graph: "K@2,0 -> i@1,0"
 factory: |
-  .. i< K> ..
+  E. i< K> ..
 ---
 description: inserter/W vs sink/S
 graph: "K@2,0 -> i@1,0"
 factory: |
-  .. i< Kv ..
+  E. i< Kv ..
 ---
 description: inserter/W vs sink/W
 graph: "K@2,0 -> i@1,0"
 factory: |
-  .. i< K< ..
+  E. i< K< ..
 ---
 description: sink/N vs belt/N
 graph: ""
@@ -347,22 +347,22 @@ factory: |
 description: sink/N vs inserter/N
 graph: ""
 factory: |
-  .. K^ i^ ..
+  E. K^ i^ ..
 ---
 description: sink/N vs inserter/E
 graph: "K@1,0 -> i@2,0"
 factory: |
-  .. K^ i> ..
+  E. K^ i> ..
 ---
 description: sink/N vs inserter/S
 graph: ""
 factory: |
-  .. K^ iv ..
+  E. K^ iv ..
 ---
 description: sink/N vs inserter/W
 graph: "i@2,0 -> K@1,0"
 factory: |
-  .. K^ i< ..
+  E. K^ i< ..
 ---
 description: sink/N vs ug_up/N
 graph: ""
@@ -467,22 +467,22 @@ factory: |
 description: sink/E vs inserter/N
 graph: ""
 factory: |
-  .. K> i^ ..
+  E. K> i^ ..
 ---
 description: sink/E vs inserter/E
 graph: "K@1,0 -> i@2,0"
 factory: |
-  .. K> i> ..
+  E. K> i> ..
 ---
 description: sink/E vs inserter/S
 graph: ""
 factory: |
-  .. K> iv ..
+  E. K> iv ..
 ---
 description: sink/E vs inserter/W
 graph: "i@2,0 -> K@1,0"
 factory: |
-  .. K> i< ..
+  E. K> i< ..
 ---
 description: sink/E vs ug_up/N
 graph: "K@1,0 -> u@2,0"
@@ -587,22 +587,22 @@ factory: |
 description: sink/S vs inserter/N
 graph: ""
 factory: |
-  .. Kv i^ ..
+  E. Kv i^ ..
 ---
 description: sink/S vs inserter/E
 graph: "K@1,0 -> i@2,0"
 factory: |
-  .. Kv i> ..
+  E. Kv i> ..
 ---
 description: sink/S vs inserter/S
 graph: ""
 factory: |
-  .. Kv iv ..
+  E. Kv iv ..
 ---
 description: sink/S vs inserter/W
 graph: "i@2,0 -> K@1,0"
 factory: |
-  .. Kv i< ..
+  E. Kv i< ..
 ---
 description: sink/S vs ug_up/N
 graph: ""
@@ -707,22 +707,22 @@ factory: |
 description: sink/W vs inserter/N
 graph: ""
 factory: |
-  .. K< i^ ..
+  E. K< i^ ..
 ---
 description: sink/W vs inserter/E
 graph: "K@1,0 -> i@2,0"
 factory: |
-  .. K< i> ..
+  E. K< i> ..
 ---
 description: sink/W vs inserter/S
 graph: ""
 factory: |
-  .. K< iv ..
+  E. K< iv ..
 ---
 description: sink/W vs inserter/W
 graph: "i@2,0 -> K@1,0"
 factory: |
-  .. K< i< ..
+  E. K< i< ..
 ---
 description: sink/W vs ug_up/N
 graph: ""
@@ -827,22 +827,22 @@ factory: |
 description: source/N vs inserter/N
 graph: ""
 factory: |
-  .. S^ i^ ..
+  E. S^ i^ ..
 ---
 description: source/N vs inserter/E
 graph: "S@1,0 -> i@2,0"
 factory: |
-  .. S^ i> ..
+  E. S^ i> ..
 ---
 description: source/N vs inserter/S
 graph: ""
 factory: |
-  .. S^ iv ..
+  E. S^ iv ..
 ---
 description: source/N vs inserter/W
 graph: "i@2,0 -> S@1,0"
 factory: |
-  .. S^ i< ..
+  E. S^ i< ..
 ---
 description: source/N vs ug_up/N
 graph: ""
@@ -947,22 +947,22 @@ factory: |
 description: source/E vs inserter/N
 graph: ""
 factory: |
-  .. S> i^ ..
+  E. S> i^ ..
 ---
 description: source/E vs inserter/E
 graph: "S@1,0 -> i@2,0"
 factory: |
-  .. S> i> ..
+  E. S> i> ..
 ---
 description: source/E vs inserter/S
 graph: ""
 factory: |
-  .. S> iv ..
+  E. S> iv ..
 ---
 description: source/E vs inserter/W
 graph: "i@2,0 -> S@1,0"
 factory: |
-  .. S> i< ..
+  E. S> i< ..
 ---
 description: source/E vs ug_up/N
 graph: "S@1,0 -> u@2,0"
@@ -1067,22 +1067,22 @@ factory: |
 description: source/S vs inserter/N
 graph: ""
 factory: |
-  .. Sv i^ ..
+  E. Sv i^ ..
 ---
 description: source/S vs inserter/E
 graph: "S@1,0 -> i@2,0"
 factory: |
-  .. Sv i> ..
+  E. Sv i> ..
 ---
 description: source/S vs inserter/S
 graph: ""
 factory: |
-  .. Sv iv ..
+  E. Sv iv ..
 ---
 description: source/S vs inserter/W
 graph: "i@2,0 -> S@1,0"
 factory: |
-  .. Sv i< ..
+  E. Sv i< ..
 ---
 description: source/S vs ug_up/N
 graph: ""
@@ -1187,22 +1187,22 @@ factory: |
 description: source/W vs inserter/N
 graph: ""
 factory: |
-  .. S< i^ ..
+  E. S< i^ ..
 ---
 description: source/W vs inserter/E
 graph: "S@1,0 -> i@2,0"
 factory: |
-  .. S< i> ..
+  E. S< i> ..
 ---
 description: source/W vs inserter/S
 graph: ""
 factory: |
-  .. S< iv ..
+  E. S< iv ..
 ---
 description: source/W vs inserter/W
 graph: "i@2,0 -> S@1,0"
 factory: |
-  .. S< i< ..
+  E. S< i< ..
 ---
 description: source/W vs ug_up/N
 graph: ""

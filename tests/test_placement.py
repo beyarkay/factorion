@@ -7,7 +7,7 @@ import torch
 from helpers import Channel, Direction, Footprint, Misc, str2ent
 from factorion import apply_placement_action
 
-ENT, DIR, ITEMS, MISC, FOOT = (c.value for c in Channel)
+ENT, DIR, ITEMS, MISC, FOOT, _ = (c.value for c in Channel)
 EMPTY = str2ent("empty").value
 SOURCE = str2ent("source").value
 BELT = str2ent("transport_belt").value

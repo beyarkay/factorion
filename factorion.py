@@ -88,6 +88,10 @@ class Channel(Enum):
     MISC = 3
     # 1 if you can build there, 0 if you can't
     FOOTPRINT = 4
+    # 1 if the tile is powered (wiki/electric-network.md). Derived from the
+    # poles for the models' input — refresh_power() after moving a pole; the
+    # engine recomputes it and never reads it.
+    POWER = 5
 
 
 class Footprint(Enum):
@@ -317,6 +321,12 @@ def str2ent(s):
 _EMPTY_ENT_VAL = str2ent("empty").value
 _SOURCE_ENT_VAL = str2ent("source").value
 _SINK_ENT_VAL = str2ent("sink").value
+_INSERTER_ENT_VALS = torch.tensor([str2ent(n).value for n in ("inserter", "long_handed_inserter")])
+_ASM_ENT_VAL = str2ent("assembling_machine_1").value
+# Poles have no facing: they're stored with Direction.NONE.
+POLE_ENT_IDS = tuple(
+    str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "substation")
+)
 _EMPTY_ITEM_VAL = str2item("empty").value
 
 
@@ -673,7 +683,7 @@ def blueprint2world(bp):
                 f"{bp_dir} at ({cx},{cy})"
             )
             continue
-        model_dir = _BP_DIR_TO_MODEL[bp_dir]
+        model_dir = Direction.NONE if proto.value in POLE_ENT_IDS else _BP_DIR_TO_MODEL[bp_dir]
 
         # Multi-tile entities rotate footprint when facing E/W.
         w, h = proto.width, proto.height
@@ -726,7 +736,9 @@ def blueprint2world(bp):
                     world[x, y, Channel.MISC.value] = misc.value
 
     # Return (C, W, H) to match the encoder's input shape.
-    return np.transpose(world, (2, 0, 1))
+    world_CWH = np.transpose(world, (2, 0, 1))
+    refresh_power(torch.from_numpy(world_CWH))
+    return world_CWH
 
 
 def read_blueprint_file(path):
@@ -809,7 +821,8 @@ def build_graph_nx(world_WHC):
 def count_dangling_inserters(world_CWH) -> tuple[int, int]:
     """(inserters with no input, inserters with no output) per the engine's
     factory graph. A finished factory should have zero of each: every inserter
-    the agent places should both pick up from and drop onto something."""
+    the agent places should both pick up from and drop onto something. An
+    unpowered inserter has no node, so `count_unpowered` counts it instead."""
     arr = world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
     nodes, edges = factorion_rs.py_build_graph(arr)
     fed = {dst for _, dst in edges}
@@ -819,6 +832,14 @@ def count_dangling_inserters(world_CWH) -> tuple[int, int]:
         sum(i not in fed for i in inserters),
         sum(i not in draining for i in inserters),
     )
+
+
+def count_unpowered(world_CWH) -> int:
+    """Inserters and assemblers no pole powers, which do nothing."""
+    ent = world_CWH[Channel.ENTITIES.value]
+    placed = int(torch.isin(ent, _INSERTER_ENT_VALS).sum()) + int((ent == _ASM_ENT_VAL).sum()) // 9
+    nodes, _ = factorion_rs.py_build_graph(world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+    return placed - sum(n[0] in "ila" for n in nodes)
 
 
 def _remove_entities(
@@ -920,7 +941,6 @@ def build_factory(
     *,
     seed: Optional[int] = None,
     random_item: bool = True,
-    max_entities: float = float("inf"),
 ) -> Optional[Factory]:
     """Build a complete, valid factory of the given lesson ``kind``.
 
@@ -940,9 +960,7 @@ def build_factory(
     else:
         rs_seed = random.randrange(2**63)
 
-    result = factorion_rs.build_factory(
-        size, kind.value, rs_seed, random_item, max_entities
-    )
+    result = factorion_rs.build_factory(size, kind.value, rs_seed, random_item)
     if result is None:
         return None
     world_WHC, total_entities, protected, max_throughput = result
@@ -956,6 +974,15 @@ def build_factory(
         max_throughput=max_throughput,
         protected_positions=frozenset(map(tuple, protected)),
     )
+
+
+def refresh_power(world: torch.Tensor) -> None:
+    """Rewrite the POWER channel of a ``(C, W, H)`` world or ``(B, C, W, H)``
+    batch, in place, from its poles."""
+    batch = world if world.dim() == 4 else world[None]
+    worlds_BWHC = batch.permute(0, 2, 3, 1).to("cpu", torch.int64).contiguous().numpy()
+    powered = torch.from_numpy(factorion_rs.py_power_map(worlds_BWHC))
+    batch[:, Channel.POWER.value] = powered.to(batch.device, batch.dtype)
 
 
 def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
@@ -1018,6 +1045,7 @@ def blank_entities(
         num_missing_entities,
         protected_positions=set(factory.protected_positions),
     )
+    refresh_power(partial)
     return partial, min_entities_required
 
 
@@ -1030,7 +1058,8 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
     Placements overwrite: every entity the footprint touches is removed whole
     first, so ``empty`` deletes the entity under ``xy`` and any other entity
     replaces what it lands on. Walls (which include a lesson's protected
-    entities) and sources/sinks can't be edited.
+    entities) and sources/sinks can't be edited. Moving a pole refreshes the
+    POWER channel.
 
     Returns ``None`` when applied, else why the placement was rejected.
     """
@@ -1047,8 +1076,10 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
         return "placed_source_or_sink"
     if entity_id == asm and item_id == _EMPTY_ITEM_VAL:
         return "place_asm_mach_wo_recipe"
-    if entity_id not in (_EMPTY_ENT_VAL, asm) and direc == Direction.NONE.value:
+    if entity_id not in (_EMPTY_ENT_VAL, asm, *POLE_ENT_IDS) and direc == Direction.NONE.value:
         return "placement_wo_direction"
+    if entity_id in POLE_ENT_IDS and direc != Direction.NONE.value:
+        return "pole_with_direction"
     if entity_id == _EMPTY_ENT_VAL and direc != Direction.NONE.value:
         return "direction_wo_entity"
     if (misc == Misc.NONE.value) == (entity_id == ug):
@@ -1067,6 +1098,7 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
     if any(ent[tx, ty] in (_SOURCE_ENT_VAL, _SINK_ENT_VAL) for tx, ty in tiles):
         return "replaced_source_or_sink"
     occupied = [(tx, ty) for tx, ty in tiles if ent[tx, ty] != _EMPTY_ENT_VAL]
+    moves_pole = entity_id in POLE_ENT_IDS or any(ent[tx, ty] in POLE_ENT_IDS for tx, ty in occupied)
     if occupied:
         world_WHC = np.ascontiguousarray(world.transpose(1, 2, 0), dtype=np.int64)
         for tx, ty in factorion_rs.py_unit_tiles(world_WHC, occupied):
@@ -1074,4 +1106,6 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
     if entity_id != _EMPTY_ENT_VAL:
         for tx, ty in tiles:
             world[:4, tx, ty] = (entity_id, direc, item_id, misc)
+    if moves_pole:
+        refresh_power(world_CWH)
     return None

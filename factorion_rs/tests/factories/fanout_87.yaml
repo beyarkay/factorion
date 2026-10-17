@@ -13,7 +13,7 @@ throughput:
 - { item: copper_cable, per_second: 0.43 }
 - { item: copper_cable, per_second: 0.43 }
 factory: |
-  .. .. K^
+  E. .. K^
   .. .. i^
   S> i> b>
   .. .. iv

@@ -11,7 +11,7 @@ description: west edge, inserter faces east into the body -> inserter feeds asse
 graph: |
   i@0,1 -> a@1,0
 factory: |
-  .. aaaaaaaa
+  E. aaaaaaaa
   i> aa    aa
   .. aaaaaaaa
 ---
@@ -19,7 +19,7 @@ description: east edge, inserter faces east away from the body -> assembler feed
 graph: |
   a@0,0 -> i@3,1
 factory: |
-  aaaaaaaa ..
+  aaaaaaaa E.
   aa    aa i>
   aaaaaaaa ..
 ---
@@ -27,7 +27,7 @@ description: north edge, inserter faces south into the body -> inserter feeds as
 graph: |
   i@1,0 -> a@0,1
 factory: |
-  .. iv ..
+  E. iv ..
   aaaaaaaa
   aa    aa
   aaaaaaaa
@@ -39,4 +39,4 @@ factory: |
   aaaaaaaa
   aa    aa
   aaaaaaaa
-  .. iv ..
+  E. iv ..

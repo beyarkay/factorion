@@ -13,7 +13,7 @@ graph: |
   S@0,0 -> l@2,0
   l@2,0 -> K@4,0
 factory: |
-  S> .. l> .. K>
+  S> E. l> .. K>
 ---
 description: source -> long inserter -> sink, facing WEST
 items:
@@ -25,7 +25,7 @@ graph: |
   S@4,0 -> l@2,0
   l@2,0 -> K@0,0
 factory: |
-  K< .. l< .. S<
+  K< E. l< .. S<
 ---
 description: source -> long inserter -> sink, facing NORTH
 items:
@@ -38,7 +38,7 @@ graph: |
   l@0,2 -> K@0,0
 factory: |
   K^
-  ..
+  E.
   l^
   ..
   S^
@@ -54,7 +54,7 @@ graph: |
   l@0,2 -> K@0,4
 factory: |
   Sv
-  ..
+  E.
   lv
   ..
   Kv
@@ -73,7 +73,7 @@ graph: |
   b@1,0 -> l@3,0
   l@3,0 -> K@5,0
 factory: |
-  S> b> .. l> .. K>
+  S> b> E. l> .. K>
 ---
 description: |
   Two long inserters in series, bridged by a belt (a long inserter cannot drop
@@ -89,7 +89,7 @@ graph: |
   b@4,0 -> l@6,0
   l@6,0 -> K@8,0
 factory: |
-  S> .. l> .. b> .. l> .. K>
+  S> .. l> E. b> .. l> .. K>
 ---
 description: |
   Long inserter into an underground belt: it drops onto the entrance two tiles
@@ -105,7 +105,7 @@ graph: |
   d@4,0 -> u@6,0
   u@6,0 -> K@7,0
 factory: |
-  S> .. l> .. d> .. u> K>
+  S> E. l> .. d> .. u> K>
 ---
 description: |
   A 3x3 assembler crafting copper_cable, fed and drained by LONG inserters that
@@ -128,6 +128,6 @@ graph: |
   a@4,0 -> l@8,1
   l@8,1 -> K@10,1
 factory: |
-  .. .. .. .. aaaaaaaa .. .. .. ..
+  .. E. .. .. aaaaaaaa E. .. .. ..
   S> .. l> .. aa    aa .. l> .. K>
   .. .. .. .. aaaaaaaa .. .. .. ..

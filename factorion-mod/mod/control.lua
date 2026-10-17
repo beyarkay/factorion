@@ -171,6 +171,9 @@ local MODEL_ENTITY_NAMES = {
   "assembling-machine-1",
   "underground-belt",
   "splitter",
+  "small-electric-pole",
+  "medium-electric-pole",
+  "substation",
 }
 local SINK_LABEL_REFRESH_TICKS = 30
 
@@ -1024,8 +1027,8 @@ local function gather_existing_entities(state, surface, fp)
   })
   for _, entity in pairs(candidates) do
     if not predicted[entity.unit_number] and not entity.to_be_deconstructed() then
-      local direction = entity.type == "assembling-machine"
-        and 0 or FACTORIO_TO_DIRECTION[entity.direction]
+      local facingless = entity.type == "assembling-machine" or entity.type == "electric-pole"
+      local direction = facingless and 0 or FACTORIO_TO_DIRECTION[entity.direction]
       if direction then
         -- Factorio stores an inserter's drop direction; the model stores its
         -- pickup direction.

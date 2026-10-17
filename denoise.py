@@ -34,6 +34,7 @@ import torch.nn.functional as F
 import factorion_rs
 from factorion import (
     LESSON_IS_TRIAL,
+    POLE_ENT_IDS,
     Channel,
     Direction,
     Factory,
@@ -41,13 +42,15 @@ from factorion import (
     LessonKind,
     Misc,
     count_dangling_inserters,
+    count_unpowered,
     entities,
     items,
     recipes,
+    refresh_power,
     str2ent,
 )
 
-_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC, _CH_FOOTPRINT = (c.value for c in Channel)
+_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC, _CH_FOOTPRINT, _CH_POWER = (c.value for c in Channel)
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
 _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
@@ -69,7 +72,7 @@ for _p in _BUILDABLE:
     _ENTITY_FOOTPRINT_AREAS[_p.value] = _p.width * _p.height
 
 # The model's state is the world's channels plus the part map.
-CH_PART = _CH_FOOTPRINT + 1
+CH_PART = _CH_POWER + 1
 STATE_CHANNELS = CH_PART + 1
 
 TYPES: tuple[tuple[int, int, int], ...] = (
@@ -78,8 +81,14 @@ TYPES: tuple[tuple[int, int, int], ...] = (
         (e, d, m)
         for e in (p.value for p in _BUILDABLE)
         # Generators store a facing on assemblers; NONE is what a placement
-        # action writes. Both are legal worlds.
-        for d in (range(len(Direction)) if e == _ASM_MACHINE_ENT_ID else range(1, len(Direction)))
+        # action writes. Both are legal worlds. Poles have no facing.
+        for d in (
+            range(len(Direction))
+            if e == _ASM_MACHINE_ENT_ID
+            else (Direction.NONE.value,)
+            if e in POLE_ENT_IDS
+            else range(1, len(Direction))
+        )
         for m in ((Misc.UNDERGROUND_DOWN.value, Misc.UNDERGROUND_UP.value) if e == _UG_BELT_ENT_ID else (Misc.NONE.value,))
     ),
 )
@@ -167,13 +176,25 @@ def state_to_tokens(state):
 
 
 def tokens_to_state(cond, free, typ, recipe, part):
-    """`cond` with every free tile replaced by its tokens."""
+    """`cond` with every free tile replaced by its tokens, powered by its own
+    poles."""
     L = _luts(cond.device)
     edm = L.types[typ]
     tok = torch.stack(
-        [edm[..., 0], edm[..., 1], L.recipes[recipe], edm[..., 2], cond[:, _CH_FOOTPRINT].long(), part], dim=1
+        [
+            edm[..., 0],
+            edm[..., 1],
+            L.recipes[recipe],
+            edm[..., 2],
+            cond[:, _CH_FOOTPRINT].long(),
+            cond[:, _CH_POWER].long(),
+            part,
+        ],
+        dim=1,
     )
-    return torch.where(free.unsqueeze(1), tok, cond.long())
+    state = torch.where(free.unsqueeze(1), tok, cond.long())
+    refresh_power(state)
+    return state
 
 
 def noise_tokens(prior, shape, generator=None):
@@ -274,7 +295,7 @@ class DenoiserUNet(nn.Module):
         self.stride = 2 ** (levels - 1)
         self.head_sizes = [N_TYPES, N_RECIPES, N_PARTS]
         self.part_embed = nn.Embedding(N_PARTS, embed_dim)
-        in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 2
+        in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 3
         self.ent_embed = nn.Embedding(len(entities), embed_dim)
         self.item_embed = nn.Embedding(len(items), embed_dim)
         self.stem = nn.Conv2d(in_ch, width, 3, padding=1)
@@ -314,6 +335,7 @@ class DenoiserUNet(nn.Module):
             F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
             F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
             s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
+            s[:, _CH_POWER : _CH_POWER + 1].float(),
         ]
         part = self.part_embed(s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2)
         return torch.cat([ent, item, part, *onehots, (~free_mask(s)).unsqueeze(1).float()], dim=1)
@@ -453,6 +475,7 @@ def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np
     for c, col in ((_CH_ENT, 0), (_CH_DIR, 1), (_CH_MISC, 2)):
         world[c][single] = _TYPES_NP[flat, col][single]
     world[_CH_ITEMS][single] = 0
+    refresh_power(torch.from_numpy(world))
     return world
 
 
@@ -538,7 +561,8 @@ def run_denoise_eval(
     cheaper build, then the lower chain index). Returns `"thput@n"` /
     `"trial_thput@n"` / `"per_kind@n"` for n in 1, 8 (when ≤ best_of) and
     best_of — best-of-n reads the first n chains — plus chain-level
-    convergence and the selected factories' dangling-inserter counts.
+    convergence and the selected factories' dangling-inserter and unpowered
+    counts.
     `records` collects one dict (seed, kind, thput, render, ...) per factory.
     """
     from factorion import blank_entities, render_factory
@@ -573,6 +597,7 @@ def run_denoise_eval(
     for n in ns:
         lesson, trial, per_kind = [], [], {}
         dangling = [0, 0, 0, 0]  # lesson in/out, trial in/out
+        unpowered = [0, 0]  # lesson, trial
         for (s, kind, _), rs in zip(factories, results):
             best = max(rs[:n], key=lambda r: (r["thput"], -r["entity_cost"], -r["chain"]))
             is_trial = LESSON_IS_TRIAL[kind]
@@ -582,6 +607,8 @@ def run_denoise_eval(
                 d_in, d_out = count_dangling_inserters(torch.from_numpy(best["world"]))
                 dangling[2 * is_trial] += d_in
                 dangling[2 * is_trial + 1] += d_out
+                n_unpowered = count_unpowered(torch.from_numpy(best["world"]))
+                unpowered[is_trial] += n_unpowered
                 if records is not None:
                     records.append(
                         {
@@ -591,6 +618,7 @@ def run_denoise_eval(
                             "entity_cost": best["entity_cost"],
                             "inserters_no_input": d_in,
                             "inserters_no_output": d_out,
+                            "unpowered": n_unpowered,
                             "render": render_factory(best["world"]),
                         }
                     )
@@ -599,6 +627,7 @@ def run_denoise_eval(
         out[f"per_kind@{n}"] = {k: float(np.mean(v)) for k, v in per_kind.items()}
         if n == best_of:
             out["dangling"] = dangling
+            out["unpowered"] = unpowered
             out["n_trials"] = len(trial)
     if was_training:
         model.train()

@@ -21,6 +21,7 @@ factory: |
   S> b> b> b> b> b> b>
   .. iv iv iv iv iv iv
   .. Kv Kv Kv Kv Kv Kv
+  .. .. .. E. .. .. ..
 ---
 description: |
   The belt carries only 0.86/s (one inserter's worth) past three inserters.
@@ -36,5 +37,5 @@ throughput:
 - { item: iron_plate, per_second: 0 }
 factory: |
   S> i> b> b> b> b>
-  .. .. .. iv iv iv
+  .. .. E. iv iv iv
   .. .. .. Kv Kv Kv

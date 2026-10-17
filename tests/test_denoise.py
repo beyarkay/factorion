@@ -115,7 +115,10 @@ class TestCorrupt:
         assert all(torch.equal(a, b) for a, b in zip(kept, clean))
         noisy = corrupt(clean, free, torch.ones(4), prior)
         noisy_state = tokens_to_state(state, free, *noisy)
-        assert torch.equal(noisy_state[~free.unsqueeze(1).expand_as(noisy_state)], state.long()[~free.unsqueeze(1).expand_as(noisy_state)])
+        # Fixed tiles keep their tokens; only their power follows the noise's poles.
+        tokens = [c for c in range(STATE_CHANNELS) if c != Channel.POWER.value]
+        fixed = ~free.unsqueeze(1).expand(-1, len(tokens), -1, -1)
+        assert torch.equal(noisy_state[:, tokens][fixed], state.long()[:, tokens][fixed])
         assert (noisy[0][free] != clean[0][free]).any()
 
 
@@ -166,6 +169,7 @@ def test_eval_pools_trials_apart_and_records_each_factory():
     )
     assert set(out) >= {"thput@1", "thput@3", "trial_thput@3", "per_kind@3", "converged_frac"}
     assert out["n_trials"] == 2
+    assert len(out["unpowered"]) == 2 and all("unpowered" in r for r in records)
     assert set(out["per_kind@3"]) == {k.name for k in kinds}
     assert out["thput@3"] >= out["thput@1"]
     assert [(r["seed"], r["kind"]) for r in records] == [(s, k.name) for s, k, _ in factories]

@@ -376,10 +376,12 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
         f"val/refine_steps@{N}": roll["refine_steps"],
         f"val/inserters_no_input@{N}": roll["dangling"][0],
         f"val/inserters_no_output@{N}": roll["dangling"][1],
+        f"val/unpowered@{N}": roll["unpowered"][0],
     }
     if roll["n_trials"]:
         out[f"val/trial_inserters_no_input@{N}"] = roll["dangling"][2]
         out[f"val/trial_inserters_no_output@{N}"] = roll["dangling"][3]
+        out[f"val/trial_unpowered@{N}"] = roll["unpowered"][1]
     for key, v in roll.items():
         if key.startswith("thput@"):
             out[f"val/{key}"] = v

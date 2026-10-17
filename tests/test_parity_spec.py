@@ -33,7 +33,6 @@ from factorion import (  # noqa: E402
 
 from parity import (  # noqa: E402
     SinkComparison,
-    _PITCH,
     build_batch_spec,
     compare_sinks,
     expected_sink_rates,
@@ -52,6 +51,9 @@ KNOWN_PROTOTYPES = {
     "inserter",
     "long-handed-inserter",
     "assembling-machine-1",
+    "small-electric-pole",
+    "medium-electric-pole",
+    "substation",
 }
 
 
@@ -144,7 +146,7 @@ def test_spec_inserter_direction_is_flipped():
         dir_ch = np.asarray(world[Channel.DIRECTION.value])
         for e in spec["entities"]:
             model_dir = int(dir_ch[e["tile_x"], e["tile_y"]])
-            bp_dir = model_dir * 4 - 4
+            bp_dir = max(model_dir * 4 - 4, 0)  # a pole's NONE emits 0
             if "inserter" in e["name"]:
                 assert e["direction"] == (bp_dir + 8) % 16, (kind.name, seed, e)
             else:
@@ -306,36 +308,31 @@ def test_batch_factories_do_not_overlap():
     assert len(occ) == len(set(occ)), "two factories share a tile"
 
 
-def test_batch_substations_never_collide_with_factories():
+def test_batch_leaves_a_ring_of_free_tiles_around_each_factory():
+    """The mod rings every grid with off-map poles one tile out; those rings
+    must not land on another factory or its ring, nor off the field."""
     spec = build_batch_spec(_batch_worlds())
-    occ = _occupied_tiles(spec)
-    for sx, sy in spec["substations"]:
-        # substation is 2x2 with its top-left at (sx-1, sy-1) .. (sx, sy)
-        for dx in (-1, 0):
-            for dy in (-1, 0):
-                assert (sx + dx, sy + dy) not in occ, (
-                    f"substation at ({sx},{sy}) collides with a factory tile"
-                )
+    boxes = [
+        (f["offset_x"] - 1, f["offset_y"] - 1, f["offset_x"] + f["width"], f["offset_y"] + f["height"])
+        for f in spec["factories"]
+    ]
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        assert x0 >= 0 and y0 >= 0 and x1 < spec["extent_x"] and y1 < spec["extent_y"]
+        for a0, b0, a1, b1 in boxes[i + 1:]:
+            assert x1 < a0 or a1 < x0 or y1 < b0 or b1 < y0, "two factory rings overlap"
 
 
-def test_batch_every_tile_is_powered():
-    """Every occupied tile must lie within a substation's 18x18 (Chebyshev
-    <= 9) supply area, or inserters/assemblers would sit unpowered and skew
-    the measurement."""
+def test_batch_keeps_grids_beyond_each_others_pole_supply():
+    """A substation on a grid's edge supplies 8 tiles past it, so a closer
+    neighbour's machines would draw power the engine never gives them."""
     spec = build_batch_spec(_batch_worlds())
-    subs = spec["substations"]
-    for tx, ty in _occupied_tiles(spec):
-        assert any(max(abs(tx - sx), abs(ty - sy)) <= 9 for sx, sy in subs), (
-            f"tile ({tx},{ty}) is outside every substation supply area"
-        )
-
-
-def test_batch_offsets_are_on_the_pitch_grid():
-    spec = build_batch_spec(_batch_worlds(n_kinds=2, seeds=2))
-    for fac in spec["factories"]:
-        margin = (_PITCH - fac["grid_size"]) // 2
-        assert (fac["offset_x"] - margin) % _PITCH == 0
-        assert (fac["offset_y"] - margin) % _PITCH == 0
+    grids = [
+        (f["offset_x"], f["offset_y"], f["offset_x"] + f["width"], f["offset_y"] + f["height"])
+        for f in spec["factories"]
+    ]
+    for i, (x0, y0, x1, y1) in enumerate(grids):
+        for a0, b0, a1, b1 in grids[i + 1:]:
+            assert x1 + 8 <= a0 or a1 + 8 <= x0 or y1 + 8 <= b0 or b1 + 8 <= y0
 
 
 def test_batch_preserves_all_factories_and_ids():

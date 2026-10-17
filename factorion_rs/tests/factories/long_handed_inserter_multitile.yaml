@@ -9,7 +9,7 @@ description: west side — long inserter two tiles left, facing east, feeds the 
 graph: |
   l@0,1 -> a@2,0
 factory: |
-  .. .. aaaaaaaa
+  E. .. aaaaaaaa
   l> .. aa    aa
   .. .. aaaaaaaa
 ---
@@ -17,7 +17,7 @@ description: east side — long inserter two tiles right, facing east, is fed by
 graph: |
   a@0,0 -> l@4,1
 factory: |
-  aaaaaaaa .. ..
+  aaaaaaaa E. ..
   aa    aa .. l>
   aaaaaaaa .. ..
 ---
@@ -25,7 +25,7 @@ description: north side — long inserter two tiles above, facing south, feeds t
 graph: |
   l@1,0 -> a@0,2
 factory: |
-  .. lv ..
+  E. lv ..
   .. .. ..
   aaaaaaaa
   aa    aa
@@ -38,7 +38,7 @@ factory: |
   aaaaaaaa
   aa    aa
   aaaaaaaa
-  .. .. ..
+  E. .. ..
   .. lv ..
 ---
 description: |
@@ -48,7 +48,7 @@ description: |
 graph: |
   l@0,2 -> a@2,0
 factory: |
-  .. .. aaaaaaaa
+  E. .. aaaaaaaa
   .. .. aa    aa
   l> .. aaaaaaaa
 ---
@@ -58,4 +58,4 @@ description: |
 graph: ""
 factory: |
   l> .. Y> ..
-  .. .. Y> ..
+  E. .. Y> ..

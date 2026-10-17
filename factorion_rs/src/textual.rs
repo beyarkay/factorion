@@ -1065,7 +1065,7 @@ factory: |
     fn test_graph_node_parse_errors() {
         // Malformed graph specs are rejected at parse time.
         assert!(parse("graph: |\n  S@0,0 b@1,0\nfactory: |\n  S> b>").is_err()); // no ->
-        assert!(parse("graph: |\n  Z@0,0 -> b@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
+        assert!(parse("graph: |\n  Q@0,0 -> b@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
         assert!(parse("graph: |\n  S@x,0 -> b@1,0\nfactory: |\n  S> b>").is_err());
         // bad coord
     }
@@ -1195,6 +1195,7 @@ throughput:
 - { item: copper_cable, per_second: 0.86 }
 factory: |
   S> i> b> K>
+  .. e. .. ..
 ",
         )
         .unwrap();
@@ -1526,6 +1527,7 @@ throughput:
 - { item: copper_cable, per_second: 0.86 }
 factory: |
   S> i> b> K>
+  .. e. .. ..
 ",
         )
         .unwrap();

@@ -119,3 +119,21 @@ def build_factory_graph(world_WHC):
 def rs_throughput(world):
     """Throughput via the Rust engine's Python bindings."""
     return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+
+
+def power(world):
+    """A hand-built WHC `world` with medium poles powering its inserters and
+    assemblers, as the lesson generators place them. Rows and columns of free
+    tiles are added along its bottom and right edges (keeping every
+    coordinate) until the poles fit."""
+    for i in range(8):
+        powered = factorion_rs.py_place_poles(world.numpy().astype(np.int64))
+        if powered is not None:
+            return torch.from_numpy(powered)
+        axis = 1 - i % 2
+        shape = list(world.shape)
+        shape[axis] = 1
+        pad = torch.zeros(shape, dtype=world.dtype)
+        pad[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        world = torch.cat([world, pad], dim=axis)
+    raise ValueError("no room to power this world")
