@@ -338,3 +338,14 @@ def test_gui_rcon_refuses_to_edit_a_running_factorios_config(monkeypatch, tmp_pa
     with pytest.raises(SystemExit, match="Quit Factorio"):
         mod_server.gui_rcon(config)
     assert config.read_text() == "[other]\n"
+
+
+def test_load_model_explains_a_missing_wandb(monkeypatch):
+    def no_wandb(*_):
+        raise ModuleNotFoundError("No module named 'wandb'", name="wandb")
+
+    monkeypatch.setattr(mod_server, "released_checkpoint", lambda _: None)
+    monkeypatch.setattr(mod_server, "resolve_checkpoint", no_wandb)
+
+    with pytest.raises(RuntimeError, match="uvx --with wandb factorion-server"):
+        mod_server.load_model("abc123", torch.device("cpu"), "factorion", None)

@@ -320,6 +320,24 @@ def released_checkpoint(run_id: str) -> Optional[Path]:
     return dest
 
 
+def load_model(spec: str, device, project: str, entity: Optional[str]) -> tuple[DenoiserUNet, str]:
+    """(model, display name) of a checkpoint spec. A bare run id is looked up
+    in the releases first; anything else, or a run no release carries, goes to
+    sft.resolve_checkpoint (local or W&B)."""
+    released = None if "/" in spec or spec.endswith(".pt") else released_checkpoint(spec)
+    if released is not None:
+        return load_denoiser(released, device).eval(), spec
+    try:
+        path, source = resolve_checkpoint(spec, project, entity)
+    except ModuleNotFoundError as exc:
+        # Players' installs leave out wandb: only developers have W&B keys.
+        if exc.name != "wandb":
+            raise
+        raise RuntimeError(f"No release carries checkpoint {spec}. For a W&B run, restart the "
+                           "server as `uvx --with wandb factorion-server` with a W&B API key.") from exc
+    return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
+
+
 def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
     quoted = ",".join(_lua_string(a) for a in args)
     return rcon.exec(
@@ -502,13 +520,7 @@ def main():
 
     @functools.cache
     def get_model(spec: str) -> tuple[DenoiserUNet, str]:
-        # A bare run id is looked up in the releases first; anything else, or a
-        # run no release carries, goes to sft.resolve_checkpoint (local or W&B).
-        released = None if "/" in spec or spec.endswith(".pt") else released_checkpoint(spec)
-        if released is not None:
-            return load_denoiser(released, device).eval(), spec
-        path, source = resolve_checkpoint(spec, args.wandb_project, args.wandb_entity)
-        return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
+        return load_model(spec, device, args.wandb_project, args.wandb_entity)
 
     rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
     waiting = log.info
