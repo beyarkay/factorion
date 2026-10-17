@@ -305,6 +305,16 @@ def test_local_checkpoint_loads_with_default_schedule(tmp_path):
     assert model.name == "sft_checkpoint.pt" and model.config == SftArgs()
 
 
+def test_checkpoint_of_an_older_layout_says_so(tmp_path):
+    path = tmp_path / "sft_checkpoint.pt"
+    net = _model().denoiser
+    state = net.state_dict() | {"noise_prior": torch.zeros(3)}
+    torch.save({"arch": net.arch, "model": state}, path)
+
+    with pytest.raises(ValueError, match="older model layout"):
+        mod_server.load_model(str(path), "factorion", None, torch.device("cpu"))
+
+
 def test_cancel_in_game_stops_quietly(monkeypatch):
     monkeypatch.setattr(mod_server.time, "sleep", lambda _: None)
     rcon = _AcceptingRcon("cancelled")

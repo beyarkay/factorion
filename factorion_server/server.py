@@ -77,7 +77,12 @@ def load_model(spec: str, project: str, entity: Optional[str], device: torch.dev
             raise RuntimeError(f"No release carries checkpoint {spec}. For a W&B run, restart the "
                                "server as `uvx --with wandb factorion-server` with a W&B API key.") from exc
     config = {k: v for k, v in (source.get("config") or {}).items() if k in ("size", "gen_steps", "gen_refine")}
-    denoiser = load_denoiser(path, device).eval()
+    try:
+        denoiser = load_denoiser(path, device).eval()
+    except RuntimeError as exc:
+        if "size mismatch" not in str(exc):
+            raise
+        raise ValueError(f"{spec} was trained on an older model layout and no longer loads; pick a newer run") from exc
     log.info("Loaded checkpoint %s (%s)", path, denoiser.arch)
     return Model(denoiser, source.get("run_name", Path(path).name), SftArgs(**config))
 
