@@ -1,28 +1,43 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+# The `factorion-server` wheel players install: the mod server, the model code
+# it imports, and the compiled `factorion_rs`. Its version is the release tag's
+# (stamped by .github/workflows/release.yml).
 [project]
-name = "factorion"
-version = "0.1.0"
+name = "factorion-server"
+version = "0.0.0"
+description = "Model server for the Factorion Factorio mod: designs factories around your sources and sinks."
+license = "MIT"
 requires-python = ">=3.11"
-# Direct runtime imports across sft.py / rl.py / factorion.py / scripts / the
-# mod server. The compiled `factorion_rs` extension is built separately with
-# `maturin develop` (see `factorion_rs/`), not resolved from PyPI.
 dependencies = [
     # Pinned so the cu126 index (below) can only change torch's CUDA build, not
     # its version: that index carries 2.13.0, which PyPI does not, so an
     # unpinned resolve would put Linux on a torch macOS can't install.
     "torch==2.12.1",
     "numpy",
-    "networkx",
     "tyro",
     "tqdm",
+]
+
+[project.urls]
+Homepage = "https://github.com/beyarkay/factorion"
+
+[project.scripts]
+factorion-server = "factorion_server.server:main"
+
+[dependency-groups]
+# Training, CI and visualisation: never imported by the server.
+train = [
+    "networkx",
     "matplotlib",
     "wandb",
     "runpod",
     "pyyaml",
     "requests",  # ci/github_api.py
 ]
-
 # Tooling for the pre-commit/pre-push checklist (`uv sync` installs these too).
-[dependency-groups]
 dev = [
     "ruff==0.11.8",
     "pytest",
@@ -32,11 +47,12 @@ dev = [
 ]
 
 [tool.uv]
-# This repo is a collection of scripts, not an installable package, so don't
-# try to build/install the project itself — just manage its dependencies.
+# Development runs from the checkout (the extension via `maturin develop`), so
+# `uv sync` only manages dependencies and never builds the wheel.
 # torch resolves from PyPI: CPU-only on macOS, CUDA-capable on Linux (so GPU
 # boxes work). CI installs CPU-only torch separately for its smoke tests.
 package = false
+default-groups = ["train", "dev"]
 
 # PyPI's default torch wheel is the +cu130 build, which bundles a CUDA 13
 # runtime and so needs host driver >= 580 — a minority of RunPod hosts, which
@@ -74,4 +90,16 @@ lint.ignore = [
     "E722",  # bare except (used in image loading fallback)
     "F811",  # redefinition of unused name (duplicate Path import)
     "F401",  # unused import (factorion_rs used at runtime via FFI)
+]
+
+[tool.maturin]
+manifest-path = "factorion_rs/Cargo.toml"
+module-name = "factorion_rs"
+features = ["pyo3/extension-module", "pyo3/abi3-py311"]
+include = [
+    { path = "factorion_server/*.py", format = "wheel" },
+    { path = "denoise.py", format = "wheel" },
+    { path = "factorion.py", format = "wheel" },
+    { path = "sft.py", format = "wheel" },
+    { path = "training_config.py", format = "wheel" },
 ]
