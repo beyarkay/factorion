@@ -380,8 +380,18 @@ local function compute_server_pieces(server, size)
   return pieces
 end
 
+-- Pieces change only with paint, GPU servers or cables, and each such change
+-- bumps storage.layout_version, so they outlive a survey until it moves.
+local piece_cache, piece_version = {}, nil
 local function server_pieces(server, size)
-  return memoized("pieces", server.unit_number .. ":" .. size, function() return compute_server_pieces(server, size) end)
+  if piece_version ~= storage.layout_version then piece_cache, piece_version = {}, storage.layout_version end
+  local key = server.unit_number .. ":" .. size
+  local hit = piece_cache[key]
+  if not hit then
+    hit = { compute_server_pieces(server, size) }
+    piece_cache[key] = hit
+  end
+  return hit[1], hit[2]
 end
 
 -- Blinks, like vanilla's alert icons.
@@ -442,11 +452,24 @@ local function compute_clusters(surface)
     table.insert(groups[root], server)
     result[server.unit_number] = groups[root]
   end
-  return result
+  return result, servers
 end
 
+-- Kept across surveys like the pieces they are built from; a server that
+-- vanished without an event (deleted in the editor) forces a recompute.
+local cluster_cache, cluster_version = {}, nil
 local function clusters(surface)
-  return memoized("clusters", surface.index, function() return compute_clusters(surface) end)
+  if cluster_version ~= storage.layout_version then cluster_cache, cluster_version = {}, storage.layout_version end
+  local size = storage.model and storage.model.grid_size
+  local hit = cluster_cache[surface.index]
+  if hit and hit.size == size then
+    local valid = true
+    for _, server in ipairs(hit.servers) do valid = valid and server.valid end
+    if valid then return hit.groups end
+  end
+  local groups, servers = compute_clusters(surface)
+  cluster_cache[surface.index] = { size = size, groups = groups, servers = servers }
+  return groups
 end
 
 -- server's cluster, server first; groups is clusters() of its surface when
@@ -599,9 +622,11 @@ local function draw_mask_outline(surface)
   end
 end
 
--- Painting, blueprints and cables change outlines an entity or tile at a
--- time, and a redraw scans the whole surface, so redraw once they pause.
-local function outlines_changed(surface_index)
+-- Painting, blueprints and cables change the layout an entity or tile at a
+-- time, and an outline redraw scans the whole surface, so redraw once they
+-- pause.
+local function layout_changed(surface_index)
+  storage.layout_version = (storage.layout_version or 0) + 1
   storage.outlines_changed = storage.outlines_changed or {}
   storage.outlines_changed[surface_index] = game.tick
 end
@@ -703,7 +728,7 @@ local function remove_links(cut)
       surfaces[link.surface] = true
     end
   end
-  for index in pairs(surfaces) do outlines_changed(index) end
+  for index in pairs(surfaces) do layout_changed(index) end
   return removed
 end
 
@@ -769,7 +794,7 @@ local function add_link(surface, a, b)
   for _, node in ipairs({ a, b }) do
     if not is_tile(node) then script.register_on_object_destroyed(node) end
   end
-  outlines_changed(surface.index)
+  layout_changed(surface.index)
 end
 
 local function prune_links()
@@ -837,7 +862,7 @@ local function mask_tiles_changed(event)
       changed = true
     end
   end
-  if changed then outlines_changed(event.surface_index) end
+  if changed then layout_changed(event.surface_index) end
 end
 
 script.on_event({
@@ -1513,7 +1538,7 @@ local function entity_built(event)
     if copied then apply_gpu_settings(entity, copied) end
     local carried = event.tags and event.tags.factorion_links
     if carried then restore_links(entity, carried.links, carried.direction) end
-    outlines_changed(entity.surface.index)
+    layout_changed(entity.surface.index)
   end
   if entity and entity.valid and storage.pending_links and #storage.pending_links > 0 then
     complete_pending_links(entity)
@@ -1601,7 +1626,7 @@ local function endpoint_entity_removed(event)
   if entity.type == "electric-pole" or entity.name == inference.GPU_SERVER then
     remove_links(touching("e" .. entity.unit_number))
   end
-  if entity.name == inference.GPU_SERVER then outlines_changed(entity.surface.index) end
+  if entity.name == inference.GPU_SERVER then layout_changed(entity.surface.index) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
   if config and config.item then
     storage.removed_markers = storage.removed_markers or {}
@@ -2580,26 +2605,35 @@ local function survey_cluster(members, groups, size)
   }
 end
 
+-- Each cluster is surveyed once a second, on the tick its leader's unit
+-- number picks, so many clusters spread their cost over the second.
 local function survey()
   local offline = storage.server_connected == false or storage.model_error ~= nil
   local size = storage.model and storage.model.grid_size
   for _, surface in pairs(game.surfaces) do
     local groups = clusters(surface)
     local surveyed = {}
-    for _, server in ipairs(surface.find_entities_filtered({ name = inference.GPU_SERVER })) do
-      local state = server_state(server)
-      local members = groups[server.unit_number] or { server }
-      surveyed[members] = surveyed[members] or survey_cluster(members, groups, size)
-      local cluster_info = surveyed[members]
-      local region = cluster_info.region
-      state.cluster_size = cluster_info.powered
-      state.sink_units = cluster_info.sink_units
-      state.leader = cluster_info.leader.unit_number
-      if cluster_info.latest ~= state then copy_settings(cluster_info.latest, state) end
-      sync_virtual_endpoints(server, state, cluster_info.leader == server and region and region.signals or {})
-      local warned = region and #region.warnings > 0
-      set_alert(server, offline and "gpu-offline" or (cluster_info.unlinked and "unlinked")
-        or (warned and "warning") or nil, { 0, -0.4 })
+    for _, members in pairs(groups) do
+      local leader = not surveyed[members] and members[1]
+      surveyed[members] = true
+      for _, member in ipairs(leader and members or {}) do
+        if member.unit_number < leader.unit_number then leader = member end
+      end
+      if leader and leader.unit_number % 60 == game.tick % 60 then
+        local cluster_info = survey_cluster(members, groups, size)
+        local region = cluster_info.region
+        for _, server in ipairs(members) do
+          local state = server_state(server)
+          state.cluster_size = cluster_info.powered
+          state.sink_units = cluster_info.sink_units
+          state.leader = leader.unit_number
+          if cluster_info.latest ~= state then copy_settings(cluster_info.latest, state) end
+          sync_virtual_endpoints(server, state, leader == server and region and region.signals or {})
+          local warned = region and #region.warnings > 0
+          set_alert(server, offline and "gpu-offline" or (cluster_info.unlinked and "unlinked")
+            or (warned and "warning") or nil, { 0, -0.4 })
+        end
+      end
     end
   end
 end
@@ -3024,6 +3058,7 @@ remote.add_interface("factorion", {
 -- Endpoint belts drive the player's factory; parity drives its isolated lab
 -- surface and early-outs when no run is active.
 script.on_event(defines.events.on_tick, function()
+  with_memo(survey)
   service_endpoint_belts()
   check_circuit_conditions()
   place_queued_steps()
@@ -3047,10 +3082,7 @@ end)
 script.on_nth_tick(30, blink)
 script.on_nth_tick(60, function()
   check_server()
-  with_memo(function()
-    survey()
-    inference.refresh_all(true)
-  end)
+  with_memo(function() inference.refresh_all(true) end)
 end)
 
 -- ----------------------------------------------------------------------------
