@@ -416,7 +416,7 @@ def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
     ).strip()
 
 
-def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader, grid_size: int) -> None:
+def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader) -> None:
     try:
         model = get_model(checkpoint)
         method = "model_loaded"
@@ -448,7 +448,6 @@ def poll_loop(
     *,
     poll_interval: float = 0.25,
     device: torch.device,
-    grid_size: int,
 ):
     """Poll Factorio over RCON for queued requests; handle each as it arrives.
 
@@ -501,7 +500,7 @@ def poll_loop(
 
         try:
             if req.get("type") == "load_model":
-                _report_model(rcon, req["checkpoint"], get_model, grid_size)
+                _report_model(rcon, req["checkpoint"], get_model)
                 continue
             handle_request(
                 req,
@@ -549,7 +548,6 @@ def handle_request(
         for i, placements in enumerate(steps):
             if not _stream_step(rcon, req["request_id"], len(steps) - i - 1, placements):
                 stats["refused_steps"] += 1
-            time.sleep(float(req.get("step_delay_s", 0.0)))
         stats.update(result)
     except PredictionCancelled:
         stats["stop_reason"] = "cancelled"
@@ -575,7 +573,6 @@ def main():
     ap.add_argument("--rcon-port", type=int, help="default: from Factorio's config.ini, enabling RCON there if needed")
     ap.add_argument("--rcon-password")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    ap.add_argument("--grid-size", type=int, default=SftArgs.size, help="side of the region the mod plans")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
 
@@ -643,7 +640,6 @@ def main():
             get_model, rcon,
             poll_interval=0.25,
             device=device,
-            grid_size=args.grid_size,
         )
     finally:
         rcon.close()

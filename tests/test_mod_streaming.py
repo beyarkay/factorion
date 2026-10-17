@@ -286,8 +286,8 @@ def test_load_model_reports_grid_size_or_error():
             raise FileNotFoundError("no such run")
         return _model(size=13)
 
-    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model, 15)
-    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model, 15)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model)
 
     loaded, failed = rcon.commands
     assert "'model_loaded'" in loaded and '"grid_size":13' in loaded
