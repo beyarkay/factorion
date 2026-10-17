@@ -2,7 +2,6 @@
 
 import os
 import sys
-from typing import Any
 
 import numpy as np
 import pytest
@@ -10,17 +9,18 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from helpers import LessonKind, blank_entities, build_factory, str2ent  # noqa: E402
-from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL, Factory  # noqa: E402
+from helpers import TINY, Channel, LessonKind, blank_entities, build_factory, str2ent  # noqa: E402
+from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL, Factory, apply_placement_action  # noqa: E402
 from denoise import (  # noqa: E402
     STATE_CHANNELS,
     DenoiserUNet,
-    RECIPES,
     TYPES,
     corrupt,
     free_mask,
     generate,
     legalize,
+    noise_tokens,
+    part_map,
     run_denoise_eval,
     score_world,
     state_to_tokens,
@@ -29,7 +29,6 @@ from denoise import (  # noqa: E402
 )
 from training_config import SharedArgs  # noqa: E402
 
-TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
 _ASM = str2ent("assembling_machine_1").value
 
 
@@ -59,29 +58,22 @@ def test_every_training_factory_is_a_reachable_target(kind):
         assert score_world(world, factory.max_throughput, 0.0)["thput_raw"] > 0
 
 
-@pytest.mark.parametrize("io", ["token", "factored"])
-def test_a_confident_prediction_decodes_to_the_factory(io):
+def test_a_confident_prediction_decodes_to_the_factory():
     """Logits that put all their mass on a solved factory's tokens decode,
     through `pick` and `legalize`, to exactly that factory — assemblers and
-    splitters included, re-anchored by raster scan when the heads carry no
-    footprint part (`factored`)."""
-    model = DenoiserUNet(**TINY, io=io)
+    splitters included."""
+    model = DenoiserUNet(**TINY)
     for kind in (LessonKind.SPLITTER_1IN, LessonKind.MIRRORED_2IN):
         factory = _factory(15, kind, 0)
         state, toks = _tokens(factory.world_CWH)
-        typ, rec, part = (torch.from_numpy(t)[None] for t in toks)
-        if io == "token":
-            targets = [typ, rec, part]
-        else:
-            edm = torch.from_numpy(np.array(TYPES))[typ]
-            targets = [edm[..., 0], edm[..., 1], torch.from_numpy(np.array(RECIPES))[rec], edm[..., 2]]
+        targets = [torch.from_numpy(t)[None] for t in toks]
         logits = torch.cat(
             [100 * torch.nn.functional.one_hot(t, n).permute(0, 3, 1, 2).float() for t, n in zip(targets, model.head_sizes)],
             dim=1,
         )
         picked = [t[0].numpy() for t in model.pick(logits)]
         cond = blank_entities(factory)[0].numpy().astype(np.int64)
-        world = legalize(cond, picked[0], picked[1], picked[2] if io == "token" else None, np.ones(picked[0].shape))
+        world = legalize(cond, picked[0], picked[1], picked[2], np.ones(picked[0].shape))
         assert np.array_equal(world, factory.world_CWH.numpy()), kind
 
 
@@ -136,31 +128,22 @@ def test_model_is_fully_convolutional(size):
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_legalized_noise_is_buildable_through_the_env(seed):
-    """Whatever token grid it gets, `legalize` returns a world the env's own
-    placement actions rebuild exactly, scored at the same throughput: the
-    denoiser is never credited for a factory the agent couldn't place."""
-    from ppo import FactorioEnv, _CH_DIR, _CH_ENT, _CH_ITEMS, _CH_MISC
-    from denoise import noise_tokens, part_map, score_world
-
-    kind = LessonKind.SPLITTER_1IN
-    factory = _factory(15, kind, seed)
+def test_legalized_noise_is_buildable_by_placement_actions(seed):
+    """Whatever token grid it gets, `legalize` returns a world that placement
+    actions rebuild exactly from the blank one: the denoiser is never
+    credited for a factory that couldn't be placed."""
+    factory = _factory(15, LessonKind.SPLITTER_1IN, seed)
     cond = blank_entities(factory)[0].numpy().astype(np.int64)
     prior = torch.full((len(TYPES),), 1.0 / len(TYPES))
     typ, rec, part = (t[0].numpy() for t in noise_tokens(prior, (1, 15, 15), torch.Generator().manual_seed(seed)))
     world = legalize(cond, typ, rec, part, np.ones(typ.shape))
 
-    env = FactorioEnv(size=15)
-    env.reset(seed=seed, options={"kind": kind, "num_missing_entities": 225})
-    anchors = (world[_CH_ENT] != 0) & (cond[_CH_ENT] == 0) & (part_map(world) == 0)
-    info = {}
-    for x, y in zip(*np.nonzero(anchors)):
-        c = world[:, x, y]
-        *_, info = env.step({"xy": np.array([x, y]), "entity": int(c[_CH_ENT]), "direction": int(c[_CH_DIR]),
-                             "item": int(c[_CH_ITEMS]), "misc": int(c[_CH_MISC])})
-        assert not any(info["invalid_reason"].values())
-    assert np.array_equal(env._world_CWH.numpy().astype(np.int64), world)
-    assert info["thput_normed"] == score_world(world, factory.max_throughput, 0.0)["thput"]
+    built = torch.from_numpy(cond.copy())
+    ent = Channel.ENTITIES.value
+    for x, y in zip(*np.nonzero((world[ent] != 0) & (cond[ent] == 0) & (part_map(world) == 0))):
+        e, d, item, misc = (int(v) for v in world[:4, x, y])
+        assert apply_placement_action(built, {"xy": (x, y), "entity": e, "direction": d, "item": item, "misc": misc}) is None
+    assert np.array_equal(built.numpy(), world)
 
 
 def test_generate_never_edits_the_markers():

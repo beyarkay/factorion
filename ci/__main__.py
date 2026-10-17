@@ -9,7 +9,7 @@ def main() -> None:
     tyro.extras.subcommand_cli_from_dict(
         {
             "sft": cli.sft,
-            "ppo": cli.ppo,
+            "rl": cli.rl,
             "sweep": cli.sweep,
             "compare": cli.compare,
             "pods": cli.pods,

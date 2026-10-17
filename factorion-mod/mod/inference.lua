@@ -8,33 +8,14 @@ local FRAME = "factorion-gpu-gui"
 local SERVER_KW = 4.5
 
 M.DEFAULTS = {
-  checkpoint = "mvbipbr0",
+  checkpoint = "dr17bmik",
   temperature = 1,
-  top_k = 0,
-  top_p = 1,
-  stop_rule = "sample",
-  stop_threshold = 0.5,
-  max_steps = 0,
   seed = 0,
-}
-
-local STOP_RULES = {
-  { "sample", "Sample it, as in training" },
-  { "threshold", "Stop above the threshold" },
-  { "never", "Never stop early" },
 }
 
 local NUMBER_FIELDS = {
   { key = "temperature", caption = "Temperature", min = 0, max = 2, decimal = true,
     tooltip = "0 always takes the most likely choice; 1 samples the model's own distribution, as in training." },
-  { key = "top_k", caption = "Top-k", min = 0, max = 1000,
-    tooltip = "Only sample from the k most likely choices for each part of an action. 0 turns it off." },
-  { key = "top_p", caption = "Top-p", min = 0, max = 1, decimal = true,
-    tooltip = "Only sample from the most likely choices that together hold this much probability. 1 turns it off." },
-  { key = "stop_threshold", caption = "Stop threshold", min = 0, max = 1, decimal = true,
-    tooltip = "With the threshold stop rule, stop once the model's done-probability exceeds this." },
-  { key = "max_steps", caption = "Max steps", min = 0, max = 10000,
-    tooltip = "Most placements per prediction. 0 uses the training episode length (grid width x height)." },
   { key = "seed", caption = "Seed", min = 0, max = 2147483647,
     tooltip = "0 draws a fresh random seed each prediction; any other value replays that seed exactly." },
 }
@@ -135,7 +116,7 @@ function M.open(player)
   })
   row.add({
     type = "textfield", name = "checkpoint", text = config.checkpoint,
-    tooltip = "W&B run id (e.g. mvbipbr0, or entity/project/id) or a local .pt path on the server's machine.",
+    tooltip = "W&B run id (e.g. dr17bmik, or entity/project/id) or a local .pt path on the server's machine.",
     tags = { factorion_gpu = "checkpoint" },
   })
   row.add({ type = "button", caption = "Load", tags = { factorion_gpu = "load" } })
@@ -150,22 +131,7 @@ function M.open(player)
       tooltip = field.tooltip, tags = { factorion_gpu = field.key },
     })
   end
-  for _, field in ipairs(NUMBER_FIELDS) do
-    if field.key == "stop_threshold" then
-      settings.add({ type = "label", caption = "Stop rule",
-        tooltip = "How the model's \"I'm done\" head ends a prediction." })
-      local items, selected = {}, 1
-      for i, rule in ipairs(STOP_RULES) do
-        items[i] = rule[2]
-        if rule[1] == config.stop_rule then selected = i end
-      end
-      settings.add({
-        type = "drop-down", items = items, selected_index = selected,
-        tags = { factorion_gpu = "stop_rule" },
-      })
-    end
-    number_field(field)
-  end
+  for _, field in ipairs(NUMBER_FIELDS) do number_field(field) end
 
   -- The region keeps the model's grid size, so it can only be moved.
   frame.add({ type = "line" })
@@ -227,13 +193,6 @@ function M.on_gui_text_changed(event)
       end
     end
   end
-  return true
-end
-
-function M.on_gui_selection_state_changed(event)
-  local tag = event.element.valid and event.element.tags.factorion_gpu
-  if tag ~= "stop_rule" then return false end
-  M.config().stop_rule = STOP_RULES[event.element.selected_index][1]
   return true
 end
 
