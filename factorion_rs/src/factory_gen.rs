@@ -5573,7 +5573,7 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
         };
         let live = |&(x, y): &Cell| {
             PlacedPole::new(kind, x, y).is_some_and(|pole| {
-                pole.reaches_off_map(w as i64, h as i64) || placed.iter().any(|p| p.wires_to(&pole))
+                pole.reaches_power(world) || placed.iter().any(|p| p.wires_to(&pole))
             })
         };
         let scored: Vec<(Cell, usize, bool)> =
