@@ -1,7 +1,8 @@
 # Factorion server
 
 Loads the trained Factorion denoiser checkpoint named by the mod's
-"Factorion checkpoint" setting (local or directly from a W&B run), polls a
+"Factorion checkpoint" setting (local, from a GitHub release, or from a W&B
+run), polls a
 running Factorio instance over RCON for prediction requests, generates eight
 factories around each request's markers (its existing entities are walls to
 build around), and streams the highest-throughput one's entities back via
@@ -9,9 +10,10 @@ the same RCON connection for immediate placement in the world.
 
 ## Run
 
-Easiest GUI path: run the root-level launcher. It installs dependencies and
-builds the Rust extension when needed, installs/enables the mod, reads
-Factorio's GUI RCON config, and waits for a hosted game:
+Players install it from PyPI: `uvx factorion-server@<version>` (see the root
+README). From a checkout, the easiest GUI path is the root-level launcher. It
+installs dependencies and builds the Rust extension when needed,
+installs/enables the mod, and waits for a hosted game:
 
 ```bash
 ./start-mod.sh
@@ -37,14 +39,15 @@ If you go manual, start Factorio with matching flags:
 factorio --rcon-bind 127.0.0.1:27015 --rcon-password factorion
 ```
 
-Required flags for the server:
+Without `--rcon-port` / `--rcon-password` the server reads Factorio's
+`config.ini` (`local-rcon-socket` / `local-rcon-password` under `[other]`),
+writing them there first if absent; pass both to reach a headless server.
 
-- `--rcon-port` / `--rcon-password` — must match what Factorio was
-  launched with.
-
-The checkpoint setting accepts a W&B run id, `entity/project/id`, or a local
-`.pt` checkpoint saved by `sft.py` or `rl.py`. The denoiser runs at any grid
-size; `--grid-size` (default 15) is the region the mod plans.
+The checkpoint setting accepts a W&B run id (fetched from a GitHub release
+asset `<run_id>.pt` if one exists, else from W&B), `entity/project/id`, or a
+local `.pt` checkpoint saved by `sft.py` or `rl.py`. The denoiser runs at any
+grid size; `--grid-size` (default 32) is the region the mod plans.
+`--device auto` (the default) uses CUDA, then MPS, then the CPU.
 
 ## Protocol
 

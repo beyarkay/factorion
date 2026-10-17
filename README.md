@@ -34,6 +34,26 @@ The pipeline is denoising pretraining (SFT) followed by RL finetuning, on a
   solution to imitate, and one source per ingredient of the target recipe.
   This is the number that actually matters.
 
+## Play it in Factorio
+
+The [Factorion mod](https://mods.factorio.com/mod/factorion) lets you place
+sources and sinks in your own game and watch the model build the factory
+between them. It needs Factorio 2.0 (not Space Age) and, for now, an Apple
+Silicon Mac or Linux.
+
+1. Install **Factorion** from Factorio's in-game mod browser.
+2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/)
+   (`curl -LsSf https://astral.sh/uv/install.sh | sh`), quit Factorio, and run
+   the command the mod prints in chat, `uvx factorion-server@<version>`. It
+   turns on RCON in Factorio's config, downloads the model, and waits.
+3. Start Factorio and load your game with **Play → Multiplayer → Host saved
+   game** (or Host new game): Factorio only lets the server in while hosting.
+4. Press `Ctrl+T` for the region tool and endpoint belts, stamp a region,
+   place sources and sinks, click them to pick items, and press `Ctrl+P`.
+
+The model runs on your GPU if it can and the CPU otherwise. Releases are cut
+as described in [RELEASING.md](RELEASING.md).
+
 ## What is Factorio?
 
 Factorio is a popular 2D tile-based top-down PC game centred on automation and

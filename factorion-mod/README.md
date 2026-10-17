@@ -96,24 +96,25 @@ factorion_server/             ← the Python side (repo root, so it's importable
 
 ## Quick start (GUI)
 
-1. Configure GUI-host RCON once in `config.ini` as described above. Then start
-   the mod from the repo root:
+1. Start the mod from the repo root:
 
    ```bash
    ./start-mod.sh
    ```
 
    This installs dependencies and builds the Rust extension when needed,
-   installs and enables the mod, and waits for Factorio.
+   installs and enables the mod, enables GUI-host RCON in `config.ini` if it
+   isn't (quit Factorio first), and waits for Factorio.
 
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
 The model is chosen in-game: **Settings → Mod settings → Map → Factorion
-checkpoint** takes a bare W&B run id (default `dr17bmik`), `entity/project/id`,
-or a local `.pt` path on the server's machine. On a new game or a change to
-the setting, the mod asks the server to load it; the server downloads the run's
-latest model artifact and reports its grid size (`--grid-size`, default 15)
-back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
+checkpoint** takes a bare W&B run id (default: the release's checkpoint),
+`entity/project/id`, or a local `.pt` path on the server's machine. On a new
+game or a change to the setting, the mod asks the server to load it; the server
+downloads the run's checkpoint from a GitHub release that carries it, or else
+the run's latest W&B model artifact, and reports its grid size (`--grid-size`,
+default 32) back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
 
 For a manual or headless setup, start the server directly:
 
