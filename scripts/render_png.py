@@ -55,8 +55,10 @@ def _icon(item_id: int):
 
 
 def draw(world_CWH, ax, title="", crop=None):
-    """Draw a (C, W, H) world onto `ax`. `crop` = (x0, x1, y0, y1), exclusive ends."""
-    w = torch.as_tensor(world_CWH).clone().to(torch.int64)
+    """Draw a (C, W, H) world onto `ax`. `crop` = (x0, x1, y0, y1), exclusive
+    ends; everything is drawn and the axes clip it, so an entity straddling the
+    crop shows its visible part."""
+    w = torch.as_tensor(world_CWH).to("cpu", torch.int64, copy=True)
     refresh_power(w)
     w = w.numpy()
     ent, dirs, itm, misc = w[Channel.ENTITIES.value], w[Channel.DIRECTION.value], w[Channel.ITEMS.value], w[Channel.MISC.value]
@@ -64,7 +66,6 @@ def draw(world_CWH, ax, title="", crop=None):
     W, H = ent.shape
     x0, x1, y0, y1 = crop or (0, W, 0, H)
     inb = lambda x, y: 0 <= x < W and 0 <= y < H  # noqa: E731
-    shown = lambda x, y: x0 <= x < x1 and y0 <= y < y1  # noqa: E731
     delta = lambda d: DIR_TO_DELTA.get(Direction(int(d)), (0, 0))  # noqa: E731
     down = lambda x, y: ent[x, y] == ID["underground_belt"] and misc[x, y] == Misc.UNDERGROUND_DOWN.value  # noqa: E731
 
@@ -109,8 +110,6 @@ def draw(world_CWH, ax, title="", crop=None):
     for x in range(W):
         for y in range(H):
             e = ent[x, y]
-            if not shown(x, y):
-                continue
             dx, dy = delta(dirs[x, y])
             fed = [(fx, fy) for fx, fy in DIR_TO_DELTA.values() if feeds(x + fx, y + fy, x, y)]
             if e in (ID["transport_belt"], ID["sink"]):
@@ -126,11 +125,16 @@ def draw(world_CWH, ax, title="", crop=None):
                 if down(x, y):
                     seg(x, y, -dx, -dy)
                     seg(x, y, dx, dy, fade=True)
-                    for k in range(1, 12):
+                    # Paired as the engine pairs it: the first underground belt
+                    # within 5 tiles, if it is an exit facing the same way.
+                    for k in range(1, 6):
                         tx, ty = x + dx * k, y + dy * k
-                        if inb(tx, ty) and ent[tx, ty] == ID["underground_belt"] and dirs[tx, ty] == dirs[x, y]:
-                            ax.plot([x + 0.5 + dx * 0.5, tx + 0.5 - dx * 0.5], [y + 0.5 + dy * 0.5, ty + 0.5 - dy * 0.5],
-                                    ls=(0, (1.5, 2.5)), color=C["belt"], lw=2.2, alpha=0.6, zorder=1)
+                        if not inb(tx, ty):
+                            break
+                        if ent[tx, ty] == ID["underground_belt"]:
+                            if misc[tx, ty] == Misc.UNDERGROUND_UP.value and dirs[tx, ty] == dirs[x, y]:
+                                ax.plot([x + 0.5 + dx * 0.5, tx + 0.5 - dx * 0.5], [y + 0.5 + dy * 0.5, ty + 0.5 - dy * 0.5],
+                                        ls=(0, (1.5, 2.5)), color=C["belt"], lw=2.2, alpha=0.6, zorder=1)
                             break
                 else:
                     seg(x, y, -dx, -dy, fade=True)
@@ -176,11 +180,11 @@ def draw(world_CWH, ax, title="", crop=None):
                                             head_width=0.3, head_length=0.12, color="white", lw=0, zorder=7))
 
     for x, y in zip(*np.nonzero(ent == ID["assembling_machine_1"])):
-        if parts[x, y] == 0 and shown(x, y):
+        if parts[x, y] == 0:
             ax.add_patch(Rectangle((x + 0.06, y + 0.06), 2.88, 2.88, facecolor=C["asm"], edgecolor=C["asm_edge"], lw=1.5, zorder=4))
             icon(itm[x, y], x + 1.5, y + 1.5, 1.9)
     for x, y in zip(*np.nonzero(ent == ID["substation"])):
-        if parts[x, y] == 0 and shown(x, y):
+        if parts[x, y] == 0:
             ax.add_patch(Polygon(BOLT * 2 + (x, y), closed=True, facecolor=C["pole"], edgecolor="#0b2f63", lw=0.8, zorder=6))
 
     ax.set_xlim(x0, x1)
