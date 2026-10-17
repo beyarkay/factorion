@@ -19,6 +19,7 @@ import os
 import random
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -44,10 +45,14 @@ from denoise import (
 )
 from factorion import (
     LESSON_IS_TRIAL,
+    Channel,
     Factory,
+    Footprint,
     TRAINING_KINDS,
     LessonKind,
     build_factory,
+    count_unpowered,
+    refresh_power,
 )
 
 from training_config import RlArgs, SftArgs, wsd_multiplier
@@ -108,8 +113,37 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _iter_factories(size, base_seed, worker_id, num_workers):
-    """Yield the uint8 state of fresh lesson factories forever.
+_MIN_BOX = 5
+
+
+def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
+    """A lesson inside a random w × h box (5 ≤ w, h ≤ size) of a size × size
+    grid, every tile outside the box unbuildable. Generators only build
+    squares, so the factory is min(w, h) square, placed at random within the
+    box. None when the kind doesn't fit or the move unpowers it."""
+    rng = random.Random(seed)
+    w, h = rng.randint(_MIN_BOX, size), rng.randint(_MIN_BOX, size)
+    s = min(w, h)
+    factory = build_factory(size=s, kind=kind, seed=seed)
+    if factory is None:
+        return None
+    bx, by = rng.randint(0, size - w), rng.randint(0, size - h)
+    fx, fy = bx + rng.randint(0, w - s), by + rng.randint(0, h - s)
+    world = torch.zeros((factory.world_CWH.shape[0], size, size), dtype=factory.world_CWH.dtype)
+    world[Channel.FOOTPRINT.value, bx : bx + w, by : by + h] = Footprint.AVAILABLE.value
+    world[:, fx : fx + s, fy : fy + s] = factory.world_CWH
+    refresh_power(world)
+    # A pole that drew power from the square's edge may now face buildable
+    # box tiles instead.
+    if count_unpowered(world):
+        return None
+    protected = frozenset((x + fx, y + fy) for x, y in factory.protected_positions)
+    return replace(factory, world_CWH=world, protected_positions=protected)
+
+
+def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0):
+    """Yield the uint8 state of fresh lesson factories forever, `box_frac` of
+    them built inside a random box (`boxed_factory`).
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     concurrent workers never share a factory. Kinds are drawn uniformly.
@@ -129,6 +163,13 @@ def _iter_factories(size, base_seed, worker_id, num_workers):
     while True:
         kind = rng.choice(available)
         seed += num_workers
+        if rng.random() < box_frac:
+            # A box too small for the kind says nothing about the full grid, so
+            # it doesn't count towards dropping the kind.
+            boxed = boxed_factory(kind, seed, size)
+            if boxed is not None:
+                yield torch.from_numpy(world_to_state(boxed.world_CWH))
+            continue
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
             consecutive_fails[kind.name] += 1
@@ -155,15 +196,16 @@ class FactoryStream(IterableDataset):
     CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, base_seed):
+    def __init__(self, size, base_seed, box_frac):
         self.size = size
         self.base_seed = base_seed
+        self.box_frac = box_frac
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        return _iter_factories(self.size, self.base_seed, worker_id, num_workers)
+        return _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac)
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
@@ -464,7 +506,7 @@ def train_sft(args: SftArgs):
             attn_heads=args.attn_heads,
             dropout=args.dropout,
         )
-        prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1), 256))
+        prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1, args.box_frac), 256))
         model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     model.to(device)
@@ -481,7 +523,7 @@ def train_sft(args: SftArgs):
 
     workers = min(16, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, train_seed),
+        FactoryStream(args.size, train_seed, args.box_frac),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",

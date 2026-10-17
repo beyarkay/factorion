@@ -142,6 +142,10 @@ class SftArgs(SharedArgs):
     noise_one_frac: float = 0.1
     """fraction of examples that are pure noise (level 1), where generation
     starts; the rest are uniform in [0, 1]"""
+    box_frac: float = 0.25
+    """fraction of training factories built inside a random w × h box (5 ≤ w,
+    h ≤ size) with every tile outside it unbuildable: the buildable area in
+    the game is whatever the player marks out"""
     unroll: bool = True
     """also train on the model's own sampled prediction (SUNDAE's unrolled
     denoising), the input every generation step after the first sees"""
