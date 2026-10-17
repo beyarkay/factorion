@@ -1,7 +1,5 @@
 """Streaming-placement tests for the Factorio mod server."""
 
-from pathlib import Path
-import sys
 from typing import cast
 
 import numpy as np
@@ -10,12 +8,8 @@ import torch
 
 from denoise import DenoiserUNet
 from factorion import Channel, Footprint, Misc, str2ent
+from factorion_server import server as mod_server
 from helpers import TINY
-
-
-SERVER_DIR = Path(__file__).parents[1] / "factorion-mod" / "server"
-sys.path.insert(0, str(SERVER_DIR))
-import server as mod_server  # noqa: E402
 
 
 def _id(name: str) -> int:

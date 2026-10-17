@@ -4,8 +4,7 @@ Polls the Factorio mod for requests, generates a factory with the trained
 denoiser, and streams each of its entities back into the running game over
 RCON.
 
-Run from the repo root so the `factorion` and `factorion_rs` modules are
-importable (e.g. via `uv run python factorion-mod/server/server.py ...`).
+Installed as `factorion-server`; from a checkout, `uv run python -m factorion_server`.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ import functools
 import json
 import logging
 import secrets
-import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -23,17 +21,12 @@ from typing import Callable, Optional
 import numpy as np
 import torch
 
-# Make the repo root importable when this script is run via uv from elsewhere.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state
+from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent
+from sft import resolve_checkpoint
+from training_config import RlArgs, SftArgs
 
-from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state  # noqa: E402
-from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent  # noqa: E402
-from sft import resolve_checkpoint  # noqa: E402
-from training_config import RlArgs, SftArgs  # noqa: E402
-
-from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
+from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
 
 log = logging.getLogger("factorion-server")
 MOD_PROTOCOL_VERSION = "9"
@@ -45,7 +38,7 @@ ModelLoader = Callable[[str], tuple[DenoiserUNet, str]]
 # RCON client: shared with parity.py, see rcon.py.
 # --------------------------------------------------------------------------- #
 
-from rcon import RconClient, RconError  # noqa: E402, F401
+from .rcon import RconClient, RconError  # noqa: E402, F401
 
 
 # --------------------------------------------------------------------------- #

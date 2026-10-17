@@ -80,17 +80,18 @@ factorion-mod/
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
 │   └── prototypes/           ← endpoint belts, footprint tool, hotkeys, GPU server
-├── server/                   ← local inference daemon + parity harness
-│   ├── server.py             ← RCON poll loop → denoiser (best of 8 builds) → RCON push
-│   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
-│   ├── rcon.py               ← shared minimal Source-RCON client
-│   ├── blueprint.py          ← tensor → blueprint utility used by tests/tooling
-│   └── README.md
 └── scripts/
     ├── install_mod.sh        ← symlink mod/ into Factorio's mods dir
     ├── serve.sh              ← one-command GUI setup + W&B/local model server
     ├── launch.sh             ← spawn Factorio with auto-RCON + start server (headless)
     └── parity_launch.sh      ← headless Factorio + parity harness, one command
+
+factorion_server/             ← the Python side (repo root, so it's importable)
+├── server.py                 ← RCON poll loop → denoiser (best of 8 builds) → RCON push
+├── parity.py                 ← engine ↔ Factorio throughput comparison (issue #261)
+├── rcon.py                   ← shared minimal Source-RCON client
+├── blueprint.py              ← tensor → blueprint utility used by tests/tooling
+└── README.md
 ```
 
 ## Quick start (GUI)
@@ -117,7 +118,7 @@ back. The region tool then stamps a region of that size. Loaded models stay cach
 For a manual or headless setup, start the server directly:
 
 ```bash
-uv run python factorion-mod/server/server.py \
+uv run python -m factorion_server \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
@@ -176,7 +177,7 @@ Or against an already-running instance (headless or GUI host, same RCON
 setup as above):
 
 ```bash
-uv run python factorion-mod/server/parity.py \
+uv run python -m factorion_server.parity \
   --rcon-port 64502 --rcon-password <pw> \
   --lessons MOVE_ONE_ITEM,SPLITTER_SPLIT --seeds 5 --size 15
 ```

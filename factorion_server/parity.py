@@ -9,7 +9,7 @@ compares the measured per-sink items/s against the engine's prediction.
 Run from the repo root with a Factorio instance hosting a save that has
 the factorion mod enabled and RCON reachable (see factorion-mod/README.md):
 
-    uv run python factorion-mod/server/parity.py \
+    uv run python -m factorion_server.parity \
         --rcon-port 64502 --rcon-password <pw> \
         --lessons all --seeds 5 --size 15
 
@@ -29,13 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
-# Make the repo root importable when this script is run via uv from elsewhere.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import factorion_rs  # noqa: E402
-from factorion import (  # noqa: E402
+import factorion_rs
+from factorion import (
     Channel,
     LessonKind,
     Misc,
@@ -46,8 +41,8 @@ from factorion import (  # noqa: E402
     str2ent,
 )
 
-from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
-from rcon import RconClient  # noqa: E402
+from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
+from .rcon import RconClient
 
 
 # --------------------------------------------------------------------------- #

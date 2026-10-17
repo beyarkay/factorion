@@ -33,11 +33,11 @@ against the engine's prediction. Full sequence, from nothing to a report:
 
    ```bash
    # a quick sweep of every lesson, 3 seeds each
-   uv run python factorion-mod/server/parity.py \
+   uv run python -m factorion_server.parity \
      --rcon-port 64502 --rcon-password <pw> --lessons all --seeds 3 --game-speed 100
 
    # one lesson / focused run
-   uv run python factorion-mod/server/parity.py \
+   uv run python -m factorion_server.parity \
      --rcon-port 64502 --rcon-password <pw> --lessons MEMORISE_1_INGREDIENT_RECIPES --seeds 10
 
    # full regression (lessons + every YAML fixture) — see the section below
@@ -104,8 +104,7 @@ path it comes from `config.ini` `[other]` (`local-rcon-socket` /
 set to `127.0.0.1:64502`. Quick liveness check:
 
 ```bash
-uv run python -c "import sys; sys.path.insert(0,'factorion-mod/server'); \
-from rcon import RconClient; \
+uv run python -c "from factorion_server.rcon import RconClient; \
 print(RconClient('127.0.0.1',64502,'<pw>').__enter__().exec(\
 \"/silent-command rcon.print(remote.call('factorion','ping'))\"))"
 ```
@@ -114,7 +113,7 @@ print(RconClient('127.0.0.1',64502,'<pw>').__enter__().exec(\
 
 ```bash
 # needs a hosted game with the mod; --dry-run needs neither
-uv run python factorion-mod/server/parity.py \
+uv run python -m factorion_server.parity \
   --rcon-port 64502 --rcon-password <pw> --lessons all --seeds 3
 ```
 

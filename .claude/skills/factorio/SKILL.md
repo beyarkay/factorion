@@ -40,8 +40,7 @@ PID=$!   # kill $PID when done
 ```
 
 ```python
-import sys; sys.path.insert(0, "factorion-mod/server")
-from rcon import RconClient
+from factorion_server.rcon import RconClient
 with RconClient("127.0.0.1", 27015, "pw") as r:
     r.exec("/sc rcon.print(1)")  # a fresh server refuses its first Lua command (achievements warning)
     print(r.exec("/sc rcon.print(remote.call('factorion','ping'))"))

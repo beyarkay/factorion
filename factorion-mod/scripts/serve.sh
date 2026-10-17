@@ -43,7 +43,7 @@ echo "[serve] Start or restart Factorio, then choose Play > Multiplayer > Host n
 echo "[serve] Waiting is normal until the hosted game has loaded."
 
 cd "$REPO_ROOT"
-exec uv run python factorion-mod/server/server.py \
+exec uv run python -m factorion_server \
   --rcon-host "$RCON_HOST" \
   --rcon-port "$RCON_PORT" \
   --rcon-password "$PASSWORD" \

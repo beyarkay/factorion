@@ -1,4 +1,4 @@
-"""Tests for the Factorio parity harness (factorion-mod/server/parity.py).
+"""Tests for the Factorio parity harness (factorion_server/parity.py).
 
 These cover everything that runs *without* a Factorio instance: the world
 tensor → parity-spec conversion (the same conventions blueprint.py uses,
@@ -14,12 +14,6 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-_SERVER_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "factorion-mod", "server"
-)
-if _SERVER_DIR not in sys.path:
-    sys.path.insert(0, _SERVER_DIR)
-
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     Channel,
@@ -31,7 +25,7 @@ from factorion import (  # noqa: E402
     str2ent,
 )
 
-from parity import (  # noqa: E402
+from factorion_server.parity import (  # noqa: E402
     SinkComparison,
     build_batch_spec,
     compare_sinks,

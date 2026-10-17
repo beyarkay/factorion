@@ -25,7 +25,7 @@ Manual path:
 
 ```bash
 # from the repo root, so `factorion` and `factorion_rs` import cleanly
-uv run python factorion-mod/server/server.py \
+uv run python -m factorion_server \
   --rcon-host 127.0.0.1 \
   --rcon-port 27015 \
   --rcon-password factorion
