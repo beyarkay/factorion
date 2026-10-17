@@ -5,9 +5,6 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 
-# Local server state
-server/state/
-server/logs/
 checkpoints/
 *.log
 
@@ -15,8 +12,9 @@ checkpoints/
 mod/*.zip
 mod/dist/
 # The repository-wide *.png rule excludes generated training renders; these
-# three hand-curated runtime icons are shipped as part of the mod.
+# hand-curated runtime icons and the mod portal thumbnail ship with the mod.
 !mod/graphics/icons/*.png
+!mod/thumbnail.png
 
 # Editor / OS
 .DS_Store

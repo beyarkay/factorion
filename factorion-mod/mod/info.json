@@ -1,11 +1,11 @@
 {
   "name": "factorion",
-  "version": "0.6.3",
-  "title": "Factorion",
-  "author": "Factorion",
-  "contact": "",
-  "homepage": "",
-  "description": "Bridge to a locally-running Factorion ML model: select a footprint with sources and sinks, then watch the policy place its predicted factory directly into the world.",
+  "version": "0.0.0",
+  "title": "Factorion (alpha)",
+  "author": "beyarkay",
+  "contact": "https://github.com/beyarkay/factorion/issues",
+  "homepage": "https://github.com/beyarkay/factorion",
+  "description": "This mod integrates with a real neural network that has learnt how to build optimal high-throughput factories. Specify a build region, input ingredients, and a desired product, and `factorion` will generate assembling machines, belts, and inserters to meet your requirements.",
   "factorio_version": "2.0",
   "dependencies": ["base >= 2.0.0", "? space-age"]
 }

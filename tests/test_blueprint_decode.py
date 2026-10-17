@@ -17,8 +17,6 @@ recipes, directions) get their own named test functions below, which
 load the same fixture file by name.
 """
 
-import os
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -32,13 +30,6 @@ from factorion import (
     str2ent,
     str2item,
 )
-
-# Round-trip tests need the mod's tensor → blueprint encoder.
-_SERVER_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "factorion-mod", "server"
-)
-if _SERVER_DIR not in sys.path:
-    sys.path.insert(0, _SERVER_DIR)
 
 _BP_DIR = Path(__file__).parent.parent / "lesson_blueprints"
 
@@ -152,7 +143,7 @@ def _round_trip(world_CWH):
     """Encode a (C, W, H) world to a blueprint string, then decode it
     back. The encoder crops to non-empty cells, so the result is
     tightly bounded around the placed entities."""
-    from blueprint import world_tensor_to_blueprint_string
+    from factorion_server.blueprint import world_tensor_to_blueprint_string
 
     bp = world_tensor_to_blueprint_string(world_CWH)
     return blueprint2world(bp)

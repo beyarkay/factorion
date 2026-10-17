@@ -80,44 +80,46 @@ factorion-mod/
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
 │   └── prototypes/           ← endpoint belts, footprint tool, hotkeys, GPU server
-├── server/                   ← local inference daemon + parity harness
-│   ├── server.py             ← RCON poll loop → denoiser (best of 8 builds) → RCON push
-│   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
-│   ├── rcon.py               ← shared minimal Source-RCON client
-│   ├── blueprint.py          ← tensor → blueprint utility used by tests/tooling
-│   └── README.md
 └── scripts/
     ├── install_mod.sh        ← symlink mod/ into Factorio's mods dir
     ├── serve.sh              ← one-command GUI setup + W&B/local model server
     ├── launch.sh             ← spawn Factorio with auto-RCON + start server (headless)
     └── parity_launch.sh      ← headless Factorio + parity harness, one command
+
+factorion_server/             ← the Python side (repo root, so it's importable)
+├── server.py                 ← RCON poll loop → denoiser (best of 8 builds) → RCON push
+├── parity.py                 ← engine ↔ Factorio throughput comparison (issue #261)
+├── rcon.py                   ← shared minimal Source-RCON client
+├── blueprint.py              ← tensor → blueprint utility used by tests/tooling
+└── README.md
 ```
 
 ## Quick start (GUI)
 
-1. Configure GUI-host RCON once in `config.ini` as described above. Then start
-   the mod from the repo root:
+1. Start the mod from the repo root:
 
    ```bash
    ./start-mod.sh
    ```
 
    This installs dependencies and builds the Rust extension when needed,
-   installs and enables the mod, and waits for Factorio.
+   installs and enables the mod, enables GUI-host RCON in `config.ini` if it
+   isn't (quit Factorio first), and waits for Factorio.
 
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
 The model is chosen in-game: **Settings → Mod settings → Map → Factorion
-checkpoint** takes a bare W&B run id (default `dr17bmik`), `entity/project/id`,
-or a local `.pt` path on the server's machine. On a new game or a change to
-the setting, the mod asks the server to load it; the server downloads the run's
-latest model artifact and reports its grid size (`--grid-size`, default 15)
-back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
+checkpoint** takes a bare W&B run id (default: the release's checkpoint),
+`entity/project/id`, or a local `.pt` path on the server's machine. On a new
+game or a change to the setting, the mod asks the server to load it; the server
+downloads the run's checkpoint from a GitHub release that carries it, or else
+the run's latest W&B model artifact, and reports its grid size (`--grid-size`,
+default 32) back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
 
 For a manual or headless setup, start the server directly:
 
 ```bash
-uv run python factorion-mod/server/server.py \
+uv run python -m factorion_server \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
@@ -176,7 +178,7 @@ Or against an already-running instance (headless or GUI host, same RCON
 setup as above):
 
 ```bash
-uv run python factorion-mod/server/parity.py \
+uv run python -m factorion_server.parity \
   --rcon-port 64502 --rcon-password <pw> \
   --lessons MOVE_ONE_ITEM,SPLITTER_SPLIT --seeds 5 --size 15
 ```

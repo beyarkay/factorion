@@ -569,7 +569,7 @@ assert not _aliased_tiers & {i.name for i in items.values() if i.is_placeable}, 
 )
 
 # Arrow virtual signals in a constant-combinator marker encode the
-# source/sink direction (see factorion-mod/server/blueprint.py).
+# source/sink direction (see factorion_server/blueprint.py).
 _ARROW_TO_DIR = {
     "up-arrow": Direction.NORTH,
     "right-arrow": Direction.EAST,
@@ -612,7 +612,7 @@ def _parse_combinator_marker(e):
 
 def blueprint2world(bp):
     """Decode a Factorio blueprint string into a (C, W, H) world
-    tensor matching the encoder in factorion-mod/server/blueprint.py.
+    tensor matching the encoder in factorion_server/blueprint.py.
 
     Conventions:
       - Position in a Factorio blueprint is the entity's *center*; for

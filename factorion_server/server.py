@@ -4,8 +4,7 @@ Polls the Factorio mod for requests, generates a factory with the trained
 denoiser, and streams each of its entities back into the running game over
 RCON.
 
-Run from the repo root so the `factorion` and `factorion_rs` modules are
-importable (e.g. via `uv run python factorion-mod/server/server.py ...`).
+Installed as `factorion-server`; from a checkout, `uv run python -m factorion_server`.
 """
 
 from __future__ import annotations
@@ -14,29 +13,29 @@ import argparse
 import functools
 import json
 import logging
+import re
 import secrets
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
+import requests
 import torch
 
-# Make the repo root importable when this script is run via uv from elsewhere.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state
+from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent
+from sft import resolve_checkpoint
+from training_config import RlArgs, SftArgs
 
-from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state  # noqa: E402
-from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent  # noqa: E402
-from sft import resolve_checkpoint  # noqa: E402
-from training_config import RlArgs, SftArgs  # noqa: E402
-
-from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
+from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
 
 log = logging.getLogger("factorion-server")
 MOD_PROTOCOL_VERSION = "9"
+RELEASES_URL = "https://api.github.com/repos/beyarkay/factorion/releases"
+CHECKPOINT_CACHE = Path.home() / ".cache" / "factorion"
 ModelLoader = Callable[[str], tuple[DenoiserUNet, str]]
 """Checkpoint spec (the mod's setting) → (model, display name)."""
 
@@ -45,7 +44,7 @@ ModelLoader = Callable[[str], tuple[DenoiserUNet, str]]
 # RCON client: shared with parity.py, see rcon.py.
 # --------------------------------------------------------------------------- #
 
-from rcon import RconClient, RconError  # noqa: E402, F401
+from .rcon import RconClient, RconError  # noqa: E402, F401
 
 
 # --------------------------------------------------------------------------- #
@@ -270,6 +269,75 @@ def _stream_placement(
     return False
 
 
+def factorio_config() -> Path:
+    base = "Library/Application Support/factorio" if sys.platform == "darwin" else ".factorio"
+    return Path.home() / base / "config" / "config.ini"
+
+
+def gui_rcon(config: Path) -> tuple[str, int, str]:
+    """(host, port, password) of the RCON a GUI-hosted game binds, enabling
+    it in Factorio's config.ini first if it isn't: that file is the only way
+    to turn RCON on for a game hosted from the menu."""
+    if not config.exists():
+        sys.exit(f"No Factorio config at {config}: launch Factorio once, then run this again.")
+    text = config.read_text()
+    found = dict(re.findall(r"(?m)^\s*local-rcon-(socket|password)\s*=\s*(\S+)", text))
+    if len(found) < 2:
+        # Factorio writes its config back out, which would drop our edit.
+        if subprocess.run(["pgrep", "-x", "factorio"], capture_output=True).returncode == 0:
+            sys.exit("Quit Factorio and run this again: it needs to enable RCON in Factorio's config.")
+        found = {"socket": "127.0.0.1:64502", "password": secrets.token_urlsafe(12)}
+        lines = [line for line in text.splitlines() if not re.match(r"\s*local-rcon-(socket|password)\s*=", line)]
+        if "[other]" not in lines:
+            lines.append("[other]")
+        lines[lines.index("[other]") + 1:lines.index("[other]") + 1] = [f"local-rcon-{k}={v}" for k, v in found.items()]
+        config.write_text("\n".join(lines) + "\n")
+        log.info("Enabled RCON in %s", config)
+    host, port = found["socket"].rsplit(":", 1)
+    return "127.0.0.1" if host == "0.0.0.0" else host, int(port), found["password"]
+
+
+def released_checkpoint(run_id: str) -> Optional[Path]:
+    """The `<run_id>.pt` a GitHub release of this repo carries, downloaded
+    once, so players need no W&B account. None when no release has it."""
+    dest = CHECKPOINT_CACHE / f"{run_id}.pt"
+    if dest.exists():
+        return dest
+    resp = requests.get(RELEASES_URL, params={"per_page": 100}, timeout=30)
+    resp.raise_for_status()
+    urls = [a["browser_download_url"] for r in resp.json() for a in r["assets"] if a["name"] == dest.name]
+    if not urls:
+        return None
+    log.info("Downloading checkpoint %s from %s", run_id, urls[0])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(".part")
+    with requests.get(urls[0], stream=True, timeout=30) as download:
+        download.raise_for_status()
+        with part.open("wb") as f:
+            for chunk in download.iter_content(1 << 20):
+                f.write(chunk)
+    part.rename(dest)
+    return dest
+
+
+def load_model(spec: str, device, project: str, entity: Optional[str]) -> tuple[DenoiserUNet, str]:
+    """(model, display name) of a checkpoint spec. A bare run id is looked up
+    in the releases first; anything else, or a run no release carries, goes to
+    sft.resolve_checkpoint (local or W&B)."""
+    released = None if "/" in spec or spec.endswith(".pt") else released_checkpoint(spec)
+    if released is not None:
+        return load_denoiser(released, device).eval(), spec
+    try:
+        path, source = resolve_checkpoint(spec, project, entity)
+    except ModuleNotFoundError as exc:
+        # Players' installs leave out wandb: only developers have W&B keys.
+        if exc.name != "wandb":
+            raise
+        raise RuntimeError(f"No release carries checkpoint {spec}. For a W&B run, restart the "
+                           "server as `uvx --with wandb factorion-server` with a W&B API key.") from exc
+    return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
+
+
 def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
     quoted = ",".join(_lua_string(a) for a in args)
     return rcon.exec(
@@ -430,9 +498,9 @@ def main():
     ap.add_argument("--wandb-project", default="factorion")
     ap.add_argument("--wandb-entity", default=None)
     ap.add_argument("--rcon-host", default="127.0.0.1")
-    ap.add_argument("--rcon-port", type=int, default=27015)
-    ap.add_argument("--rcon-password", default="factorion")
-    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
+    ap.add_argument("--rcon-port", type=int, help="default: from Factorio's config.ini, enabling RCON there if needed")
+    ap.add_argument("--rcon-password")
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     ap.add_argument("--grid-size", type=int, default=SftArgs.size, help="side of the region the mod plans")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
@@ -442,22 +510,30 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
+    if args.rcon_port is None or args.rcon_password is None:
+        args.rcon_host, args.rcon_port, args.rcon_password = gui_rcon(factorio_config())
+
+    if args.device == "auto":
+        args.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     device = torch.device(args.device)
+    log.info("Running the model on %s", device)
 
     @functools.cache
     def get_model(spec: str) -> tuple[DenoiserUNet, str]:
-        path, source = resolve_checkpoint(spec, args.wandb_project, args.wandb_entity)
-        return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
+        return load_model(spec, device, args.wandb_project, args.wandb_entity)
 
     rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
+    waiting = log.info
     while True:
         try:
             rcon.connect()
             break
         except (RconError, OSError) as exc:
             rcon.close()
-            log.info("Waiting for Factorio RCON at %s:%d (%s)",
+            waiting("Waiting for Factorio RCON at %s:%d (%s). Start Factorio and host a game: "
+                     "Play > Multiplayer > Host new game (or Host saved game).",
                      args.rcon_host, args.rcon_port, exc)
+            waiting = log.debug
             time.sleep(2)
     try:
         log.info("RCON connected to %s:%d", args.rcon_host, args.rcon_port)

@@ -3,7 +3,7 @@
     "allow": [
       "Bash(bash factorion-mod/scripts/install_headless.sh:*)",
       "Bash(bash factorion-mod/scripts/parity_launch.sh:*)",
-      "Bash(uv run python factorion-mod/server/parity.py:*)"
+      "Bash(uv run python -m factorion_server.parity:*)"
     ]
   },
   "hooks": {

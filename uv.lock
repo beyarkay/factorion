@@ -929,21 +929,16 @@ wheels = [
 ]
 
 [[package]]
-name = "factorion"
-version = "0.1.0"
+name = "factorion-server"
+version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "matplotlib" },
-    { name = "networkx" },
     { name = "numpy" },
-    { name = "pyyaml" },
     { name = "requests" },
-    { name = "runpod" },
     { name = "torch", version = "2.12.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.12.1+cu126", source = { registry = "https://download.pytorch.org/whl/cu126" }, marker = "sys_platform == 'linux'" },
     { name = "tqdm" },
     { name = "tyro" },
-    { name = "wandb" },
 ]
 
 [package.dev-dependencies]
@@ -954,20 +949,22 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+train = [
+    { name = "matplotlib" },
+    { name = "networkx" },
+    { name = "pyyaml" },
+    { name = "runpod" },
+    { name = "wandb" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "matplotlib" },
-    { name = "networkx" },
     { name = "numpy" },
-    { name = "pyyaml" },
     { name = "requests" },
-    { name = "runpod" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.12.1" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.12.1", index = "https://download.pytorch.org/whl/cu126" },
     { name = "tqdm" },
     { name = "tyro" },
-    { name = "wandb" },
 ]
 
 [package.metadata.requires-dev]
@@ -977,6 +974,13 @@ dev = [
     { name = "pytest-timeout" },
     { name = "ruff", specifier = "==0.11.8" },
     { name = "ty", specifier = "==0.0.19" },
+]
+train = [
+    { name = "matplotlib" },
+    { name = "networkx" },
+    { name = "pyyaml" },
+    { name = "runpod" },
+    { name = "wandb" },
 ]
 
 [[package]]

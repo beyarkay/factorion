@@ -1,7 +1,6 @@
 """Streaming-placement tests for the Factorio mod server."""
 
-from pathlib import Path
-import sys
+import subprocess
 from typing import cast
 
 import numpy as np
@@ -10,12 +9,8 @@ import torch
 
 from denoise import DenoiserUNet
 from factorion import Channel, Footprint, Misc, str2ent
+from factorion_server import server as mod_server
 from helpers import TINY
-
-
-SERVER_DIR = Path(__file__).parents[1] / "factorion-mod" / "server"
-sys.path.insert(0, str(SERVER_DIR))
-import server as mod_server  # noqa: E402
 
 
 def _id(name: str) -> int:
@@ -279,3 +274,78 @@ def test_cancel_in_game_stops_quietly(monkeypatch):
     place, finish = rcon.commands
     assert "place_prediction" in place
     assert "finish_prediction" in finish and "cancelled" in finish
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+    def iter_content(self, _size):
+        yield self.payload
+
+
+def test_released_checkpoint_downloads_once_and_misses_unreleased(monkeypatch, tmp_path):
+    asset = "https://github.com/beyarkay/factorion/releases/download/v0.7.0/abc123.pt"
+    releases = [{"assets": [{"name": "abc123.pt", "browser_download_url": asset}]}]
+    urls = []
+
+    def fake_get(url, **_):
+        urls.append(url)
+        return _FakeResponse(b"weights" if url == asset else releases)
+
+    monkeypatch.setattr(mod_server, "CHECKPOINT_CACHE", tmp_path)
+    monkeypatch.setattr(mod_server.requests, "get", fake_get)
+
+    path = mod_server.released_checkpoint("abc123")
+    assert path == tmp_path / "abc123.pt"
+    assert (tmp_path / "abc123.pt").read_bytes() == b"weights"
+    assert mod_server.released_checkpoint("abc123") == path
+    assert urls == [mod_server.RELEASES_URL, asset]
+    assert mod_server.released_checkpoint("zzz999") is None
+
+
+def test_gui_rcon_enables_rcon_once_then_reads_it(monkeypatch, tmp_path):
+    config = tmp_path / "config.ini"
+    config.write_text("[path]\nread-data=__PATH__system-read-data__\n\n[other]\n; local-rcon-socket=0.0.0.0:0\n")
+    monkeypatch.setattr(mod_server.subprocess, "run", lambda *_, **__: subprocess.CompletedProcess([], 1))
+
+    host, port, password = mod_server.gui_rcon(config)
+    assert (host, port) == ("127.0.0.1", 64502)
+    assert f"[other]\nlocal-rcon-socket=127.0.0.1:64502\nlocal-rcon-password={password}\n" in config.read_text()
+    assert "read-data=__PATH__system-read-data__" in config.read_text()
+
+    config.write_text(config.read_text().replace("64502", "27015"))
+    assert mod_server.gui_rcon(config) == ("127.0.0.1", 27015, password)
+
+
+def test_gui_rcon_refuses_to_edit_a_running_factorios_config(monkeypatch, tmp_path):
+    config = tmp_path / "config.ini"
+    config.write_text("[other]\n")
+    monkeypatch.setattr(mod_server.subprocess, "run", lambda *_, **__: subprocess.CompletedProcess([], 0))
+
+    with pytest.raises(SystemExit, match="Quit Factorio"):
+        mod_server.gui_rcon(config)
+    assert config.read_text() == "[other]\n"
+
+
+def test_load_model_explains_a_missing_wandb(monkeypatch):
+    def no_wandb(*_):
+        raise ModuleNotFoundError("No module named 'wandb'", name="wandb")
+
+    monkeypatch.setattr(mod_server, "released_checkpoint", lambda _: None)
+    monkeypatch.setattr(mod_server, "resolve_checkpoint", no_wandb)
+
+    with pytest.raises(RuntimeError, match="uvx --with wandb factorion-server"):
+        mod_server.load_model("abc123", torch.device("cpu"), "factorion", None)
