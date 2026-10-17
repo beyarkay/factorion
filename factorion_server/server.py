@@ -307,11 +307,15 @@ def action_to_placement(action: dict) -> dict:
     return placement
 
 
+# What placing an entity sets; footprint and power follow from the world.
+_PLACED = [Channel.ENTITIES.value, Channel.DIRECTION.value, Channel.ITEMS.value, Channel.MISC.value]
+
+
 def _units(world_CWH: np.ndarray) -> dict[tuple[int, int], tuple[int, ...]]:
     """Every entity of a valid world, keyed by the min-corner tile it is
     placed from."""
     anchors = (world_CWH[Channel.ENTITIES.value] != 0) & (part_map(world_CWH) == 0)
-    return {(int(x), int(y)): tuple(world_CWH[:, x, y].tolist()) for x, y in zip(*np.nonzero(anchors))}
+    return {(int(x), int(y)): tuple(world_CWH[_PLACED, x, y].tolist()) for x, y in zip(*np.nonzero(anchors))}
 
 
 def frame_placements(prev_CWH: np.ndarray, next_CWH: np.ndarray) -> list[dict]:
@@ -320,7 +324,7 @@ def frame_placements(prev_CWH: np.ndarray, next_CWH: np.ndarray) -> list[dict]:
     before, after = _units(prev_CWH), _units(next_CWH)
 
     def placement(xy, unit):
-        ent, d, item, misc = unit[:4]
+        ent, d, item, misc = unit
         return action_to_placement({"xy": xy, "entity": ent, "direction": d, "item": item, "misc": misc})
 
     gone = [placement(xy, u) for xy, u in before.items() if after.get(xy) != u]

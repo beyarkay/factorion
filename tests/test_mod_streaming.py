@@ -169,6 +169,17 @@ def test_frame_placements_delete_what_changed_then_build_the_new():
     assert mod_server.frame_placements(after, after) == []
 
 
+def test_a_pole_powering_the_markers_does_not_rebuild_them():
+    before = mod_server.request_to_obs(_request())
+    after = before.copy()
+    after[Channel.ENTITIES.value, 9, 4] = _id("medium_electric_pole")
+    after[Channel.POWER.value] = 1
+
+    assert mod_server.frame_placements(before, after) == [
+        mod_server.action_to_placement(_action("medium_electric_pole", xy=(9, 4), direction=0)),
+    ]
+
+
 def test_denoising_replays_its_seed_and_keeps_markers_and_walls():
     req = _request() | {"entities": [{"name": "transport-belt", "x": 1, "y": 5, "direction": 2}]}
     world = mod_server.request_to_obs(req)
