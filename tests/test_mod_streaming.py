@@ -273,3 +273,43 @@ def test_cancel_in_game_stops_quietly(monkeypatch):
     place, finish = rcon.commands
     assert "place_prediction" in place
     assert "finish_prediction" in finish and "cancelled" in finish
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+    def iter_content(self, _size):
+        yield self.payload
+
+
+def test_released_checkpoint_downloads_once_and_misses_unreleased(monkeypatch, tmp_path):
+    asset = "https://github.com/beyarkay/factorion/releases/download/v0.7.0/abc123.pt"
+    releases = [{"assets": [{"name": "abc123.pt", "browser_download_url": asset}]}]
+    urls = []
+
+    def fake_get(url, **_):
+        urls.append(url)
+        return _FakeResponse(b"weights" if url == asset else releases)
+
+    monkeypatch.setattr(mod_server, "CHECKPOINT_CACHE", tmp_path)
+    monkeypatch.setattr(mod_server.requests, "get", fake_get)
+
+    path = mod_server.released_checkpoint("abc123")
+    assert path == tmp_path / "abc123.pt"
+    assert (tmp_path / "abc123.pt").read_bytes() == b"weights"
+    assert mod_server.released_checkpoint("abc123") == path
+    assert urls == [mod_server.RELEASES_URL, asset]
+    assert mod_server.released_checkpoint("zzz999") is None

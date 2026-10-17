@@ -19,6 +19,7 @@ dependencies = [
     "numpy",
     "tyro",
     "tqdm",
+    "requests",
 ]
 
 [project.urls]
@@ -35,7 +36,6 @@ train = [
     "wandb",
     "runpod",
     "pyyaml",
-    "requests",  # ci/github_api.py
 ]
 # Tooling for the pre-commit/pre-push checklist (`uv sync` installs these too).
 dev = [

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
+import requests
 import torch
 
 from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state
@@ -30,6 +31,8 @@ from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
 
 log = logging.getLogger("factorion-server")
 MOD_PROTOCOL_VERSION = "9"
+RELEASES_URL = "https://api.github.com/repos/beyarkay/factorion/releases"
+CHECKPOINT_CACHE = Path.home() / ".cache" / "factorion"
 ModelLoader = Callable[[str], tuple[DenoiserUNet, str]]
 """Checkpoint spec (the mod's setting) → (model, display name)."""
 
@@ -263,6 +266,29 @@ def _stream_placement(
     return False
 
 
+def released_checkpoint(run_id: str) -> Optional[Path]:
+    """The `<run_id>.pt` a GitHub release of this repo carries, downloaded
+    once, so players need no W&B account. None when no release has it."""
+    dest = CHECKPOINT_CACHE / f"{run_id}.pt"
+    if dest.exists():
+        return dest
+    resp = requests.get(RELEASES_URL, params={"per_page": 100}, timeout=30)
+    resp.raise_for_status()
+    urls = [a["browser_download_url"] for r in resp.json() for a in r["assets"] if a["name"] == dest.name]
+    if not urls:
+        return None
+    log.info("Downloading checkpoint %s from %s", run_id, urls[0])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(".part")
+    with requests.get(urls[0], stream=True, timeout=30) as download:
+        download.raise_for_status()
+        with part.open("wb") as f:
+            for chunk in download.iter_content(1 << 20):
+                f.write(chunk)
+    part.rename(dest)
+    return dest
+
+
 def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
     quoted = ",".join(_lua_string(a) for a in args)
     return rcon.exec(
@@ -425,7 +451,7 @@ def main():
     ap.add_argument("--rcon-host", default="127.0.0.1")
     ap.add_argument("--rcon-port", type=int, default=27015)
     ap.add_argument("--rcon-password", default="factorion")
-    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     ap.add_argument("--grid-size", type=int, default=SftArgs.size, help="side of the region the mod plans")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
@@ -435,10 +461,18 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
+    if args.device == "auto":
+        args.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     device = torch.device(args.device)
+    log.info("Running the model on %s", device)
 
     @functools.cache
     def get_model(spec: str) -> tuple[DenoiserUNet, str]:
+        # A bare run id is looked up in the releases first; anything else, or a
+        # run no release carries, goes to sft.resolve_checkpoint (local or W&B).
+        released = None if "/" in spec or spec.endswith(".pt") else released_checkpoint(spec)
+        if released is not None:
+            return load_denoiser(released, device).eval(), spec
         path, source = resolve_checkpoint(spec, args.wandb_project, args.wandb_entity)
         return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
 

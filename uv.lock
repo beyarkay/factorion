@@ -934,6 +934,7 @@ version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "requests" },
     { name = "torch", version = "2.12.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.12.1+cu126", source = { registry = "https://download.pytorch.org/whl/cu126" }, marker = "sys_platform == 'linux'" },
     { name = "tqdm" },
@@ -952,7 +953,6 @@ train = [
     { name = "matplotlib" },
     { name = "networkx" },
     { name = "pyyaml" },
-    { name = "requests" },
     { name = "runpod" },
     { name = "wandb" },
 ]
@@ -960,6 +960,7 @@ train = [
 [package.metadata]
 requires-dist = [
     { name = "numpy" },
+    { name = "requests" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.12.1" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.12.1", index = "https://download.pytorch.org/whl/cu126" },
     { name = "tqdm" },
@@ -978,7 +979,6 @@ train = [
     { name = "matplotlib" },
     { name = "networkx" },
     { name = "pyyaml" },
-    { name = "requests" },
     { name = "runpod" },
     { name = "wandb" },
 ]
