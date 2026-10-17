@@ -13,7 +13,10 @@ import argparse
 import functools
 import json
 import logging
+import re
 import secrets
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -266,6 +269,34 @@ def _stream_placement(
     return False
 
 
+def factorio_config() -> Path:
+    base = "Library/Application Support/factorio" if sys.platform == "darwin" else ".factorio"
+    return Path.home() / base / "config" / "config.ini"
+
+
+def gui_rcon(config: Path) -> tuple[str, int, str]:
+    """(host, port, password) of the RCON a GUI-hosted game binds, enabling
+    it in Factorio's config.ini first if it isn't: that file is the only way
+    to turn RCON on for a game hosted from the menu."""
+    if not config.exists():
+        sys.exit(f"No Factorio config at {config}: launch Factorio once, then run this again.")
+    text = config.read_text()
+    found = dict(re.findall(r"(?m)^\s*local-rcon-(socket|password)\s*=\s*(\S+)", text))
+    if len(found) < 2:
+        # Factorio writes its config back out, which would drop our edit.
+        if subprocess.run(["pgrep", "-x", "factorio"], capture_output=True).returncode == 0:
+            sys.exit("Quit Factorio and run this again: it needs to enable RCON in Factorio's config.")
+        found = {"socket": "127.0.0.1:64502", "password": secrets.token_urlsafe(12)}
+        lines = [line for line in text.splitlines() if not re.match(r"\s*local-rcon-(socket|password)\s*=", line)]
+        if "[other]" not in lines:
+            lines.append("[other]")
+        lines[lines.index("[other]") + 1:lines.index("[other]") + 1] = [f"local-rcon-{k}={v}" for k, v in found.items()]
+        config.write_text("\n".join(lines) + "\n")
+        log.info("Enabled RCON in %s", config)
+    host, port = found["socket"].rsplit(":", 1)
+    return "127.0.0.1" if host == "0.0.0.0" else host, int(port), found["password"]
+
+
 def released_checkpoint(run_id: str) -> Optional[Path]:
     """The `<run_id>.pt` a GitHub release of this repo carries, downloaded
     once, so players need no W&B account. None when no release has it."""
@@ -449,8 +480,8 @@ def main():
     ap.add_argument("--wandb-project", default="factorion")
     ap.add_argument("--wandb-entity", default=None)
     ap.add_argument("--rcon-host", default="127.0.0.1")
-    ap.add_argument("--rcon-port", type=int, default=27015)
-    ap.add_argument("--rcon-password", default="factorion")
+    ap.add_argument("--rcon-port", type=int, help="default: from Factorio's config.ini, enabling RCON there if needed")
+    ap.add_argument("--rcon-password")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     ap.add_argument("--grid-size", type=int, default=SftArgs.size, help="side of the region the mod plans")
     ap.add_argument("--log-level", default="INFO")
@@ -460,6 +491,9 @@ def main():
         level=args.log_level.upper(),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    if args.rcon_port is None or args.rcon_password is None:
+        args.rcon_host, args.rcon_port, args.rcon_password = gui_rcon(factorio_config())
 
     if args.device == "auto":
         args.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -477,14 +511,17 @@ def main():
         return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
 
     rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
+    waiting = log.info
     while True:
         try:
             rcon.connect()
             break
         except (RconError, OSError) as exc:
             rcon.close()
-            log.info("Waiting for Factorio RCON at %s:%d (%s)",
+            waiting("Waiting for Factorio RCON at %s:%d (%s). Start Factorio and host a game: "
+                     "Play > Multiplayer > Host new game (or Host saved game).",
                      args.rcon_host, args.rcon_port, exc)
+            waiting = log.debug
             time.sleep(2)
     try:
         log.info("RCON connected to %s:%d", args.rcon_host, args.rcon_port)

@@ -1,5 +1,6 @@
 """Streaming-placement tests for the Factorio mod server."""
 
+import subprocess
 from typing import cast
 
 import numpy as np
@@ -313,3 +314,27 @@ def test_released_checkpoint_downloads_once_and_misses_unreleased(monkeypatch, t
     assert mod_server.released_checkpoint("abc123") == path
     assert urls == [mod_server.RELEASES_URL, asset]
     assert mod_server.released_checkpoint("zzz999") is None
+
+
+def test_gui_rcon_enables_rcon_once_then_reads_it(monkeypatch, tmp_path):
+    config = tmp_path / "config.ini"
+    config.write_text("[path]\nread-data=__PATH__system-read-data__\n\n[other]\n; local-rcon-socket=0.0.0.0:0\n")
+    monkeypatch.setattr(mod_server.subprocess, "run", lambda *_, **__: subprocess.CompletedProcess([], 1))
+
+    host, port, password = mod_server.gui_rcon(config)
+    assert (host, port) == ("127.0.0.1", 64502)
+    assert f"[other]\nlocal-rcon-socket=127.0.0.1:64502\nlocal-rcon-password={password}\n" in config.read_text()
+    assert "read-data=__PATH__system-read-data__" in config.read_text()
+
+    config.write_text(config.read_text().replace("64502", "27015"))
+    assert mod_server.gui_rcon(config) == ("127.0.0.1", 27015, password)
+
+
+def test_gui_rcon_refuses_to_edit_a_running_factorios_config(monkeypatch, tmp_path):
+    config = tmp_path / "config.ini"
+    config.write_text("[other]\n")
+    monkeypatch.setattr(mod_server.subprocess, "run", lambda *_, **__: subprocess.CompletedProcess([], 0))
+
+    with pytest.raises(SystemExit, match="Quit Factorio"):
+        mod_server.gui_rcon(config)
+    assert config.read_text() == "[other]\n"
