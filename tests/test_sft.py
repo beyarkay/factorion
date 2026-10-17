@@ -47,7 +47,7 @@ class TestNoiseLevels:
 
 class TestBoxedFactory:
     def test_lesson_keeps_its_throughput_inside_its_box(self):
-        shapes = set()
+        shapes, holes = set(), 0
         for kind in (LessonKind.OPPOSITE_SIDES_1IN, LessonKind.ROUTE_BELTS):
             boxed = [f for seed in range(8) if (f := boxed_factory(kind, seed, 32)) is not None]
             assert boxed, kind
@@ -55,11 +55,11 @@ class TestBoxedFactory:
                 buildable = f.world_CWH[Channel.FOOTPRINT.value].bool()
                 xs, ys = torch.nonzero(buildable, as_tuple=True)
                 w, h = int(xs.max() - xs.min()) + 1, int(ys.max() - ys.min()) + 1
-                assert int(buildable.sum()) == w * h
+                holes += int((~buildable[xs.min() : xs.max() + 1, ys.min() : ys.max() + 1]).sum())
                 assert not f.world_CWH[Channel.ENTITIES.value][~buildable].any()
                 assert rs_throughput(f.world_CWH.permute(1, 2, 0))[0] == f.max_throughput > 0
                 shapes.add(w == h)
-        assert shapes == {True, False}
+        assert shapes == {True, False} and holes > 0
 
     def test_stream_yields_boxed_factories(self):
         states = itertools.islice(_iter_factories(32, 1, 0, 1, box_frac=1.0), 4)

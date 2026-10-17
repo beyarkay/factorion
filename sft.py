@@ -32,6 +32,8 @@ import tyro
 from torch.utils.data import DataLoader, IterableDataset
 
 from denoise import (
+    _SINK_ENT_ID,
+    _SOURCE_ENT_ID,
     DenoiserUNet,
     N_TYPES,
     _luts,
@@ -116,6 +118,7 @@ _MAX_BUILD_FAILURES_PER_KIND = 100
 _MIN_SQUARE, _MAX_SQUARE = 10, 24
 # Most free rows/columns a box leaves beside its factory, per side.
 _MAX_GAP = 8
+_MAX_OBSTACLES = 8
 
 
 def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
@@ -123,9 +126,11 @@ def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
     inside a box around the factory: 0..g free rows/columns on each side, with
     g itself random up to `_MAX_GAP` so boxes range from cramped to roomy. The
     box lands anywhere in a size × size grid, every tile outside it
-    unbuildable. None when the kind doesn't fit the square, or the box reaches
-    past the square and so unpowers a machine (a pole may have drawn power
-    from the square's edge)."""
+    unbuildable. Up to `_MAX_OBSTACLES` 3×3, 2×2 or 1×1 blocks or 3..10-long
+    lines land at random in the box, and their empty tiles become unbuildable
+    too, as if holding entities that can't be moved. None when the kind
+    doesn't fit the square, or the box reaches past the square and so unpowers
+    a machine (a pole may have drawn power from the square's edge)."""
     rng = random.Random(seed)
     s = rng.randint(min(_MIN_SQUARE, size), min(_MAX_SQUARE, size))
     factory = build_factory(size=s, kind=kind, seed=seed)
@@ -152,6 +157,17 @@ def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
     hi_x, hi_y = min(s, size - ox), min(s, size - oy)
     world[:, ox + lo_x : ox + hi_x, oy + lo_y : oy + hi_y] = factory.world_CWH[:, lo_x:hi_x, lo_y:hi_y]
     world[Channel.FOOTPRINT.value][~inside] = Footprint.UNAVAILABLE.value
+    blocked = torch.zeros_like(inside)
+    for _ in range(rng.randint(0, _MAX_OBSTACLES)):
+        k = rng.randrange(4)
+        w, h = (3 - k, 3 - k) if k < 3 else rng.choice([(rng.randint(3, 10), 1), (1, rng.randint(3, 10))])
+        bx, by = rng.randint(ox + x0, ox + x1), rng.randint(oy + y0, oy + y1)
+        blocked[bx : bx + w, by : by + h] = True
+    ent = world[Channel.ENTITIES.value]
+    # A marker's neighbours stay free: a trial needs room beside each marker.
+    markers = ((ent == _SOURCE_ENT_ID) | (ent == _SINK_ENT_ID)).float()[None, None]
+    near_marker = nn.functional.max_pool2d(markers, 3, stride=1, padding=1)[0, 0].bool()
+    world[Channel.FOOTPRINT.value][blocked & (ent == 0) & ~near_marker] = Footprint.UNAVAILABLE.value
     refresh_power(world)
     if count_unpowered(world):
         return None
