@@ -51,8 +51,10 @@ Silicon Mac or Linux.
 4. Press `Ctrl+T` for the region tool and endpoint belts, stamp a region,
    place sources and sinks, click them to pick items, and press `Ctrl+P`.
 
-The model runs on your GPU if it can and the CPU otherwise. Releases are cut
-as described in [RELEASING.md](RELEASING.md).
+The model runs on your GPU if it can and the CPU otherwise. On Linux, `uvx`
+installs PyPI's PyTorch, which needs NVIDIA driver 580+; with an older driver,
+add `--index https://download.pytorch.org/whl/cu126` to the command to keep
+the GPU. Releases are cut as described in [RELEASING.md](RELEASING.md).
 
 ## What is Factorio?
 
