@@ -51,6 +51,7 @@ from factorion import (
     TRAINING_KINDS,
     LessonKind,
     build_factory,
+    count_unpowered,
     refresh_power,
 )
 
@@ -112,30 +113,44 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-_MIN_BOX = 5
+_MIN_SQUARE = 10
+# Rows/columns a box may grow past its factory's square on each side.
+_BOX_GROWTH = 6
 
 
 def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
-    """A lesson built on a random s × s square (5 ≤ s ≤ size) placed at random
-    in a size × size grid, buildable only inside a random box between the
-    factory's bounding box and the square, so the box takes whatever shape the
-    factory has. Inside the square, every pole keeps its power. None when the
-    kind doesn't fit the square."""
+    """A lesson built on a random s × s square (10 ≤ s ≤ size), each side of
+    its buildable area then moved by a random number of rows/columns: inward
+    as far as the factory, or outward by up to `_BOX_GROWTH`. The rectangle
+    lands at random in a size × size grid with every tile outside it
+    unbuildable. None when the kind doesn't fit the square, or growing the
+    area unpowers a machine (a pole may have drawn power from the square's
+    edge)."""
     rng = random.Random(seed)
-    s = rng.randint(_MIN_BOX, size)
+    s = rng.randint(min(_MIN_SQUARE, size), size)
     factory = build_factory(size=s, kind=kind, seed=seed)
     if factory is None:
         return None
     xs, ys = torch.nonzero(factory.world_CWH[Channel.ENTITIES.value], as_tuple=True)
-    x0, x1 = rng.randint(0, int(xs.min())), rng.randint(int(xs.max()), s - 1)
-    y0, y1 = rng.randint(0, int(ys.min())), rng.randint(int(ys.max()), s - 1)
-    ox, oy = rng.randint(0, size - s), rng.randint(0, size - s)
+    # Box edges in the square's frame, then shrunk to fit the grid without
+    # cutting into the factory.
+    x0, x1 = rng.randint(-_BOX_GROWTH, int(xs.min())), rng.randint(int(xs.max()), s - 1 + _BOX_GROWTH)
+    y0, y1 = rng.randint(-_BOX_GROWTH, int(ys.min())), rng.randint(int(ys.max()), s - 1 + _BOX_GROWTH)
+    x0, y0 = max(x0, min(int(xs.min()), x1 - size + 1)), max(y0, min(int(ys.min()), y1 - size + 1))
+    x1, y1 = min(x1, x0 + size - 1), min(y1, y0 + size - 1)
+    ox, oy = rng.randint(-x0, size - 1 - x1), rng.randint(-y0, size - 1 - y1)
     world = torch.zeros((factory.world_CWH.shape[0], size, size), dtype=factory.world_CWH.dtype)
-    world[:, ox : ox + s, oy : oy + s] = factory.world_CWH
     inside = torch.zeros((size, size), dtype=torch.bool)
     inside[ox + x0 : ox + x1 + 1, oy + y0 : oy + y1 + 1] = True
+    world[Channel.FOOTPRINT.value][inside] = Footprint.AVAILABLE.value
+    # The square may hang off the grid, but only by tiles outside the box.
+    lo_x, lo_y = max(0, -ox), max(0, -oy)
+    hi_x, hi_y = min(s, size - ox), min(s, size - oy)
+    world[:, ox + lo_x : ox + hi_x, oy + lo_y : oy + hi_y] = factory.world_CWH[:, lo_x:hi_x, lo_y:hi_y]
     world[Channel.FOOTPRINT.value][~inside] = Footprint.UNAVAILABLE.value
     refresh_power(world)
+    if count_unpowered(world):
+        return None
     protected = frozenset((x + ox, y + oy) for x, y in factory.protected_positions)
     return replace(factory, world_CWH=world, protected_positions=protected)
 
