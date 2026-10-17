@@ -44,6 +44,7 @@ dev = [
     "pytest-timeout",
     "maturin",
     "ty==0.0.19",  # pre-1.0: pin exactly so a ty release can't surprise the pre-push gate
+    "lupa>=2.8",
 ]
 
 [tool.uv]
@@ -74,6 +75,10 @@ torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
 # resolution. The ci/ package is imported from the repo root, so it needs no
 # extra path.
 extra-paths = ["tests", "scripts"]
+
+[tool.ty.src]
+# Runs inside Blender, whose bpy, bmesh and mathutils exist nowhere else.
+exclude = ["factorion-mod/art/gpu_server.py"]
 
 [tool.ruff]
 # Existing code has many pre-existing violations in the training script.

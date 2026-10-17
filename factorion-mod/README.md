@@ -1,8 +1,9 @@
 # Factorion Mod
 
 A Factorio mod + local Python server that lets you ask a trained
-Factorion model to design a factory layout from inside the game and
-place the predicted entities directly into the world.
+Factorion denoiser (`denoise.py`) to design a factory layout from inside the
+game. The factory is denoised from pure noise, and every denoising step is
+placed into the world as it happens, so you watch it settle.
 
 ## Round trip
 
@@ -18,7 +19,7 @@ empty string (nothing pending) or the next queued request JSON.
    │              │  reply: request JSON  (or "" when empty)         │        │
    │              │                                                  │        │
    │              │ ◄─────────────────────────────────────────────── │        │
-   └──────────────┘  each step: place_prediction(req_id, entity)     └────────┘
+   └──────────────┘  each step: place_predictions(req_id, changes)   └────────┘
                      final: finish_prediction(req_id, summary)
 ```
 
@@ -43,9 +44,11 @@ Orange sinks consume every item that reaches their tile, but count only their
 configured item toward the displayed throughput. The endpoint's current
 rotation is sent to the model. Rerunning a prediction removes only the entities
 created by the previous prediction, so endpoint belts stay in place until you
-mine them. Model placements appear as ghosts by default (the placement mode
-setting builds them immediately instead). As in training, a model placement
-replaces every entity or ghost it overlaps inside the region. Overlapped ghosts
+mine them. Any other entity you built inside the region is a wall the model
+builds around, like a lesson's protected tiles. Model placements appear as
+ghosts by default (the placement mode setting builds them immediately instead).
+Each denoising step replaces the entities the previous step got wrong: a
+placement replaces every entity or ghost it overlaps inside the region. Overlapped ghosts
 vanish at once; in ghost mode a built entity is marked for deconstruction, so
 robots swap it for the new ghost, while build mode removes it immediately
 (mining your own entities back into your inventory). Model ghosts are tagged,
@@ -109,12 +112,14 @@ factorion_server/             ← the Python side (repo root, so it's importable
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
 The model is chosen in-game: **Settings → Mod settings → Map → Factorion
-checkpoint** takes a bare W&B run id (default: the release's checkpoint),
-`entity/project/id`, or a local `.pt` path on the server's machine. On a new
-game or a change to the setting, the mod asks the server to load it; the server
-downloads the run's checkpoint from a GitHub release that carries it, or else
-the run's latest W&B model artifact, and reports its grid size (`--grid-size`,
-default 32) back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
+checkpoint** takes a bare W&B run id of a denoiser SFT run (default: the
+release's checkpoint), `entity/project/id`, or a local `.pt` path on the
+server's machine. On a new game or a change to the setting, the mod asks the
+server to load it; the server downloads the run's checkpoint from a GitHub
+release that carries it, or else the run's latest W&B model artifact, whose
+config gives the grid size and generation schedule, and reports the grid size
+back. The region tool then stamps a region of that size. Loaded models stay
+cached, so switching back is instant.
 
 For a manual or headless setup, start the server directly:
 
@@ -122,6 +127,9 @@ For a manual or headless setup, start the server directly:
 uv run python -m factorion_server \
   --rcon-port 64502 --rcon-password <pw>
 ```
+
+A local file carries its architecture; it gets `SftArgs`' default grid size
+and generation schedule.
 
 3. In Factorio:
 
@@ -133,10 +141,14 @@ uv run python -m factorion_server \
      ordinary belts. Click each endpoint to choose its item, and hover it and
      press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
-   - The server generates eight factories around your markers, keeps the
-     highest-throughput one, and places its entities into the marked region
-     one by one, building around any entities already there. Chat then
-     reports how many it placed and why inference ended.
+   - The server denoises `best of` factories side by side (default 8) and
+     picks the one with the highest simulated throughput, as `val/thput@8`
+     does. Then it replays that chain's steps into the region, one step
+     every "denoising step delay" seconds: each step's prediction replaces
+     the entities that changed since the last one. When it is done, chat
+     reports the number of steps, the predicted items/s, and whether the
+     model settled on its factory (a fixed point) or was still changing at
+     the step limit.
 
    Hotkeys (rebindable in Controls → Factorion):
 
@@ -246,8 +258,8 @@ To check on the first live run (in rough order):
 Server-callable remote methods exposed by the mod:
 
 - `ping()` — round-trip check
-- `place_prediction(request_id, placement_json)` /
-  `finish_prediction(request_id, summary_json)` — streamed model placement
+- `place_predictions(request_id, placements_json)` /
+  `finish_prediction(request_id, summary_json)` — streamed denoising steps
 - `parity_start(spec_json)` / `parity_poll()` / `parity_abort()` — the
   engine-parity runner (see above; driven by `server/parity.py`)
 - `introspect()` — outbox depth, pending requests, players known
@@ -287,6 +299,9 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
+- **Entities crossing the region's edge** are invisible to the model, and
+  Factorio refuses a placement that hits one. The rest of that step still
+  goes in, and chat counts the steps that had a refusal.
 - **Cross-platform `launch.sh` binary discovery**. macOS Steam install
   verified; Linux / Windows paths are heuristics. Override with
   `FACTORIO_BIN=…` if it can't find yours.

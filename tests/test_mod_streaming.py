@@ -1,5 +1,6 @@
 """Streaming-placement tests for the Factorio mod server."""
 
+import json
 import subprocess
 from typing import cast
 
@@ -11,6 +12,7 @@ from denoise import DenoiserUNet
 from factorion import Channel, Footprint, Misc, str2ent
 from factorion_server import server as mod_server
 from helpers import TINY
+from training_config import SftArgs
 
 
 def _id(name: str) -> int:
@@ -117,34 +119,10 @@ def test_request_seeds_existing_entities_with_configuration():
     assert ent[1, 7] == _id("splitter")
     assert ent[1, 8] == _id("splitter")
 
-    # Existing entities are walls the model builds around; the markers aren't.
-    walls = obs[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value
-    assert walls.sum() == 1 + 9 + 1 + 2
-    assert not walls[0, 5] and not walls[10, 5]
-
-
-class _AcceptingRcon:
-    def __init__(self):
-        self.commands = []
-
-    def exec(self, command):
-        self.commands.append(command)
-        return "ok"
-
-
-def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(mod_server.time, "sleep", sleeps.append)
-
-    accepted = mod_server._stream_placement(
-        cast(mod_server.RconClient, _AcceptingRcon()),
-        "request-1",
-        _action("transport_belt"),
-        placement_delay_s=0.01,
-    )
-
-    assert accepted is True
-    assert sleeps == [0.01]
+    # The player's entities are walls the denoiser builds around; the
+    # markers and every other tile stay buildable.
+    built = (ent != _id("empty")) & (ent != _id("source")) & (ent != _id("sink"))
+    assert (obs[Channel.FOOTPRINT.value] == ~built).all()
 
 
 def _request():
@@ -159,16 +137,151 @@ def _request():
     }
 
 
+def _model(**config):
+    torch.manual_seed(0)
+    net = DenoiserUNet(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4).eval()
+    return mod_server.Model(net, "sft-run", SftArgs(gen_steps=3, gen_refine=3, **config))
+
+
+def test_empty_action_becomes_a_deletion():
+    assert mod_server.action_to_placement(_action("empty", direction=0)) == {
+        "tile_x": 2, "tile_y": 3, "width": 1, "height": 1,
+    }
+
+
+def test_frame_placements_delete_what_changed_then_build_the_new():
+    before = mod_server.request_to_obs(_request() | {"entities": [
+        {"name": "transport-belt", "x": 1, "y": 5, "direction": 2},
+        {"name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0, "item": "iron-gear-wheel"},
+    ]})
+    after = before.copy()
+    after[Channel.ENTITIES.value, 4:7, 3:6] = _id("empty")
+    after[Channel.ITEMS.value, 4:7, 3:6] = _id("empty")
+    after[Channel.ENTITIES.value, 5, 4] = _id("inserter")
+    after[Channel.DIRECTION.value, 5, 4] = 1
+
+    placements = mod_server.frame_placements(before, after)
+
+    assert placements == [
+        {"tile_x": 4, "tile_y": 3, "width": 3, "height": 3},
+        mod_server.action_to_placement(_action("inserter", xy=(5, 4), direction=1)),
+    ]
+    assert mod_server.frame_placements(after, after) == []
+
+
+def test_a_pole_powering_the_markers_does_not_rebuild_them():
+    before = mod_server.request_to_obs(_request())
+    after = before.copy()
+    after[Channel.ENTITIES.value, 9, 4] = _id("medium_electric_pole")
+    after[Channel.POWER.value] = 1
+
+    assert mod_server.frame_placements(before, after) == [
+        mod_server.action_to_placement(_action("medium_electric_pole", xy=(9, 4), direction=0)),
+    ]
+
+
+def test_denoising_replays_its_seed_and_keeps_markers_and_walls():
+    req = _request() | {"entities": [{"name": "transport-belt", "x": 1, "y": 5, "direction": 2}]}
+    world = mod_server.request_to_obs(req)
+    gen = mod_server.Generation(best_of=3)
+
+    frames, stats = mod_server.denoise_frames(_model(), world, gen, 7, torch.device("cpu"))
+    again, _ = mod_server.denoise_frames(_model(), world, gen, 7, torch.device("cpu"))
+
+    assert all(np.array_equal(a, b) for a, b in zip(frames, again))
+    assert len(frames) == stats["steps_taken"] + 1
+    fixed = world[Channel.FOOTPRINT.value] == 0
+    fixed[0, 5] = fixed[10, 5] = True
+    for frame in frames:
+        # The model's poles may power them.
+        assert (frame[: Channel.POWER.value, fixed] == world[: Channel.POWER.value, fixed]).all()
+    assert stats["best_of"] == 3 and stats["stop_reason"] in ("converged", "max_steps")
+
+
+def test_previous_build_stays_buildable_and_starts_every_chain(monkeypatch):
+    req = _request() | {
+        "entities": [{"name": "transport-belt", "x": 3, "y": 9, "direction": 2}],
+        "start_entities": [{"name": "transport-belt", "x": 1, "y": 5, "direction": 2}],
+    }
+    world = mod_server.request_to_obs(req)
+    assert world[Channel.ENTITIES.value, 1, 5] == _id("transport_belt")
+    assert world[Channel.FOOTPRINT.value, 1, 5] == 1
+    assert world[Channel.FOOTPRINT.value, 3, 9] == 0
+
+    starts = []
+    real = mod_server.generate
+    monkeypatch.setattr(mod_server, "generate", lambda *a, start=None, **k: starts.append(start) or real(*a, start=start, **k))
+    mod_server.denoise_frames(_model(), world, mod_server.Generation(best_of=2), 7, torch.device("cpu"))
+    (_, mask), = starts
+    assert mask.shape[0] == 2 and {tuple(t) for t in mask[0].nonzero().tolist()} == {(1, 5)}
+
+
+def test_nothing_is_ever_placed_outside_the_painted_mask(monkeypatch):
+    monkeypatch.setattr(mod_server.time, "sleep", lambda _: None)
+    painted = {(x, y) for x in range(11) for y in range(4, 7)}
+    req = _request() | {
+        "request_id": "r", "checkpoint": "c", "seed": 5,
+        "allowed": [{"x": x, "y": y} for x, y in sorted(painted)],
+        "entities": [{"name": "transport-belt", "x": 3, "y": 9, "direction": 2}],
+    }
+    world = mod_server.request_to_obs(req)
+    assert world[Channel.ENTITIES.value, 3, 9] == _id("transport_belt")
+    assert {tuple(t) for t in np.argwhere(world[Channel.FOOTPRINT.value] == 1)} == painted
+
+    rcon = _AcceptingRcon()
+    mod_server.handle_request(req, lambda _: _model(), cast(mod_server.RconClient, rcon), device=torch.device("cpu"))
+
+    *steps, _ = rcon.commands
+    placed = [p for c in steps for p in _payload(c)]
+    assert placed
+    for p in placed:
+        tiles = {(p["tile_x"] + dx, p["tile_y"] + dy) for dx in range(p["width"]) for dy in range(p["height"])}
+        assert tiles <= painted, p
+
+
+class _AcceptingRcon:
+    def __init__(self, response="ok"):
+        self.response = response
+        self.commands = []
+
+    def exec(self, command):
+        self.commands.append(command)
+        return self.response
+
+
+def _payload(command):
+    return json.loads(command.split("','")[-1].removesuffix("'))"))
+
+
+def test_each_denoising_step_streams_as_one_batch(monkeypatch):
+    monkeypatch.setattr(mod_server.time, "sleep", lambda _: None)
+    rcon = _AcceptingRcon()
+    req = _request() | {"request_id": "r", "checkpoint": "c", "seed": 3, "best_of": 2}
+
+    mod_server.handle_request(
+        req, lambda _: _model(), cast(mod_server.RconClient, rcon), device=torch.device("cpu"),
+    )
+
+    *steps, finish = rcon.commands
+    assert steps and all("'place_predictions','r'" in c for c in steps)
+    assert [int(c.split("','")[3]) for c in steps] == list(range(len(steps) - 1, -1, -1))
+    assert all(isinstance(_payload(c), list) and _payload(c) for c in steps)
+    summary = _payload(finish)
+    assert "'finish_prediction','r'" in finish
+    assert summary["seed"] == 3 and summary["best_of"] == 2 and summary["refused_steps"] == 0
+    assert summary["stop_reason"] in ("converged", "max_steps")
+
+
 def test_request_error_still_releases_pending_state():
-    req = _request() | {"request_id": "request-1", "checkpoint": "ckpt"}
     rcon = _AcceptingRcon()
 
-    def broken(_):
-        raise RuntimeError("no such run")
+    def get_model(_):
+        raise FileNotFoundError("no such run")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(FileNotFoundError):
         mod_server.handle_request(
-            req, broken, cast(mod_server.RconClient, rcon), device=torch.device("cpu"),
+            _request() | {"request_id": "r", "checkpoint": "c"}, get_model,
+            cast(mod_server.RconClient, rcon), device=torch.device("cpu"),
         )
 
     assert "finish_prediction" in rcon.commands[-1]
@@ -182,97 +295,48 @@ def test_load_model_reports_grid_size_or_error():
     def get_model(spec):
         if spec == "missing":
             raise FileNotFoundError("no such run")
-        return cast(DenoiserUNet, None), "sft-run"
+        return _model(size=13)
 
-    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model, 15)
-    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model, 15)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model)
 
     loaded, failed = rcon.commands
-    assert "'model_loaded'" in loaded and '"grid_size":15' in loaded
-    assert '"name":"sft-run"' in loaded
+    assert "'model_loaded'" in loaded and '"grid_size":13' in loaded
+    assert '"name":"sft-run"' in loaded and '"iron-gear-wheel"' in loaded
     assert "'model_failed'" in failed and "no such run" in failed
 
 
-def _belt_build(_model, obs, *_):
-    world = obs.astype(np.int64)
-    for x in range(1, 3):
-        world[Channel.ENTITIES.value, x, 5] = _id("transport_belt")
-        world[Channel.DIRECTION.value, x, 5] = 2
-    return world
+def test_local_checkpoint_loads_with_default_schedule(tmp_path):
+    path = tmp_path / "sft_checkpoint.pt"
+    net = _model().denoiser
+    torch.save({"arch": net.arch, "model": net.state_dict()}, path)
+
+    model = mod_server.load_model(str(path), "factorion", None, torch.device("cpu"))
+
+    assert model.name == "sft_checkpoint.pt" and model.config == SftArgs()
 
 
-@pytest.mark.parametrize(("accepted", "stop_reason", "steps"), [
-    (True, "eot", 2), (False, "placement_error", 0),
-])
-def test_inference_streams_the_build_until_done_or_rejected(monkeypatch, accepted, stop_reason, steps):
-    monkeypatch.setattr(mod_server, "best_build", _belt_build)
-    streamed = []
+def test_checkpoint_of_an_older_layout_says_so(tmp_path):
+    path = tmp_path / "sft_checkpoint.pt"
+    net = _model().denoiser
+    state = net.state_dict() | {"noise_prior": torch.zeros(3)}
+    torch.save({"arch": net.arch, "model": state}, path)
 
-    _, stats = mod_server.run_inference(
-        cast(DenoiserUNet, None),
-        _request(),
-        device=torch.device("cpu"),
-        on_placement=lambda action: streamed.append(action) or accepted,
-    )
-
-    belts = [_action("transport_belt", xy=(x, 5), direction=2) for x in (1, 2)]
-    assert streamed == belts[: max(steps, 1)]
-    assert stats["steps_taken"] == steps
-    assert stats["stop_reason"] == stop_reason
-
-
-def test_empty_action_becomes_a_deletion():
-    assert mod_server.action_to_placement(_action("empty", direction=0)) == {
-        "tile_x": 2, "tile_y": 3, "width": 1, "height": 1,
-    }
-
-
-def test_build_streams_one_action_per_new_entity_at_its_anchor():
-    obs = mod_server.request_to_obs(_request())
-    world = obs.astype(np.int64)
-    world[Channel.ENTITIES.value, 4:7, 3:6] = _id("assembling_machine_1")
-    world[Channel.ITEMS.value, 4:7, 3:6] = _id("electronic_circuit")
-    (action,) = mod_server.build_actions(obs, world)
-    assert action["xy"] == (4, 3) and action["entity"] == _id("assembling_machine_1")
-
-
-def _streamed(model, **req):
-    streamed = []
-    mod_server.run_inference(
-        model, _request() | req, device=torch.device("cpu"),
-        on_placement=lambda action: streamed.append(action) or True,
-    )
-    return streamed
-
-
-def test_seed_replays_a_generated_build_and_new_seeds_differ():
-    torch.manual_seed(0)
-    model = DenoiserUNet(**TINY).eval()
-    assert _streamed(model, seed=1) == _streamed(model, seed=1)
-    assert _streamed(model, seed=1) != _streamed(model, seed=2)
-
-
-class _CancelledRcon:
-    def __init__(self):
-        self.commands = []
-
-    def exec(self, command):
-        self.commands.append(command)
-        return "cancelled"
+    with pytest.raises(ValueError, match="older model layout"):
+        mod_server.load_model(str(path), "factorion", None, torch.device("cpu"))
 
 
 def test_cancel_in_game_stops_quietly(monkeypatch):
-    monkeypatch.setattr(mod_server, "best_build", _belt_build)
-    rcon = _CancelledRcon()
+    monkeypatch.setattr(mod_server.time, "sleep", lambda _: None)
+    rcon = _AcceptingRcon("cancelled")
 
     mod_server.handle_request(
         _request() | {"request_id": "r", "checkpoint": "c"},
-        lambda _: (cast(DenoiserUNet, None), "run"), cast(mod_server.RconClient, rcon),
-        device=torch.device("cpu"),
+        lambda _: _model(), cast(mod_server.RconClient, rcon), device=torch.device("cpu"),
     )
 
     place, finish = rcon.commands
-    assert "place_prediction" in place
+    assert "place_predictions" in place
     assert "finish_prediction" in finish and "cancelled" in finish
 
 
@@ -348,4 +412,4 @@ def test_load_model_explains_a_missing_wandb(monkeypatch):
     monkeypatch.setattr(mod_server, "resolve_checkpoint", no_wandb)
 
     with pytest.raises(RuntimeError, match="uvx --with wandb factorion-server"):
-        mod_server.load_model("abc123", torch.device("cpu"), "factorion", None)
+        mod_server.load_model("abc123", "factorion", None, torch.device("cpu"))

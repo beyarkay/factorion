@@ -1,8 +1,8 @@
 data:extend({
   {
     type = "custom-input",
-    name = "factorion-execute",
-    key_sequence = "CONTROL + P",
+    name = "factorion-predict",
+    key_sequence = "N",
     consuming = "none",
   },
   {
