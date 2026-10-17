@@ -1,8 +1,8 @@
 //! Electric power (wiki/electric-network.md). Every pair of poles within wire
 //! reach is wired together — no manual wiring, no connection cap. Power comes
-//! from wherever the factory may not build: a network is powered iff one of
-//! its poles could wire to a 1x1 pole on a tile just outside the grid or on an
-//! unbuildable tile. A tile is powered iff it lies in
+//! from the [`Outside`]: a network is powered iff one of its poles could wire
+//! to a 1x1 pole on a tile just outside the grid or on an unbuildable tile
+//! joined to the grid's edge. A tile is powered iff it lies in
 //! the supply area of a pole on a powered network, and an entity that
 //! [`Item::needs_power`] is powered iff any of its tiles is.
 
@@ -47,25 +47,68 @@ impl PlacedPole {
         let ((ax, ay), (bx, by)) = (self.centre_x2(), other.centre_x2());
         (ax - bx).pow(2) + (ay - by).pow(2) <= reach.pow(2)
     }
+}
 
-    pub fn reaches_power(&self, world: &World) -> bool {
-        let (width, height) = (world.width() as i64, world.height() as i64);
-        let reach = self.pole.reach_x2;
+/// Where power comes from: off the map, and every unbuildable tile joined to
+/// the grid's edge through unbuildable tiles (the player's base around a
+/// marked-out area). An enclosed unbuildable island is not part of it.
+pub struct Outside {
+    joined: Vec<bool>,
+    width: i64,
+    height: i64,
+}
+
+impl Outside {
+    pub fn of(world: &World) -> Self {
+        let (w, h) = (world.width(), world.height());
+        let unbuildable = |x: usize, y: usize| world.get(x, y, Channel::Footprint) == 0;
+        let mut joined = vec![false; w * h];
+        let mut frontier: Vec<(usize, usize)> = (0..w)
+            .flat_map(|x| (0..h).map(move |y| (x, y)))
+            .filter(|&(x, y)| (x == 0 || y == 0 || x == w - 1 || y == h - 1) && unbuildable(x, y))
+            .collect();
+        for &(x, y) in &frontier {
+            joined[x * h + y] = true;
+        }
+        while let Some((x, y)) = frontier.pop() {
+            let near = [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ];
+            for (nx, ny) in near {
+                if nx < w && ny < h && !joined[nx * h + ny] && unbuildable(nx, ny) {
+                    joined[nx * h + ny] = true;
+                    frontier.push((nx, ny));
+                }
+            }
+        }
+        Self {
+            joined,
+            width: w as i64,
+            height: h as i64,
+        }
+    }
+
+    /// Whether `pole` could wire to a 1x1 pole on an outside tile.
+    pub fn reached_by(&self, pole: &PlacedPole) -> bool {
+        let reach = pole.pole.reach_x2;
         // The nearest off-map tile centre lies straight out past the nearest
         // edge, half a tile aside when this pole's centre is a tile corner.
-        let (cx, cy) = self.centre_x2();
+        let (cx, cy) = pole.centre_x2();
         let gap = (cx + 1)
-            .min(2 * width + 1 - cx)
+            .min(2 * self.width + 1 - cx)
             .min(cy + 1)
-            .min(2 * height + 1 - cy);
-        let aside = (self.size + 1) % 2;
+            .min(2 * self.height + 1 - cy);
+        let aside = (pole.size + 1) % 2;
         if gap.pow(2) + aside.pow(2) <= reach.pow(2) {
             return true;
         }
         let span = |c: i64, n: i64| ((c - reach - 1) / 2).max(0)..=((c + reach - 1) / 2).min(n - 1);
-        span(cx, width).any(|x| {
-            span(cy, height).any(|y| {
-                world.get(x as usize, y as usize, Channel::Footprint) == 0
+        span(cx, self.width).any(|x| {
+            span(cy, self.height).any(|y| {
+                self.joined[(x * self.height + y) as usize]
                     && (2 * x + 1 - cx).pow(2) + (2 * y + 1 - cy).pow(2) <= reach.pow(2)
             })
         })
@@ -88,7 +131,8 @@ impl PowerMap {
             }
         }
 
-        let mut live: Vec<bool> = poles.iter().map(|p| p.reaches_power(world)).collect();
+        let outside = Outside::of(world);
+        let mut live: Vec<bool> = poles.iter().map(|p| outside.reached_by(p)).collect();
         let mut frontier: Vec<usize> = (0..poles.len()).filter(|&i| live[i]).collect();
         while let Some(i) = frontier.pop() {
             for j in 0..poles.len() {
@@ -206,15 +250,19 @@ mod tests {
     }
 
     #[test]
-    fn test_unbuildable_tile_reach() {
-        // Medium pole: centre to the unbuildable tile's centre must be ≤ 9.
-        let medium = |x| {
+    fn test_unbuildable_tiles_joined_to_the_edge_feed_power() {
+        // A medium pole reaches 9 tiles; unbuildable tiles 29.. on its row
+        // feed it only while they run on to the grid's edge.
+        let medium = |from: usize, to: usize| {
             let mut w = with_poles(40, &[(20, 20, Item::MediumElectricPole)]);
-            w.set(x, 20, Channel::Footprint, 0);
+            for x in from..to {
+                w.set(x, 20, Channel::Footprint, 0);
+            }
             powered_tiles(&w)
         };
-        assert!(!medium(29).is_empty());
-        assert!(medium(30).is_empty());
+        assert!(!medium(29, 40).is_empty());
+        assert!(medium(30, 40).is_empty());
+        assert!(medium(29, 39).is_empty());
     }
 
     #[test]

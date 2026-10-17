@@ -132,9 +132,10 @@ assembler does not craft.
   (centre-to-centre) is connected; no connection cap.
 - **Power comes from wherever the factory may not build.** A pole network is
   powered iff at least one of its poles could wire to a 1x1 pole on a tile
-  just outside the grid or on an unbuildable tile (centre-to-centre distance
-  within that pole's own reach): the area around a marked-out region is the
-  player's powered base. There
+  just outside the grid or on an unbuildable tile joined to the grid's edge
+  through unbuildable tiles (centre-to-centre distance within that pole's own
+  reach): the area around a marked-out region is the player's powered base,
+  but an enclosed unbuildable island inside it carries no power. There
   are no generators and no supply/demand balance — a network is either fully
   powered or not.
 - **Powered tile:** a tile inside the supply area of any pole in a powered
