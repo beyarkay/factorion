@@ -13,7 +13,7 @@ FROM --platform=linux/amd64 python:3.11-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 
 # System deps: sshd (RunPod connectivity), git/curl/ca-certs, and a C toolchain
-# for maturin's release build of factorion_rs (done at run time in ppo_train.sh).
+# for maturin's release build of factorion_rs (done at run time in ci/runner.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openssh-server git curl ca-certificates build-essential \
     && rm -rf /var/lib/apt/lists/*

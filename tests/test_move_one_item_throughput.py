@@ -1,10 +1,9 @@
 """MOVE_ONE_ITEM factories must actually carry throughput.
 
-`build_factory` chose a random belt path via `random.choice(paths)` WITHOUT
-validating it. `find_belt_paths_with_source_sink_orient` can return
-geometrically-connected but functionally-broken paths when the random source/sink
-placement is degenerate (too close, adjacent, or facing off-grid), so the
-generator emitted ~5-13% (size-dependent) MOVE_ONE_ITEM factories that simulate to
+`build_factory` once chose a random belt path WITHOUT validating it. A
+geometrically-connected path can still be functionally broken when the random
+source/sink placement is degenerate (too close, adjacent, or facing off-grid),
+so the generator emitted ~5-13% (size-dependent) MOVE_ONE_ITEM factories that simulate to
 ZERO throughput. Those are broken training targets — no policy can complete them.
 
 The generator must reject-and-resample any factory whose throughput is zero. This

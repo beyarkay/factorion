@@ -33,13 +33,13 @@ from ci.config import (
     COMPARE_SEEDS_DEFAULT,
     SETUP_SLACK_SECONDS,
     WANDB_PROJECT,
-    PpoJob,
+    RlJob,
     SftJob,
     compare_group,
     compare_nonce,
     pod_emoji,
     pod_url,
-    ppo_budget_seconds,
+    rl_budget_seconds,
     sft_budget_seconds,
 )
 from ci.launch import (
@@ -260,9 +260,9 @@ def cmd_sft(args, ctx) -> None:
     )
 
 
-def cmd_ppo(args, ctx) -> None:
+def cmd_rl(args, ctx) -> None:
     args.total_timesteps = _cap(ctx, args.total_timesteps, CLAUDE_MAX_TOTAL_TIMESTEPS)
-    job = PpoJob(
+    job = RlJob(
         sha=ctx["sha"],
         start_from=args.start_from,
         total_timesteps=args.total_timesteps,
@@ -272,7 +272,7 @@ def cmd_ppo(args, ctx) -> None:
     _post(
         ctx,
         _launched_comment(
-            f"PPO run launched at {_commit_link(ctx['sha'])} (from `{args.start_from}`)",
+            f"RL run launched at {_commit_link(ctx['sha'])} (from `{args.start_from}`)",
             infos,
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
@@ -283,9 +283,9 @@ def _compare_wait_seconds(args) -> int:
     if args.algo == "sft":
         per = sft_budget_seconds(args.num_samples)
     else:
-        from training_config import PpoArgs
+        from training_config import RlArgs
 
-        per = ppo_budget_seconds(args.total_timesteps or PpoArgs().total_timesteps)
+        per = rl_budget_seconds(args.total_timesteps or RlArgs().total_timesteps)
     # One pod runs all seeds back-to-back, so the wall-clock scales with seeds;
     # the setup slack (baked into `per`) is paid once, not per seed.
     total = SETUP_SLACK_SECONDS + args.seeds * (per - SETUP_SLACK_SECONDS)
@@ -359,7 +359,7 @@ def _ensure_render_deps() -> None:
     rs = os.path.join(root, "factorion_rs")
     pip = ["uv", "pip", "install", "--system"]
     print("installing the factory-diff dependencies (torch + factorion_rs)", flush=True)
-    subprocess.run([*pip, "maturin", "numpy", "gymnasium", "networkx", "tqdm", "plotly", "pillow"], check=True)
+    subprocess.run([*pip, "maturin", "numpy", "networkx", "tqdm"], check=True)
     subprocess.run([*pip, "torch", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
     subprocess.run(["maturin", "build", "--release", "--out", "dist"], cwd=rs, check=True)
     subprocess.run([*pip, *sorted(glob.glob(os.path.join(rs, "dist", "*.whl")))[-1:]], check=True)
@@ -619,13 +619,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--num-samples", type=si_int, default=None)
     common(sp)
 
-    sp = sub.add_parser("ppo", add_help=False)
+    sp = sub.add_parser("rl", add_help=False)
     sp.add_argument("--start-from", required=True)
     sp.add_argument("--total-timesteps", type=si_int, default=None)
     common(sp)
 
     sp = sub.add_parser("compare", add_help=False)
-    sp.add_argument("algo", nargs="?", choices=("sft", "ppo"), default="sft")
+    sp.add_argument("algo", nargs="?", choices=("sft", "rl"), default="sft")
     sp.add_argument("--base-ref", default="main")
     sp.add_argument("--seeds", type=int, default=COMPARE_SEEDS_DEFAULT)
     sp.add_argument("--num-samples", type=si_int, default=COMPARE_NUM_SAMPLES_DEFAULT)
@@ -634,7 +634,7 @@ def build_parser() -> argparse.ArgumentParser:
     common(sp)
 
     sp = sub.add_parser("sweep", add_help=False)
-    sp.add_argument("algo", choices=("sft", "ppo"))
+    sp.add_argument("algo", choices=("sft", "rl"))
     sp.add_argument("--pods", type=int, default=1)
     sp.add_argument("--agents-per-pod", type=int, default=AGENTS_PER_POD_DEFAULT)
     common(sp)
@@ -679,7 +679,7 @@ def main() -> None:
     try:
         dispatch = {
             "sft": cmd_sft,
-            "ppo": cmd_ppo,
+            "rl": cmd_rl,
             "compare": cmd_compare,
             "sweep": cmd_sweep,
             "pods": cmd_pods,

@@ -73,12 +73,10 @@ jobs:
         run: |
           # uv installs in parallel and caches wheels across runs (enable-cache
           # above), so this is much faster than pip. Only the deps actually
-          # imported by the tested modules are installed — marimo, tensorboard
-          # and pandas are deliberately omitted (the first two are mocked in
-          # tests/test_grid_sizes.py, none are imported at module load).
+          # imported by the tested modules are installed.
           uv pip install --system pytest pytest-timeout maturin ty==0.0.19
           uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-          uv pip install --system numpy gymnasium networkx tyro tqdm matplotlib plotly wandb runpod requests
+          uv pip install --system numpy networkx tyro tqdm matplotlib wandb runpod requests
       - name: Build and install factorion_rs
         run: cd factorion_rs && maturin build --release --out dist && uv pip install --system dist/*.whl
       # Shares this job's interpreter rather than paying for a second torch

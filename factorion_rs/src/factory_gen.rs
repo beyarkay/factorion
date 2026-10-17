@@ -33,11 +33,7 @@ pub enum LessonKind {
     MoveOneItem = 0,
     SplitterSplit = 3,
     SplitterMergeSideloaded = 4,
-    #[deprecated]
-    Assemble1In1Out = 5,
     MoveViaUgBelt = 6,
-    #[deprecated]
-    Assemble2In1Out = 7,
     Memorise1IngredientRecipes = 8,
     MoveOneItemChaos = 9,
     CrossUnderBelt = 10,
@@ -70,11 +66,7 @@ impl LessonKind {
             0 => Some(LessonKind::MoveOneItem),
             3 => Some(LessonKind::SplitterSplit),
             4 => Some(LessonKind::SplitterMergeSideloaded),
-            #[allow(deprecated)]
-            5 => Some(LessonKind::Assemble1In1Out),
             6 => Some(LessonKind::MoveViaUgBelt),
-            #[allow(deprecated)]
-            7 => Some(LessonKind::Assemble2In1Out),
             8 => Some(LessonKind::Memorise1IngredientRecipes),
             9 => Some(LessonKind::MoveOneItemChaos),
             10 => Some(LessonKind::CrossUnderBelt),
@@ -125,11 +117,7 @@ impl LessonKind {
             LessonKind::MoveOneItem => "MOVE_ONE_ITEM",
             LessonKind::SplitterSplit => "SPLITTER_SPLIT",
             LessonKind::SplitterMergeSideloaded => "SPLITTER_MERGE_SIDELOADED",
-            #[allow(deprecated)]
-            LessonKind::Assemble1In1Out => "ASSEMBLE_1IN_1OUT",
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
-            #[allow(deprecated)]
-            LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
             LessonKind::Memorise1IngredientRecipes => "MEMORISE_1_INGREDIENT_RECIPES",
             LessonKind::Memorise2IngredientRecipes => "MEMORISE_2_INGREDIENT_RECIPES",
             LessonKind::Memorise3IngredientRecipes => "MEMORISE_3_INGREDIENT_RECIPES",
@@ -181,9 +169,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItem,
         LessonKind::SplitterSplit,
         LessonKind::SplitterMergeSideloaded,
-        // LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
-        // LessonKind::Assemble2In1Out,
         LessonKind::Memorise1IngredientRecipes,
         LessonKind::Memorise2IngredientRecipes,
         LessonKind::Memorise3IngredientRecipes,
@@ -693,11 +679,9 @@ pub fn build_factory(
         LessonKind::SplitterMergeSideloaded => {
             build_splitter_merge_sideloaded(size, &mut rng, random_item, max_entities)
         }
-        // LessonKind::Assemble1In1Out => build_assemble_1in1out(size, &mut rng, max_entities),
         LessonKind::MoveViaUgBelt => {
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
-        // LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
         LessonKind::Memorise1IngredientRecipes => {
             build_memorise_recipes(size, &mut rng, max_entities, 1, MEMORISE_MAX_ARM_BELTS)
         }
@@ -741,7 +725,6 @@ pub fn build_factory(
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
         LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
-        _ => None,
     }
 }
 
@@ -1771,176 +1754,6 @@ fn build_splitter_merge_sideloaded(
     None
 }
 
-#[allow(unused)]
-fn build_assemble_1in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
-    let s = size as i64;
-    // The choice pool: 1-in-1-out recipes in all_recipes() order. The recipe
-    // table guarantees it is non-empty, so the choice below can't underflow.
-    let recipes: Vec<(Item, Recipe)> = all_recipes()
-        .into_iter()
-        .filter(|(_, r)| r.consumes.len() == 1 && r.produces.len() == 1)
-        .collect();
-    let mut count = (500).max(size * size * 12);
-
-    while count > 0 {
-        count -= 1;
-
-        // Pick recipe + items.
-        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
-        let input_item_value = recipe.consumes.first().0 as i64;
-        let output_item_value = recipe.produces.first().0 as i64;
-        let recipe_item_value = recipe_key as i64;
-
-        let ax = rng.randint(0, s - 3);
-        let ay = rng.randint(0, s - 3);
-        let asm_tiles: HashSet<Cell> = (0..3)
-            .flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
-            .collect();
-
-        // Distinct input + output perimeter slots.
-        let chosen = rng.sample(&PERIM_SLOTS, 2);
-        let in_slot = chosen[0];
-        let out_slot = chosen[1];
-        let in_inserter_dir = in_slot.2;
-        let out_inserter_dir = out_slot.3;
-
-        let in_inserter_pos = (ax + in_slot.0, ay + in_slot.1);
-        let out_inserter_pos = (ax + out_slot.0, ay + out_slot.1);
-        let in_dd = in_inserter_dir.delta();
-        let out_dd = out_inserter_dir.delta();
-        let in_pickup = (in_inserter_pos.0 - in_dd.0, in_inserter_pos.1 - in_dd.1);
-        let out_drop = (out_inserter_pos.0 + out_dd.0, out_inserter_pos.1 + out_dd.1);
-
-        let key_cells = [in_inserter_pos, out_inserter_pos, in_pickup, out_drop];
-        if key_cells.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        if key_cells.iter().collect::<HashSet<_>>().len() != key_cells.len() {
-            continue;
-        }
-        if key_cells.iter().any(|c| asm_tiles.contains(c)) {
-            continue;
-        }
-
-        let all_perim = all_perim_set(ax, ay, s);
-        let reserved: HashSet<Cell> = asm_tiles
-            .iter()
-            .copied()
-            .chain(key_cells.iter().copied())
-            .chain(all_perim.iter().copied())
-            .collect();
-        let available = available_cells(s, &reserved);
-        if available.len() < 2 {
-            continue;
-        }
-
-        let chosen = rng.sample(&available, 2);
-        let source_pos = chosen[0];
-        let sink_pos = chosen[1];
-        let source_dir = DIRS[rng.choice_index(4)];
-        let sink_dir = DIRS[rng.choice_index(4)];
-
-        let ds = source_dir.delta();
-        let dk = sink_dir.delta();
-        let source_output = (source_pos.0 + ds.0, source_pos.1 + ds.1);
-        let sink_input = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
-
-        if !in_grid(source_output, s) || !in_grid(sink_input, s) {
-            continue;
-        }
-        if reserved.contains(&source_output) || reserved.contains(&sink_input) {
-            continue;
-        }
-        if source_output == sink_input {
-            continue;
-        }
-
-        // Path 1: source_output → in_pickup.
-        let mut blocked1: HashSet<Cell> = asm_tiles.clone();
-        blocked1.extend([
-            in_inserter_pos,
-            out_inserter_pos,
-            source_pos,
-            sink_pos,
-            sink_input,
-            out_drop,
-        ]);
-        let path1 = match find_belt_path(
-            source_output,
-            in_pickup,
-            in_inserter_dir,
-            s,
-            &blocked1,
-            Underground::Off,
-        ) {
-            Some(p) => p,
-            None => continue,
-        };
-        let path1_cells = belt_cell_set(&path1);
-
-        // Path 2: out_drop → sink_input.
-        let mut blocked2: HashSet<Cell> = asm_tiles.clone();
-        blocked2.extend([
-            in_inserter_pos,
-            out_inserter_pos,
-            source_pos,
-            sink_pos,
-            in_pickup,
-            source_output,
-        ]);
-        blocked2.extend(path1_cells.iter().copied());
-        let path2 = match find_belt_path(
-            out_drop,
-            sink_input,
-            sink_dir,
-            s,
-            &blocked2,
-            Underground::Off,
-        ) {
-            Some(p) => p,
-            None => continue,
-        };
-
-        let total_entities = path1.len() + path2.len() + 3;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
-
-        let mut world = World::empty(size, size);
-        place_marker(
-            &mut world,
-            source_pos,
-            Item::Source,
-            source_dir,
-            input_item_value,
-        );
-        place_marker(
-            &mut world,
-            sink_pos,
-            Item::Sink,
-            sink_dir,
-            output_item_value,
-        );
-        place_assembler(&mut world, ax, ay, recipe_item_value);
-        place_inserter(&mut world, in_inserter_pos, in_inserter_dir, Item::Inserter);
-        place_inserter(
-            &mut world,
-            out_inserter_pos,
-            out_inserter_dir,
-            Item::Inserter,
-        );
-        place_belts(&mut world, &path1);
-        place_belts(&mut world, &path2);
-
-        if world_throughput(&world) <= 0.0 {
-            continue;
-        }
-
-        return finish(world, total_entities, vec![], count);
-    }
-    None
-}
-
 fn build_move_via_ug_belt(
     size: usize,
     rng: &mut Rng,
@@ -2166,207 +1979,6 @@ fn build_move_via_ug_belt(
         // Mark only the wall as UNAVAILABLE; every other tile is buildable.
         for &(wx, wy) in &wall_tiles {
             world.set(wx as usize, wy as usize, Channel::Footprint, 0);
-        }
-
-        return finish(world, total_entities, vec![], count);
-    }
-    None
-}
-
-#[allow(unused)]
-fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
-    let s = size as i64;
-    // The `random.choice` pool: 2-in-1-out recipes in all_recipes() order.
-    let recipes: Vec<(Item, Recipe)> = all_recipes()
-        .into_iter()
-        .filter(|(_, r)| r.consumes.len() == 2 && r.produces.len() == 1)
-        .collect();
-    let mut count = (500).max(size * size * 16);
-
-    while count > 0 {
-        count -= 1;
-
-        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
-        // Randomize which ingredient is "A" vs "B".
-        let mut input_items: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
-        rng.shuffle(&mut input_items);
-        let input_a_value = input_items[0] as i64;
-        let input_b_value = input_items[1] as i64;
-        let output_item_value = recipe.produces.first().0 as i64;
-        let recipe_item_value = recipe_key as i64;
-
-        let ax = rng.randint(0, s - 3);
-        let ay = rng.randint(0, s - 3);
-        let asm_tiles: HashSet<Cell> = (0..3)
-            .flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
-            .collect();
-
-        // Three distinct perimeter slots: 2 inputs + 1 output.
-        let chosen = rng.sample(&PERIM_SLOTS, 3);
-        let in_a_slot = chosen[0];
-        let in_b_slot = chosen[1];
-        let out_slot = chosen[2];
-        let in_a_pos = (ax + in_a_slot.0, ay + in_a_slot.1);
-        let in_a_dir = in_a_slot.2;
-        let in_b_pos = (ax + in_b_slot.0, ay + in_b_slot.1);
-        let in_b_dir = in_b_slot.2;
-        let out_pos = (ax + out_slot.0, ay + out_slot.1);
-        let out_dir = out_slot.3;
-
-        let in_a_dd = in_a_dir.delta();
-        let in_b_dd = in_b_dir.delta();
-        let out_dd = out_dir.delta();
-        let in_a_pickup = (in_a_pos.0 - in_a_dd.0, in_a_pos.1 - in_a_dd.1);
-        let in_b_pickup = (in_b_pos.0 - in_b_dd.0, in_b_pos.1 - in_b_dd.1);
-        let out_drop = (out_pos.0 + out_dd.0, out_pos.1 + out_dd.1);
-
-        let key_cells = [
-            in_a_pos,
-            in_b_pos,
-            out_pos,
-            in_a_pickup,
-            in_b_pickup,
-            out_drop,
-        ];
-        if key_cells.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        if key_cells.iter().collect::<HashSet<_>>().len() != key_cells.len() {
-            continue;
-        }
-        if key_cells.iter().any(|c| asm_tiles.contains(c)) {
-            continue;
-        }
-
-        let all_perim = all_perim_set(ax, ay, s);
-        let reserved: HashSet<Cell> = asm_tiles
-            .iter()
-            .copied()
-            .chain(key_cells.iter().copied())
-            .chain(all_perim.iter().copied())
-            .collect();
-        let available = available_cells(s, &reserved);
-        if available.len() < 3 {
-            continue;
-        }
-
-        let chosen = rng.sample(&available, 3);
-        let src_a_pos = chosen[0];
-        let src_b_pos = chosen[1];
-        let sink_pos = chosen[2];
-        let src_a_dir = DIRS[rng.choice_index(4)];
-        let src_b_dir = DIRS[rng.choice_index(4)];
-        let sink_dir = DIRS[rng.choice_index(4)];
-
-        let ds_a = src_a_dir.delta();
-        let ds_b = src_b_dir.delta();
-        let dk = sink_dir.delta();
-        let src_a_out = (src_a_pos.0 + ds_a.0, src_a_pos.1 + ds_a.1);
-        let src_b_out = (src_b_pos.0 + ds_b.0, src_b_pos.1 + ds_b.1);
-        let sink_in = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
-
-        let conn = [src_a_out, src_b_out, sink_in];
-        if conn.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        if conn.iter().collect::<HashSet<_>>().len() != conn.len() {
-            continue;
-        }
-        if conn.iter().any(|c| reserved.contains(c)) {
-            continue;
-        }
-        let endpoints: HashSet<Cell> = [src_a_pos, src_b_pos, sink_pos].into_iter().collect();
-        if conn.iter().any(|c| endpoints.contains(c)) {
-            continue;
-        }
-
-        let fixed_cells: HashSet<Cell> = asm_tiles
-            .iter()
-            .copied()
-            .chain([in_a_pos, in_b_pos, out_pos, src_a_pos, src_b_pos, sink_pos])
-            .collect();
-
-        // Path A: source A → input-A pickup.
-        let mut blocked_a = fixed_cells.clone();
-        blocked_a.extend([in_b_pickup, out_drop, src_b_out, sink_in]);
-        let path_a = match find_belt_path(
-            src_a_out,
-            in_a_pickup,
-            in_a_dir,
-            s,
-            &blocked_a,
-            Underground::Off,
-        ) {
-            Some(p) => p,
-            None => continue,
-        };
-        let path_a_cells = belt_cell_set(&path_a);
-
-        // Path B: source B → input-B pickup.
-        let mut blocked_b = fixed_cells.clone();
-        blocked_b.extend([in_a_pickup, out_drop, src_a_out, sink_in]);
-        blocked_b.extend(path_a_cells.iter().copied());
-        let path_b = match find_belt_path(
-            src_b_out,
-            in_b_pickup,
-            in_b_dir,
-            s,
-            &blocked_b,
-            Underground::Off,
-        ) {
-            Some(p) => p,
-            None => continue,
-        };
-        let path_b_cells = belt_cell_set(&path_b);
-
-        // Path C: output drop → sink input.
-        let mut blocked_c = fixed_cells.clone();
-        blocked_c.extend([in_a_pickup, in_b_pickup, src_a_out, src_b_out]);
-        blocked_c.extend(path_a_cells.iter().copied());
-        blocked_c.extend(path_b_cells.iter().copied());
-        let path_c =
-            match find_belt_path(out_drop, sink_in, sink_dir, s, &blocked_c, Underground::Off) {
-                Some(p) => p,
-                None => continue,
-            };
-
-        let total_entities = path_a.len() + path_b.len() + path_c.len() + 4;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
-
-        let mut world = World::empty(size, size);
-        place_marker(
-            &mut world,
-            src_a_pos,
-            Item::Source,
-            src_a_dir,
-            input_a_value,
-        );
-        place_marker(
-            &mut world,
-            src_b_pos,
-            Item::Source,
-            src_b_dir,
-            input_b_value,
-        );
-        place_marker(
-            &mut world,
-            sink_pos,
-            Item::Sink,
-            sink_dir,
-            output_item_value,
-        );
-        place_assembler(&mut world, ax, ay, recipe_item_value);
-        place_inserter(&mut world, in_a_pos, in_a_dir, Item::Inserter);
-        place_inserter(&mut world, in_b_pos, in_b_dir, Item::Inserter);
-        place_inserter(&mut world, out_pos, out_dir, Item::Inserter);
-        place_belts(&mut world, &path_a);
-        place_belts(&mut world, &path_b);
-        place_belts(&mut world, &path_c);
-
-        if world_throughput(&world) <= 0.0 {
-            continue;
         }
 
         return finish(world, total_entities, vec![], count);
