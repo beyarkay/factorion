@@ -81,13 +81,15 @@ Specifically, "faces away" means:
 The `transform_flow` function implements recipe crafting:
 
 1. Look up the recipe for the assigned item
-2. Find the **minimum ratio** of available input to required input across all
-   ingredients
-3. Scale output production by that ratio
+2. Find the **crafts per second** it can sustain: the machine's crafting speed
+   (0.5, its flow rate) over the recipe's crafting time, or less if some
+   ingredient's supply divided by its per-craft quantity is lower
+3. Produce each output's per-craft quantity at that many crafts per second
 
-Example: Electronic circuit needs 6 copper cable + 2 iron plate → 2 circuits.
-If only 3 copper cable is available, ratio = min(3/6, ∞) = 0.5, output = 1
-circuit.
+Example: an electronic circuit (3 copper cable + 1 iron plate → 1 circuit,
+0.5 s) crafts at most 0.5 / 0.5 = 1 per second. With 1.5 cable/s arriving,
+cable allows 0.5 crafts/s, so the machine makes 0.5 circuits/s. A barrel (1 s)
+never exceeds 0.5/s, however fast its steel arrives.
 
 ### Simplifications vs Real Factorio
 

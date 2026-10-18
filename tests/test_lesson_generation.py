@@ -1887,9 +1887,10 @@ class TestMemoriseRecipesConnectivity:
 class TestMemoriseRecipesThroughputPerRecipe:
     """Closed-form throughput from the live recipe table. One output inserter
     caps the result at INSERTER_CAP; each ingredient arm caps its input at
-    INSERTER_CAP too."""
+    INSERTER_CAP too; the assembling machine 1 crafts at speed CRAFTING_SPEED."""
 
     INSERTER_CAP = 0.86
+    CRAFTING_SPEED = 0.5
 
     @pytest.mark.parametrize("seed", range(10))
     def test_throughput_matches_recipe_closed_form(self, kind, n_ing, seed):
@@ -1902,7 +1903,7 @@ class TestMemoriseRecipesThroughputPerRecipe:
         recipe_name = items[item[snk[0], snk[1]].item()].name
         recipe = recipes[recipe_name]
         min_ratio = min(
-            1.0,
+            self.CRAFTING_SPEED / recipe.crafting_time,
             *(self.INSERTER_CAP / c for c in recipe.consumes.values()),
         )
         prod_count = next(iter(recipe.produces.values()))

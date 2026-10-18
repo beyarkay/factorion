@@ -1,0 +1,15 @@
+description: |
+  Steel arrives at the inserter's full 0.86 i/s and the output inserter
+  could carry as much, but a barrel takes 1 s to craft at crafting speed 1
+  and an assembling machine 1 crafts at 0.5, so each barrel takes 2 s: the
+  machine, not the hands, holds the sink to 0.5 barrels/s.
+items:
+- { x: 0, y: 1, item: steel_plate }
+- { x: 2, y: 0, item: barrel }   # assembler recipe (anchor = top-left)
+- { x: 6, y: 1, item: barrel }
+throughput:
+- { item: barrel, per_second: 0.5 }
+factory: |
+  .. e. aaaaaaaa e. ..
+  S> i> aa    aa i> K>
+  .. .. aaaaaaaa .. ..

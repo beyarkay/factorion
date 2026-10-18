@@ -5401,9 +5401,9 @@ fn walk_recipe_frontier(
 /// every marker.
 ///
 /// `max_throughput` is analytic: one fully-fed assembler's output rate of the
-/// sink recipe (`produces_rate`). `transform_flow` scales `produces` by input
-/// sufficiency and never beyond 1×, so this is the engine's single-machine
-/// ceiling — a clean chain that saturates one final assembler scores 1.0.
+/// sink recipe, its per-craft yield at the machine's crafting speed over the
+/// recipe's crafting time. That is the engine's single-machine ceiling — a
+/// clean chain that saturates one final assembler scores 1.0.
 fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<BuiltFactory> {
     let s = size as i64;
     // Every recipe is expandable regardless of assembler tier: the engine's
@@ -5432,7 +5432,9 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
 
         let sink_item = sinks[rng.choice_index(sinks.len())];
         let recipe = index.get(&sink_item)?;
-        let max_throughput = recipe.produces_rate(sink_item).filter(|&r| r > 0.0)?;
+        let max_throughput = recipe.produces_rate(sink_item).filter(|&r| r > 0.0)?
+            * Item::AssemblingMachine1.flow_rate()
+            / recipe.crafting_time;
 
         let mut frontier: Vec<Item> = Vec::new();
         let mut deepest = 0;
@@ -6497,7 +6499,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("{kind:?} seed={seed}: sink has no recipe"));
                 assert_eq!(
                     f.max_throughput,
-                    recipe.produces_rate(sink_item).unwrap(),
+                    recipe.produces_rate(sink_item).unwrap() * Item::AssemblingMachine1.flow_rate()
+                        / recipe.crafting_time,
                     "{kind:?} seed={seed}"
                 );
 

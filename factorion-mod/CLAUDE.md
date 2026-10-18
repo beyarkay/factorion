@@ -52,7 +52,7 @@ against the engine's prediction. Full sequence, from nothing to a report:
    Y/s (err Z%)`; the run ends with a ranked list of every sink with >0
    error and a pass/fail count (non-zero exit if any factory mismatches
    beyond `--rel-tol`/`--abs-tol`). Known-expected divergences (so a real
-   regression stands out): assembler crafting-time over-count, long-handed
+   regression stands out): long-handed
    inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
    smelting recipes → 0. Transport (belts/splitters/undergrounds) should be
    exact. Intentional engine simplifications that also show up here:
