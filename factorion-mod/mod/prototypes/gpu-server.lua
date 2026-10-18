@@ -11,7 +11,6 @@ local processor = data.raw.item["quantum-processor"] and "quantum-processor"
   or "processing-unit"
 local assembler = data.raw["assembling-machine"]["assembling-machine-2"]
 
--- Each orientation's sizes, offsets and anchors, exported with its Blender render.
 local art = {
   horizontal = require("graphics/entity/gpu-server-horizontal"),
   vertical = require("graphics/entity/gpu-server-vertical"),
@@ -26,11 +25,7 @@ local function picture(orientation, part)
 end
 
 local function sprite(orientation)
-  return {
-    layers = {
-      picture(orientation, "shadow"), picture(orientation, "main"),
-    },
-  }
+  return { layers = { picture(orientation, "shadow"), picture(orientation, "main") } }
 end
 
 local server = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
@@ -43,7 +38,6 @@ server.max_health = 300
 server.collision_box = { { -1.9, -0.9 }, { 1.9, 0.9 } }
 server.selection_box = { { -2, -1 }, { 2, 1 } }
 server.fast_replaceable_group = nil
-server.next_upgrade = nil
 server.sprites = {
   north = sprite("horizontal"), east = sprite("vertical"),
   south = sprite("horizontal"), west = sprite("vertical"),
@@ -135,8 +129,7 @@ data:extend({
   state_signal("throughput", "signal-speed", "f"),
 })
 
--- Runtime swaps only this small atlas frame as utilisation changes. The
--- masks contain the model's visible lamp lenses and share its exact anchor.
+-- Runtime swaps only this small atlas frame as utilisation changes.
 for orientation, spec in pairs(art) do
   for level = 0, spec.glow.frame_count - 1 do
     data:extend({ {

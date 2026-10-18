@@ -67,12 +67,6 @@ local function grey_state_rows(section)
   for _, row in ipairs(M.STATE_SIGNALS) do section["row_" .. row.key].signal.enabled = section.active.state end
 end
 
-local function util_copy(t)
-  local copy = {}
-  for k, v in pairs(t) do copy[k] = type(v) == "table" and util_copy(v) or v end
-  return copy
-end
-
 local DEFAULT_CONDITIONS = {
   predict = { signal = { type = "virtual", name = "signal-P" }, comparator = ">", constant = 0 },
   deconstruct = { signal = { type = "virtual", name = "signal-D" }, comparator = ">", constant = 0 },
@@ -141,11 +135,7 @@ local function show_endpoints(frame, region, from_wires)
   fill(frame.panels.circuit.inner.endpoints.signals, decoded)
 end
 
--- Set by control.lua: on_load gets the new checkpoint when the player presses
--- Load; describe, on_predict and on_clear get the window's GPU server and
--- return a message (describe also returns whether Predict can run, its
--- cluster and its region, if it has one); info returns the server's live state; settings its circuit
--- and generation settings, and settings_changed shares an edit with its cluster.
+-- Set by control.lua; these stubs let the window run in tests.
 M.on_load = function(_) end
 M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
@@ -373,8 +363,11 @@ local function set_rhs(player, key, constant, second_signal)
   local server = window_server(player)
   if not server then return end
   local settings = M.settings(server)
-  local condition = settings.conditions[key] or util_copy(DEFAULT_CONDITIONS[key])
-  condition.constant, condition.second_signal = constant or condition.constant, second_signal
+  local before = settings.conditions[key] or DEFAULT_CONDITIONS[key]
+  local condition = {
+    enabled = before.enabled, signal = before.signal, comparator = before.comparator,
+    constant = constant or before.constant, second_signal = second_signal,
+  }
   settings.conditions[key] = condition
   settings.circuit_player = player.index
   M.settings_changed(server)
@@ -386,11 +379,10 @@ end
 
 -- Each handler returns true when the event belonged to this window.
 function M.on_gui_click(event)
-  local tag = event.element.valid and event.element.tags.factorion_gpu
   local player = game.get_player(event.player_index)
   if not player then return false end
   local tags = event.element.valid and event.element.tags or {}
-  local server = window_server(player)
+  local tag, server = tags.factorion_gpu, window_server(player)
   if tags.factorion_rhs and server then
     gui.rhs_popup(player, tags.factorion_rhs,
       M.settings(server).conditions[tags.factorion_rhs] or DEFAULT_CONDITIONS[tags.factorion_rhs])
@@ -414,7 +406,6 @@ function M.on_gui_click(event)
   end
   local action = (tag == "predict" and M.on_predict) or (tag == "clear" and M.on_clear)
   if not action then return false end
-  local server = window_server(player)
   if server then player.print("[Factorion] " .. action(player, server), { sound = defines.print_sound.never }) end
   if tag == "predict" then M.close(player) else M.refresh(player, true) end
   return true
@@ -424,7 +415,7 @@ function M.on_gui_checked_state_changed(event)
   if condition_edited(event) then return true end
   local player = game.get_player(event.player_index)
   local server = player and window_server(player)
-  local tag = event.element.tags.factorion_gpu
+  local tag = event.element.valid and event.element.tags.factorion_gpu
   if not (server and (tag == "read_state" or tag == "circuit_endpoints")) then return false end
   M.settings(server)[tag] = event.element.state
   M.settings_changed(server)
@@ -502,10 +493,7 @@ function M.reset_checkpoint_fields()
 end
 
 function M.on_gui_closed(event)
-  if not event.element or not event.element.valid
-      or event.element.name ~= FRAME then
-    return false
-  end
+  if not (event.element and event.element.valid and event.element.name == FRAME) then return false end
   M.close(game.get_player(event.player_index))
   return true
 end

@@ -27,6 +27,17 @@ function M.clear(state)
   state.visuals = nil
 end
 
+local function light(ids, key, entity, offset, spec)
+  local obj = object(ids[key])
+  if not obj then
+    spec.target, spec.surface, spec.minimum_darkness = { entity = entity, offset = offset }, entity.surface, 0.3
+    obj = rendering.draw_light(spec)
+    ids[key] = obj.id
+  end
+  obj.target = { entity = entity, offset = offset }
+  return obj
+end
+
 function M.update(state, powered, utilisation, busy)
   local entity = state.entity
   if not entity.valid or not powered then M.clear(state); return end
@@ -45,27 +56,12 @@ function M.update(state, powered, utilisation, busy)
   elseif glow.sprite ~= sprite then
     glow.sprite = sprite
   end
-  local activity = object(ids.activity)
-  if not activity then
-    activity = rendering.draw_light({
-      sprite = "utility/light_medium", target = { entity = entity, offset = spec.activity_light },
-      surface = entity.surface, scale = 0.55, intensity = 0.12,
-      minimum_darkness = 0.3, color = { r = 1, g = 0.55, b = 0.16 },
-    })
-    ids.activity = activity.id
-  end
-  activity.target = { entity = entity, offset = spec.activity_light }
-  activity.intensity = 0.08 + 0.28 * utilisation
-  local pilot = object(ids.pilot)
-  if not pilot then
-    pilot = rendering.draw_light({
-      sprite = "utility/light_small", target = { entity = entity, offset = spec.data_port },
-      surface = entity.surface, scale = 0.35, intensity = 0.18,
-      minimum_darkness = 0.3, color = { r = 0.12, g = 0.42, b = 1 },
-    })
-    ids.pilot = pilot.id
-  end
-  pilot.target = { entity = entity, offset = spec.data_port }
+  light(ids, "activity", entity, spec.activity_light, {
+    sprite = "utility/light_medium", scale = 0.55, color = { r = 1, g = 0.55, b = 0.16 },
+  }).intensity = 0.08 + 0.28 * utilisation
+  light(ids, "pilot", entity, spec.data_port, {
+    sprite = "utility/light_small", scale = 0.35, intensity = 0.18, color = { r = 0.12, g = 0.42, b = 1 },
+  })
 end
 
 return M
