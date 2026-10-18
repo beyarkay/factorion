@@ -585,7 +585,7 @@ def train_sft(args: SftArgs):
     total_steps = max(1, math.ceil(args.num_samples / args.batch_size))
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
-    workers = min(16, os.cpu_count() or 1)
+    workers = min(32, os.cpu_count() or 1)
     loader = DataLoader(
         FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu()),
         batch_size=args.batch_size // args.noise_repeats,
