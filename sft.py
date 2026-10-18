@@ -607,7 +607,8 @@ def train_sft(args: SftArgs):
 
     _dn.refresh_power = _rp
     prof = None
-    print(f"[profile] cpu_count={os.cpu_count()} affinity={len(os.sched_getaffinity(0))} workers={workers}")
+    _cg = Path("/sys/fs/cgroup/cpu.max")
+    print(f"[profile] cpu_count={os.cpu_count()} affinity={len(os.sched_getaffinity(0))} workers={workers} cpu.max={_cg.read_text().strip() if _cg.exists() else None}")
     while samples_seen < args.num_samples:
         if step == 40:
             if device.type == "cuda":

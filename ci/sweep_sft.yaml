@@ -1,6 +1,6 @@
-# EXPERIMENT-TMP: LR grid at 2M samples on the 32x32 default.
+# EXPERIMENT-TMP: noise_repeats grid at 2M samples on the 32x32 default.
 method: grid
-run_cap: 4
+run_cap: 2
 metric:
   name: "val/thput@8"
   goal: maximize
@@ -8,8 +8,8 @@ metric:
 parameters:
   num_samples:
     value: 2000000
-  lr:
-    values: [3.0e-4, 7.0e-4, 1.5e-3, 3.0e-3]
+  noise_repeats:
+    values: [1, 2]
 
 program: sft.py
 
