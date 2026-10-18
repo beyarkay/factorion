@@ -578,6 +578,10 @@ def train_sft(args: SftArgs):
     # The compiled module shares the model's parameters; generation and the
     # val metrics run on the EMA copy, uncompiled (their shapes vary).
     fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
+    if fwd is not model:
+        # Both run on the full logits every training step.
+        model.losses = torch.compile(model.losses, dynamic=False)
+        model.pick = torch.compile(model.pick, dynamic=False)
 
     optimizer = optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99), fused=device.type == "cuda"
