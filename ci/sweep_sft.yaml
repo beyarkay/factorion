@@ -1,6 +1,6 @@
-# EXPERIMENT-TMP: batch_size grid at 2M samples on the 32x32 default.
+# EXPERIMENT-TMP: noise_repeats grid at lr 1.5e-3 at 2M samples on the 32x32 default.
 method: grid
-run_cap: 3
+run_cap: 2
 metric:
   name: "val/thput@8"
   goal: maximize
@@ -8,8 +8,8 @@ metric:
 parameters:
   num_samples:
     value: 2000000
-  batch_size:
-    values: [128, 256, 512]
+  noise_repeats:
+    values: [2, 4]
 
 program: sft.py
 
