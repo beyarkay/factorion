@@ -23,6 +23,7 @@ from sft import (
     _artifact_name,
     _iter_factories,
     boxed_factory,
+    build_eval_factories,
     _humanize_count,
     _humanize_lr,
     build_lr_schedule,
@@ -31,9 +32,7 @@ from sft import (
 )
 
 # Generation eval shrunk to a couple of short chains per factory.
-FAST_EVAL: dict[str, Any] = dict(
-    eval_seeds_per_kind=1, box_eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2
-)
+FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2)
 
 
 class TestNoiseLevels:
@@ -60,6 +59,11 @@ class TestBoxedFactory:
                 assert rs_throughput(f.world_CWH.permute(1, 2, 0))[0] == f.max_throughput > 0
                 shapes.add(w == h)
         assert shapes == {True, False} and holes > 0
+
+    def test_eval_set_is_augmented_like_training(self):
+        footprints = [f.world_CWH[Channel.FOOTPRINT.value] for _, _, f in build_eval_factories(SftArgs(size=15, eval_seeds_per_kind=2))]
+        boxed = [bool((fp == 0).any()) for fp in footprints]
+        assert any(boxed) and not all(boxed)
 
     def test_stream_yields_boxed_factories(self):
         states = itertools.islice(_iter_factories(32, 1, 0, 1, box_frac=1.0), 4)
@@ -237,7 +241,6 @@ class TestTrackedArtifact:
 
         n = args.eval_best_of
         assert f"val/thput@{n}" in logged
-        assert f"val/box/thput@{n}" in logged
         assert f"val/inserters_no_input@{n}" in logged
         assert f"val/unpowered@{n}" in logged
         assert any(k.endswith(f"/MOVE_ONE_ITEM/thput@{n}") for k in logged)
