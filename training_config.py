@@ -136,7 +136,7 @@ class SftArgs(SharedArgs):
     num_samples: int = 20_000_000
     """corrupted training examples to train on. Factories are generated on the
     fly by DataLoader workers, each one used for `noise_repeats` examples."""
-    batch_size: int = 256
+    batch_size: int = 128
     """corrupted examples per optimizer step"""
     noise_repeats: int = 1
     """examples per generated factory, each at its own noise level; amortises
