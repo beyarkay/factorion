@@ -392,7 +392,7 @@ class DenoiserUNet(nn.Module):
         # Zero padding is a wall tile: the off-grid world is unbuildable.
         s = F.pad(s, (0, ph, 0, pw))
         with torch.autocast(s.device.type, dtype=torch.bfloat16, enabled=self.amp):
-            h = self.stem(self._embed(s).contiguous(memory_format=torch.channels_last))
+            h = self.stem(self._embed(s))
             skips = []
             for i, blocks in enumerate(self.enc):
                 h = blocks(h)
