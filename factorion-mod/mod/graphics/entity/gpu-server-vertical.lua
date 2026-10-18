@@ -1,4 +1,1 @@
-return {
-  main = { filename = "__factorion__/graphics/entity/gpu-server-vertical.png", width = 136, height = 212, shift = { 0.031, 0.347 } },
-  shadow = { filename = "__factorion__/graphics/entity/gpu-server-vertical-shadow.png", width = 174, height = 164, shift = { 0.438, 0.831 } },
-}
+return { main = { filename = "__factorion__/graphics/entity/gpu-server-vertical.png", width = 138, height = 314, shift = { -0.03125, -0.40625 } }, shadow = { filename = "__factorion__/graphics/entity/gpu-server-vertical-shadow.png", width = 148, height = 276, shift = { 0.171875, 0.09375 } }, glow = { filename = "__factorion__/graphics/entity/gpu-server-vertical-glow.png", width = 82, height = 162, shift = { 0.375, 0.265625 }, frame_count = 6 }, footprint = { 2, 4 }, geometry_sha256 = "deb22955fdf4802cc66ac5ea2fa7fa7688ee647de5468166045f5a9d17d2c13f", assembly_rotation_degrees = 90, data_port = { 0.67, 1.498197 }, activity_light = { 0.12, 1.426215 }, circuit = { wire = { red = { 0.62, 0.389912 }, green = { 0.62, 0.229912 } }, shadow = { red = { 1.036727, 1.457527 }, green = { 1.036727, 1.297527 } } } }
