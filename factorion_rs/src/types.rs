@@ -811,8 +811,9 @@ const ASSEMBLING_MACHINES: &[Item] = &[
 /// truth — both `get_recipe` and the Python-facing PyO3 binding read from this.
 ///
 /// Quantities are the canonical wiki recipe values (per craft, not
-/// per-second). Throughput math (`transform_flow`) is scale-invariant
-/// under uniform multiplication of consumes and produces.
+/// per-second). They are not scale-free: a machine finishes at most its
+/// crafting speed over `crafting_time` crafts per second, so the per-craft
+/// quantities set its rates.
 ///
 /// Oil refinery is omitted because its five inputs do not belong to any of the
 /// supported 1–4 ingredient recipe lessons.
