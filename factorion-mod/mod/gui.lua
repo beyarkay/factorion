@@ -4,6 +4,27 @@
 
 local M = {}
 
+-- A draggable title bar whose close button carries tags.factorion_close = name;
+-- with circuit_tags, a circuit network button carrying them sits beside it.
+local function titlebar(frame, drag_target, title, name, circuit_tags)
+  local bar = frame.add({ type = "flow", name = "titlebar", direction = "horizontal" })
+  bar.drag_target = drag_target
+  bar.add({ type = "label", caption = title, style = "frame_title", ignored_by_interaction = true })
+  local drag = bar.add({ type = "empty-widget", style = "draggable_space_header", ignored_by_interaction = true })
+  drag.style.height = 24
+  drag.style.horizontally_stretchable = true
+  if circuit_tags then
+    bar.add({
+      type = "sprite-button", name = "circuit_button", style = "frame_action_button",
+      sprite = "utility/circuit_network_panel", tooltip = "Circuit network", tags = circuit_tags,
+    })
+  end
+  bar.add({
+    type = "sprite-button", style = "frame_action_button", sprite = "utility/close",
+    tooltip = { "gui.close-instruction" }, tags = { factorion_close = name },
+  })
+end
+
 local STATUS_SPRITES = {
   working = "utility/status_working",
   waiting = "utility/status_yellow",
@@ -14,8 +35,7 @@ local STATUS_SPRITES = {
 M.COMPARATORS = { ">", "<", "=", "≥", "≤", "≠" }
 
 -- The root is an invisible frame holding the window and any side panels in
--- root.panels, so they move together. Its close button carries tags.factorion_close = name;
--- with circuit_tags, a circuit network button carrying them sits beside it.
+-- root.panels, so they move together.
 function M.entity_window(player, name, title, entity, circuit_tags)
   local root = player.gui.screen.add({
     type = "frame", name = name, style = "invisible_frame", direction = "horizontal",
@@ -24,28 +44,11 @@ function M.entity_window(player, name, title, entity, circuit_tags)
   local panels = root.add({ type = "flow", name = "panels", direction = "horizontal" })
   panels.style.horizontal_spacing = 0
   local frame = panels.add({ type = "frame", name = "window", direction = "vertical" })
-  local titlebar = frame.add({ type = "flow", name = "titlebar", direction = "horizontal" })
-  titlebar.drag_target = root
-  titlebar.add({
-    type = "label", caption = title, style = "frame_title", ignored_by_interaction = true,
-  })
-  local drag = titlebar.add({
-    type = "empty-widget", style = "draggable_space_header", ignored_by_interaction = true,
-  })
-  drag.style.height = 24
-  drag.style.horizontally_stretchable = true
-  if circuit_tags then
-    titlebar.add({
-      type = "sprite-button", name = "circuit_button", style = "frame_action_button",
-      sprite = "utility/circuit_network_panel", tooltip = "Circuit network", tags = circuit_tags,
-    })
-  end
-  titlebar.add({
-    type = "sprite-button", style = "frame_action_button", sprite = "utility/close",
-    tooltip = { "gui.close-instruction" }, tags = { factorion_close = name },
-  })
+  titlebar(frame, root, title, name, circuit_tags)
   local body = frame.add({ type = "flow", name = "body", direction = "horizontal" })
-  local panel = M.panel(body, "main")
+  local panel = body.add({
+    type = "frame", name = "main", style = "inside_shallow_frame_with_padding", direction = "vertical",
+  })
   local status = panel.add({ type = "flow", name = "status", direction = "horizontal" })
   status.style.vertical_align = "center"
   status.add({ type = "sprite", name = "status_light", style = "status_image" })
@@ -133,17 +136,8 @@ function M.circuit_section(inner, name, caption, state, tags, tooltip)
   return section
 end
 
-function M.panel(body, name)
-  return body.add({
-    type = "frame", name = name, style = "inside_shallow_frame_with_padding",
-    direction = "vertical",
-  })
-end
-
 function M.heading(parent, caption)
-  local label = parent.add({ type = "label", caption = caption, style = "caption_label" })
-  label.style.top_margin = 8
-  return label
+  parent.add({ type = "label", caption = caption, style = "caption_label" }).style.top_margin = 8
 end
 
 -- kind is working, waiting, broken or idle.
@@ -236,7 +230,6 @@ function M.show_second(row, condition)
   local button = row.add(spec)
   button.style.font = "default-large-bold"
   button.enabled = row.signal.enabled
-  return button
 end
 
 M.RHS_POPUP = "factorion-condition-rhs"
@@ -248,16 +241,7 @@ function M.rhs_popup(player, key, condition)
   if old then old.destroy() end
   local frame = player.gui.screen.add({ type = "frame", name = M.RHS_POPUP, direction = "vertical" })
   frame.auto_center = true
-  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
-  titlebar.drag_target = frame
-  titlebar.add({ type = "label", caption = "Select a signal", style = "frame_title", ignored_by_interaction = true })
-  local drag = titlebar.add({ type = "empty-widget", style = "draggable_space_header", ignored_by_interaction = true })
-  drag.style.height = 24
-  drag.style.horizontally_stretchable = true
-  titlebar.add({
-    type = "sprite-button", style = "frame_action_button", sprite = "utility/close",
-    tooltip = { "gui.close-instruction" }, tags = { factorion_close = M.RHS_POPUP },
-  })
+  titlebar(frame, frame, "Select a signal", M.RHS_POPUP)
   local inner = frame.add({ type = "frame", name = "inner", style = "inside_shallow_frame_with_padding", direction = "vertical" })
   local pick = inner.add({ type = "flow", direction = "horizontal" })
   pick.style.vertical_align = "center"
@@ -279,7 +263,6 @@ function M.rhs_popup(player, key, condition)
     style = "short_number_textfield", tags = { factorion_rhs_value = key },
   })
   row.add({ type = "button", caption = "Set constant", style = "green_button", tags = { factorion_rhs_set = key } })
-  return frame
 end
 
 function M.grey_condition(section)
