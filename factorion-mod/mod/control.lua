@@ -188,21 +188,9 @@ local function has_power(server)
   return server_power(server).energy > 0
 end
 
--- Within one survey or window refresh the map doesn't change, so a server's
--- paint and a surface's clusters are worked out once instead of once per
--- server that asks.
+-- Within one survey or window refresh the map doesn't change, so paint is
+-- flooded once instead of once per server that asks.
 local memo
-
-local function memoized(kind, key, compute)
-  if not memo then return compute() end
-  memo[kind] = memo[kind] or {}
-  local hit = memo[kind][key]
-  if not hit then
-    hit = { compute() }
-    memo[kind][key] = hit
-  end
-  return table.unpack(hit, 1, 2)
-end
 
 local function with_memo(fn)
   if memo then return fn() end
@@ -335,7 +323,7 @@ end
 
 -- The painted tiles and GPU servers server reaches through data links,
 -- passing only through electric poles.
-local function compute_linked_nodes(server)
+local function linked_nodes(server)
   local start = "e" .. server.unit_number
   local seen, queue, tiles, servers = { [start] = true }, { start }, {}, {}
   while #queue > 0 do
@@ -357,10 +345,6 @@ local function compute_linked_nodes(server)
     end
   end
   return tiles, servers
-end
-
-local function linked_nodes(server)
-  return memoized("links", server.unit_number, function() return compute_linked_nodes(server) end)
 end
 
 -- Every painted piece server reaches itself, { area, window }: the paint it
@@ -510,23 +494,41 @@ end
 -- Outlines each painted area of the surface, in alt-mode only, and flags
 -- the ones no GPU server reaches. An area bigger than the model's grid is
 -- outlined only where GPU servers would build, or in red when none would.
+-- The connected pieces of tiles, each as { tiles, min_x, min_y, max_x, max_y }.
+local function connected_areas(tiles)
+  local result, seen = {}, {}
+  for key, start in pairs(tiles) do
+    if not seen[key] then
+      local area, queue = { [key] = start }, { start }
+      seen[key] = true
+      local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
+      while #queue > 0 do
+        local tile = table.remove(queue)
+        min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+        min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+        for _, step in ipairs(NEIGHBOURS) do
+          local next_key = tile_key(tile.x + step[1], tile.y + step[2])
+          if tiles[next_key] and not seen[next_key] then
+            seen[next_key] = true
+            area[next_key] = tiles[next_key]
+            table.insert(queue, tiles[next_key])
+          end
+        end
+      end
+      table.insert(result, { area, min_x, min_y, max_x, max_y })
+    end
+  end
+  return result
+end
+
 local function draw_mask_outline(surface)
   storage.mask_outlines = storage.mask_outlines or {}
   for _, id in ipairs(storage.mask_outlines[surface.index] or {}) do
     local object = rendering.get_object_by_id(id)
     if object then object.destroy() end
   end
-  -- Outlines nothing tracks, such as an older version's, are the only wide
-  -- lines the mod draws on the ground.
-  for _, object in pairs(rendering.get_all_objects(script.mod_name)) do
-    if object.surface.index == surface.index and object.type == "line"
-        and object.draw_on_ground and object.width == 5 then
-      object.destroy()
-    end
-  end
   local ids = {}
   storage.mask_outlines[surface.index] = ids
-  if not prototypes.tile[MASK_TILE] then return end
 
   local function outline(tiles, color)
     -- Unit edges grouped by the grid line they lie on.
@@ -580,45 +582,27 @@ local function draw_mask_outline(surface)
       for key, tile in pairs(piece.area) do covered[key] = tile end
     end
   end
-  local seen = {}
-  for key, start in pairs(painted) do
-    if not seen[key] then
-      local area, queue = { [key] = start }, { start }
-      seen[key] = true
-      local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
-      while #queue > 0 do
-        local tile = table.remove(queue)
-        min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
-        min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
-        for _, step in ipairs(NEIGHBOURS) do
-          local next_key = tile_key(tile.x + step[1], tile.y + step[2])
-          if painted[next_key] and not seen[next_key] then
-            seen[next_key] = true
-            area[next_key] = painted[next_key]
-            table.insert(queue, painted[next_key])
-          end
-        end
+  for _, connected in ipairs(connected_areas(painted)) do
+    local area, min_x, min_y, max_x, max_y = table.unpack(connected)
+    local part = {}
+    for tile_at, tile in pairs(area) do
+      if covered[tile_at] then part[tile_at] = tile end
+    end
+    if not size or (max_x - min_x < size and max_y - min_y < size) then
+      outline(area, MASK_OUTLINE_COLOR)
+    elseif next(part) then
+      outline(part, MASK_OUTLINE_COLOR)
+    else
+      outline(area, MASK_TOO_BIG_COLOR)
+    end
+    if size and not next(part) then
+      local cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+      local best
+      for _, tile in pairs(area) do
+        local d = (tile.x - cx) ^ 2 + (tile.y - cy) ^ 2
+        if not best or d < best.d then best = { x = tile.x, y = tile.y, d = d } end
       end
-      local part = {}
-      for tile_at, tile in pairs(area) do
-        if covered[tile_at] then part[tile_at] = tile end
-      end
-      if not size or (max_x - min_x < size and max_y - min_y < size) then
-        outline(area, MASK_OUTLINE_COLOR)
-      elseif next(part) then
-        outline(part, MASK_OUTLINE_COLOR)
-      else
-        outline(area, MASK_TOO_BIG_COLOR)
-      end
-      if size and not next(part) then
-        local cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
-        local best
-        for _, tile in pairs(area) do
-          local d = (tile.x - cx) ^ 2 + (tile.y - cy) ^ 2
-          if not best or d < best.d then best = { x = tile.x, y = tile.y, d = d } end
-        end
-        table.insert(ids, draw_alert("unlinked", { best.x + 0.5, best.y + 0.5 }, surface))
-      end
+      table.insert(ids, draw_alert("unlinked", { best.x + 0.5, best.y + 0.5 }, surface))
     end
   end
 end
@@ -1196,17 +1180,16 @@ local CARRIED_SETTINGS = {
   "temperature", "steps", "refine", "best_of", "seed",
 }
 
-local function gpu_settings(entity)
-  local state = storage.servers and storage.servers[entity.unit_number]
-  if not state then return nil end
-  local carried = {}
-  for _, key in ipairs(CARRIED_SETTINGS) do carried[key] = state[key] end
-  return carried
+local SHARED_SETTINGS = { "circuit_player", "settings_tick", table.unpack(CARRIED_SETTINGS) }
+
+local function copy_settings(from, to, keys)
+  for _, key in ipairs(keys or SHARED_SETTINGS) do to[key] = util.table.deepcopy(from[key]) end
+  return to
 end
 
-local function apply_gpu_settings(entity, carried)
-  local state = server_state(entity)
-  for _, key in ipairs(CARRIED_SETTINGS) do state[key] = util.table.deepcopy(carried[key]) end
+local function gpu_settings(entity)
+  local state = storage.servers and storage.servers[entity.unit_number]
+  return state and copy_settings(state, {}, CARRIED_SETTINGS)
 end
 
 -- A server's data links, as offsets from it to the other end, for a
@@ -1289,7 +1272,7 @@ local function entity_built(event)
   end
   if entity and entity.valid and entity.name == inference.GPU_SERVER then
     local copied = event.tags and event.tags.factorion_gpu
-    if copied then apply_gpu_settings(entity, copied) end
+    if copied then copy_settings(copied, server_state(entity), CARRIED_SETTINGS) end
     local carried = event.tags and event.tags.factorion_links
     if carried then restore_links(entity, carried.links, carried.direction) end
     layout_changed(entity.surface.index)
@@ -1325,7 +1308,7 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
   local copied = event.source.name == inference.GPU_SERVER
     and event.destination.name == inference.GPU_SERVER and gpu_settings(event.source)
   if copied then
-    apply_gpu_settings(event.destination, copied)
+    copy_settings(copied, server_state(event.destination), CARRIED_SETTINGS)
     inference.settings_changed(event.destination)
   end
 end)
@@ -1792,24 +1775,7 @@ local function region_for(server, groups)
     table.insert(notes, string.format("The build region is bigger than the model's %dx%d grid; only the " ..
       "square around this server is used. Mine the paint outside it to make that clear.", size, size))
   end
-  local separate, seen_tiles = 0, {}
-  for key in pairs(area) do
-    if not seen_tiles[key] then
-      separate = separate + 1
-      local queue = { area[key] }
-      seen_tiles[key] = true
-      while #queue > 0 do
-        local tile = table.remove(queue)
-        for _, step in ipairs(NEIGHBOURS) do
-          local next_key = tile_key(tile.x + step[1], tile.y + step[2])
-          if area[next_key] and not seen_tiles[next_key] then
-            seen_tiles[next_key] = true
-            table.insert(queue, area[next_key])
-          end
-        end
-      end
-    end
-  end
+  local separate = #connected_areas(area)
   if separate > 1 then
     table.insert(notes, string.format("This cluster reaches %d separate build regions and builds them as " ..
       "one factory; give each its own GPU servers, not touching or cabled to the others.", separate))
@@ -2271,8 +2237,6 @@ local function draw_virtual_endpoint(surface, endpoint)
   return ids
 end
 
--- Keeps the server's circuit endpoints drawn, measured from whatever belt
--- is on their tile, and flagged when a source has nothing arriving.
 local DIRECTION_TO_FACTORIO = {
   defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west,
 }
@@ -2293,6 +2257,8 @@ local function place_endpoint_belt(surface, force, endpoint)
   surface.create_entity(spec)
 end
 
+-- Keeps the server's circuit endpoints drawn, measured from whatever belt
+-- is on their tile, and flagged when a source has nothing arriving.
 local function sync_virtual_endpoints(server, state, endpoints)
   local kept = {}
   for _, endpoint in ipairs(endpoints) do
@@ -2330,17 +2296,7 @@ end
 
 -- A cluster shares one set of circuit and generation settings: every server
 -- keeps a copy, and the most recently edited wins.
-local SHARED_SETTINGS = {
-  "conditions", "read_state", "state_signals", "circuit_endpoints", "circuit_player", "settings_tick",
-  "temperature", "steps", "refine", "best_of", "seed",
-}
 
-local function copy_settings(from, to)
-  for _, key in ipairs(SHARED_SETTINGS) do to[key] = util.table.deepcopy(from[key]) end
-end
-
--- Every second: each server's cluster size, sinks and readiness for its
--- signals, and the warnings over servers and sources.
 -- What a survey knows about a cluster: its leader, which draws and measures
 -- its wire-set endpoints, its region, and its most recently edited settings.
 local function survey_cluster(members, groups, size)
@@ -2556,9 +2512,6 @@ end
 -- RCON interface: server streams predictions back here
 -- ----------------------------------------------------------------------------
 
--- Re-registration safety: remote.add_interface errors if the name already
--- exists. On /c game.reload_script() the old interface is still bound, so
--- the new methods (e.g. dump_state) would never get added. Remove first.
 -- Releases a finished request's cluster and reports how it went.
 local function finish_request(server, request_id, summary_json)
   storage.pending_by_request[request_id] = nil
@@ -2640,6 +2593,9 @@ local function place_queued_steps()
   end
 end
 
+-- Re-registration safety: remote.add_interface errors if the name already
+-- exists. On /c game.reload_script() the old interface is still bound, so
+-- the new methods (e.g. dump_state) would never get added. Remove first.
 if remote.interfaces["factorion"] then
   remote.remove_interface("factorion")
 end
@@ -2864,39 +2820,8 @@ script.on_configuration_changed(function()
   storage.pending_by_request = storage.pending_by_request or {}
   storage.outbox = storage.outbox or {}
   storage.endpoints = storage.endpoints or {}
-  -- Windows saved open may have an older layout.
-  for _, player in pairs(game.players) do
-    inference.close(player)
-    local marker = player.gui.screen[MARKER_DIALOG]
-    if marker then marker.destroy() end
-  end
   -- A server whose prototype changed type is gone from the map.
   for unit, state in pairs(storage.servers) do
-    -- Cables ran server, poles, tile; each hop becomes a link.
-    for _, cable in ipairs(state.cables or {}) do
-      destroy_ids(cable.render_ids)
-      local nodes = { state.entity }
-      for _, pole in ipairs(cable.poles) do table.insert(nodes, pole) end
-      table.insert(nodes, { x = cable.x, y = cable.y })
-      for i = 1, #nodes - 1 do
-        local a, b = nodes[i], nodes[i + 1]
-        if node_valid(a) and node_valid(b) and state.entity.valid then
-          local surface = state.entity.surface
-          local ka, kb = node_key(a, surface), node_key(b, surface)
-          storage.links = storage.links or {}
-          storage.links[ka < kb and ka .. "|" .. kb or kb .. "|" .. ka] = {
-            a = a, b = b, ka = ka, kb = kb, surface = surface.index,
-            render_ids = draw_cable(surface, a, b),
-          }
-        end
-      end
-    end
-    state.cables = nil
-    if state.utilisation_label then
-      local label = rendering.get_object_by_id(state.utilisation_label)
-      if label then label.destroy() end
-      state.utilisation_label = nil
-    end
     gpu_visuals.clear(state)
     if not state.entity.valid then storage.servers[unit] = nil end
   end
