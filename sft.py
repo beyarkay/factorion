@@ -55,6 +55,7 @@ from factorion import (
     build_factory,
     count_unpowered,
     refresh_power,
+    refresh_power_async,
 )
 
 from training_config import RlArgs, SftArgs, wsd_multiplier
@@ -230,16 +231,22 @@ class FactoryStream(IterableDataset):
     CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, base_seed, box_frac):
+    def __init__(self, size, base_seed, box_frac, args: SftArgs, prior):
         self.size = size
         self.base_seed = base_seed
         self.box_frac = box_frac
+        self.args = args
+        self.prior = prior
 
     def __iter__(self):
+        """(state, its `noise_repeats` corruptions): corrupting here, where
+        the power refresh is off the training step's critical path."""
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        return _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac)
+        for state in _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac):
+            states = state.long().expand(self.args.noise_repeats, -1, -1, -1)
+            yield state, corrupt_states(states, self.args, self.prior).to(torch.uint8)
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
@@ -362,25 +369,42 @@ def noise_prior_from(states: torch.Tensor) -> torch.Tensor:
     return 0.95 * freq / freq.sum() + 0.05 / N_TYPES
 
 
-def denoise_step(model, state, args: SftArgs):
-    """One training batch: corrupt, predict, (unroll), loss. Returns (loss,
-    stats) where stats holds detached per-term values."""
+def corrupt_states(state, args: SftArgs, prior):
+    """`state` with each example's free tiles resampled from `prior` at its own
+    `noise_levels`."""
+    free = free_mask(state)
+    t = noise_levels(state.shape[0], args, state.device)
+    return tokens_to_state(state, free, *corrupt(state_to_tokens(state), free, t, prior))
+
+
+def denoise_step(model, state, noisy, args: SftArgs, scale=1.0):
+    """One training batch: predict `state` from `noisy` (`corrupt_states`),
+    (unroll), and backpropagate `scale` times the loss. Returns (loss, stats),
+    both detached."""
     free = free_mask(state)
     clean = state_to_tokens(state)
-    t = noise_levels(state.shape[0], args, state.device)
-    noisy = corrupt(clean, free, t, model.noise_prior)
-    logits = model(tokens_to_state(state, free, *noisy))
+    weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
+    passes = 2 if args.unroll else 1
+
+    def backward(terms):
+        loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
+        (scale / passes * loss).backward()
+        return {k: v.detach() / passes for k, v in terms.items()}, loss.detach() / passes
+
+    logits = model(noisy)
     terms = model.losses(logits, clean, free)
     if args.unroll:
         # SUNDAE: also denoise the model's own sample of its prediction, the
-        # kind of input every generation step after the first sees.
+        # kind of input every generation step after the first sees. Its power
+        # refresh runs on the CPU while the GPU backpropagates the first pass.
         with torch.no_grad():
-            own = model.pick(logits.detach(), temperature=1.0)
-        terms2 = model.losses(model(tokens_to_state(state, free, *own)), clean, free)
-        terms = {k: (v + terms2[k]) / 2 for k, v in terms.items()}
-    weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
-    loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
-    stats = {k: v.detach() for k, v in terms.items()}
+            own = tokens_to_state(state, free, *model.pick(logits.detach(), temperature=1.0), power=False)
+            powered = refresh_power_async(own)
+    stats, loss = backward(terms)
+    if args.unroll:
+        powered()
+        stats2, loss2 = backward(model.losses(model(own), clean, free))
+        stats, loss = {k: v + stats2[k] for k, v in stats.items()}, loss + loss2
     with torch.no_grad():
         typ_pred = model.pick(logits.detach())[0]
         stats["type_acc"] = ((typ_pred == clean[0]) & free).sum() / free.sum().clamp(min=1)
@@ -563,7 +587,7 @@ def train_sft(args: SftArgs):
 
     workers = min(16, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, train_seed, args.box_frac),
+        FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu()),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",
@@ -598,16 +622,7 @@ def train_sft(args: SftArgs):
     t_window, data_s, window_samples = time.time(), 0.0, 0
     pbar = tqdm.tqdm(total=args.num_samples, unit="smpl", unit_scale=True)
     it = iter(loader)
-    import denoise as _dn  # PROFILE-TMP
-
-    _orig_rp = _dn.refresh_power
-
-    def _rp(w):
-        with torch.profiler.record_function("refresh_power"):
-            return _orig_rp(w)
-
-    _dn.refresh_power = _rp
-    prof = None
+    prof = None  # PROFILE-TMP
     _cg = Path("/sys/fs/cgroup/cpu.max")
     print(f"[profile] cpu_count={os.cpu_count()} affinity={len(os.sched_getaffinity(0))} workers={workers} cpu.max={_cg.read_text().strip() if _cg.exists() else None}")
     while samples_seen < args.num_samples:
@@ -628,14 +643,14 @@ def train_sft(args: SftArgs):
             print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=40, max_name_column_width=80))
             prof = None
         t_data = time.time()
-        state_cpu = next(it)
+        state_cpu, noisy_cpu = next(it)
         data_s += time.time() - t_data
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
+        noisy = noisy_cpu.to(device, non_blocking=True).long().flatten(0, 1)
 
         model.train()
-        loss, stats = denoise_step(fwd, state, args)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        loss, stats = denoise_step(fwd, state, noisy, args)
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm or float("inf"))
         optimizer.step()
         scheduler.step()

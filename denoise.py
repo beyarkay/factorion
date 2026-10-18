@@ -175,9 +175,9 @@ def state_to_tokens(state):
     return typ, L.recipe_lut[s[:, _CH_ITEMS]], s[:, CH_PART]
 
 
-def tokens_to_state(cond, free, typ, recipe, part):
+def tokens_to_state(cond, free, typ, recipe, part, power=True):
     """`cond` with every free tile replaced by its tokens, powered by its own
-    poles."""
+    poles (unless `power` is False: the caller refreshes it)."""
     L = _luts(cond.device)
     edm = L.types[typ]
     tok = torch.stack(
@@ -193,7 +193,8 @@ def tokens_to_state(cond, free, typ, recipe, part):
         dim=1,
     )
     state = torch.where(free.unsqueeze(1), tok, cond.long())
-    refresh_power(state)
+    if power:
+        refresh_power(state)
     return state
 
 
