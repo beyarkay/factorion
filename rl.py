@@ -26,10 +26,11 @@ import tqdm
 import tyro
 
 from denoise import CH_PART, generate, legalize, load_denoiser, score_world, world_to_state
-from factorion import LESSON_IS_TRIAL, TRAINING_KINDS, Factory, LessonKind, blank_entities, build_factory
+from factorion import LESSON_IS_TRIAL, TRAINING_KINDS, Factory, LessonKind, blank_entities
 from sft import (
     assert_device_ok,
     build_eval_factories,
+    build_lesson,
     cuda_env_info,
     denoise_step,
     generation_metrics,
@@ -60,7 +61,7 @@ def _factories(args: RlArgs) -> Iterator[tuple[LessonKind, Factory]]:
     while True:
         kind = rng.choice(TRAINING_KINDS)
         seed += 1
-        factory = build_factory(size=args.size, kind=kind, seed=seed)
+        factory = build_lesson(kind, seed, args.size, args.box_frac)
         if factory is not None:
             yield kind, factory
 
@@ -142,7 +143,7 @@ def train_rl(args: RlArgs):
     optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
     # Generation schedule and eval set as SFT's: eval/ at iteration 0 is the
     # base's own val/.
-    gen = SftArgs(seed=args.seed, size=args.size, eval_best_of=args.eval_best_of)
+    gen = SftArgs(seed=args.seed, size=args.size, eval_best_of=args.eval_best_of, box_frac=args.box_frac)
     eval_factories = build_eval_factories(gen)
     G = args.group_size
     steps_per_iter = args.groups * G * gen.gen_steps
