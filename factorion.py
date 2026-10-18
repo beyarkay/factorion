@@ -988,7 +988,7 @@ def refresh_power_async(world: torch.Tensor) -> Callable[[], None]:
     can queue some before finishing."""
     batch = world if world.dim() == 4 else world[None]
     # Every channel fits a byte; copying bytes off the GPU is 8x less to wait on.
-    host = batch.permute(0, 2, 3, 1).to(torch.uint8).contiguous().to("cpu", non_blocking=True)
+    host = batch.permute(0, 2, 3, 1).to(torch.uint8).contiguous().to("cpu", non_blocking=batch.is_cuda)
     copied = torch.cuda.Event() if batch.is_cuda else None
     if copied is not None:
         copied.record()
