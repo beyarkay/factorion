@@ -16,9 +16,10 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import TINY, rs_throughput
-from denoise import load_denoiser
-from factorion import Channel, LessonKind
+from denoise import DenoiserUNet, free_mask, load_denoiser, state_to_tokens, tokens_to_state
+from factorion import Channel, LessonKind, refresh_power
 from sft import (
+    FactoryStream,
     SftArgs,
     _artifact_name,
     _iter_factories,
@@ -27,7 +28,10 @@ from sft import (
     _humanize_count,
     _humanize_lr,
     build_lr_schedule,
+    corrupt_states,
+    denoise_step,
     noise_levels,
+    noise_prior_from,
     train_sft,
 )
 
@@ -68,6 +72,42 @@ class TestBoxedFactory:
     def test_stream_yields_boxed_factories(self):
         states = itertools.islice(_iter_factories(32, 1, 0, 1, box_frac=1.0), 4)
         assert any((s[Channel.FOOTPRINT.value] == 0).any() for s in states)
+
+
+class TestDenoiseStep:
+    def test_stream_corrupts_free_tiles_and_powers_them(self):
+        args = SftArgs(noise_repeats=3)
+        prior = noise_prior_from(torch.stack(list(itertools.islice(_iter_factories(15, 1, 0, 1), 8))))
+        for state, noisy in itertools.islice(iter(FactoryStream(15, 1, 0.75, args, prior)), 4):
+            assert noisy.shape == (3, *state.shape)
+            # Every channel but power, which moved poles change everywhere.
+            fixed = ~free_mask(state[None].long())[0]
+            keep = [c for c in range(state.shape[0]) if c != Channel.POWER.value]
+            assert torch.equal(noisy[:, keep][:, :, fixed], state[None, keep][:, :, fixed].expand(3, -1, -1))
+            powered = noisy.long().clone()
+            refresh_power(powered)
+            assert torch.equal(powered, noisy.long())
+
+    def test_backpropagates_both_passes_as_one_averaged_loss(self):
+        args = SftArgs()
+        state = torch.stack(list(itertools.islice(_iter_factories(15, 1, 0, 1), 4))).long()
+        model = DenoiserUNet(**TINY)
+        model.noise_prior.copy_(noise_prior_from(state))
+        noisy = corrupt_states(state, args, model.noise_prior)
+
+        torch.manual_seed(0)
+        denoise_step(model, state, noisy, args, scale=3.0)
+        grads = {n: p.grad for n, p in model.named_parameters()}
+
+        model.zero_grad()
+        torch.manual_seed(0)
+        free, clean = free_mask(state), state_to_tokens(state)
+        logits = model(noisy)
+        own = tokens_to_state(state, free, *model.pick(logits.detach(), temperature=1.0))
+        first, second = model.losses(logits, clean, free), model.losses(model(own), clean, free)
+        weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
+        (3.0 * sum(weights[k] * (first[k] + second[k]) / 2 for k in first)).backward()
+        torch.testing.assert_close({n: p.grad for n, p in model.named_parameters()}, grads)
 
 
 class TestTrainSFTEndToEnd:

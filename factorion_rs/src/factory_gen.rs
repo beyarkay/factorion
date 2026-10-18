@@ -6841,6 +6841,40 @@ mod tests {
     }
 
     #[test]
+    fn test_routes_ignore_the_previous_search() {
+        // The router keeps its tables between calls; a search on a bigger
+        // grid in between must not leak into the next route.
+        let free = HashSet::new();
+        let block: HashSet<Cell> = [(1, 1)].into_iter().collect();
+        let routes = || {
+            let cap = Routes::First(NonZeroUsize::new(50).unwrap());
+            find_belt_paths(
+                (0, 1),
+                (2, 1),
+                Direction::East,
+                3,
+                &block,
+                Underground::Off,
+                cap,
+                &free,
+            )
+        };
+        let before = routes();
+        let mut rng = Rng::seeded(0);
+        find_belt_paths(
+            (0, 0),
+            (19, 19),
+            Direction::East,
+            20,
+            &free,
+            Underground::On(None),
+            Routes::Sampled(&mut rng),
+            &free,
+        );
+        assert_eq!(routes(), before);
+    }
+
+    #[test]
     fn test_move_one_item_stays_cheap_on_a_large_grid() {
         // Regression: `build_move_one_item` used to enumerate every shortest
         // route, which at size 20 exhausted memory within ~100 seeds.
