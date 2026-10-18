@@ -11,8 +11,7 @@ local processor = data.raw.item["quantum-processor"] and "quantum-processor"
   or "processing-unit"
 local assembler = data.raw["assembling-machine"]["assembling-machine-2"]
 
--- Rendered in Blender by art/gpu_server.py and cut by art/pack.py, which
--- writes each orientation's sizes and offsets beside its pictures.
+-- Each orientation's sizes, offsets and anchors, exported with its Blender render.
 local art = {
   horizontal = require("graphics/entity/gpu-server-horizontal"),
   vertical = require("graphics/entity/gpu-server-vertical"),
@@ -26,26 +25,10 @@ local function picture(orientation, part)
   }
 end
 
--- Beside the board's cooler, in the middle of the rig.
-local function connector(x, y)
-  return {
-    variation = 18,
-    main_offset = util.by_pixel(x, y),
-    shadow_offset = util.by_pixel(x + 11, y + 6),
-    show_shadow = true,
-  }
-end
-
-local connectors = circuit_connector_definitions.create_vector(universal_connector_template, {
-  connector(17, 5), connector(10, 1), connector(17, 5), connector(10, 1),
-})
-
-local function sprite(orientation, i)
-  local parts = connectors[i].sprites
+local function sprite(orientation)
   return {
     layers = {
       picture(orientation, "shadow"), picture(orientation, "main"),
-      parts.connector_main, parts.wire_pins, parts.connector_shadow,
     },
   }
 end
@@ -62,13 +45,13 @@ server.selection_box = { { -2, -1 }, { 2, 1 } }
 server.fast_replaceable_group = nil
 server.next_upgrade = nil
 server.sprites = {
-  north = sprite("horizontal", 1), east = sprite("vertical", 2),
-  south = sprite("horizontal", 3), west = sprite("vertical", 4),
+  north = sprite("horizontal"), east = sprite("vertical"),
+  south = sprite("horizontal"), west = sprite("vertical"),
 }
 server.activity_led_sprites = nil
 server.activity_led_light = nil
 server.circuit_wire_connection_points = {
-  connectors[1].points, connectors[2].points, connectors[3].points, connectors[4].points,
+  art.horizontal.circuit, art.vertical.circuit, art.horizontal.circuit, art.vertical.circuit,
 }
 server.circuit_wire_max_distance = assembler.circuit_wire_max_distance
 server.open_sound = assembler.open_sound
@@ -151,3 +134,16 @@ data:extend({
   state_signal("cluster", "signal-multiplication", "d"),
   state_signal("throughput", "signal-speed", "f"),
 })
+
+-- Runtime swaps only this small atlas frame as utilisation changes. The
+-- masks contain the model's visible lamp lenses and share its exact anchor.
+for orientation, spec in pairs(art) do
+  for level = 0, spec.glow.frame_count - 1 do
+    data:extend({ {
+      type = "sprite", name = "factorion-gpu-" .. orientation .. "-glow-" .. level,
+      filename = spec.glow.filename, width = spec.glow.width, height = spec.glow.height,
+      x = level * spec.glow.width, shift = spec.glow.shift, scale = 0.5,
+      draw_as_glow = true, priority = "high",
+    } })
+  end
+end

@@ -27,6 +27,7 @@ local parity = require("parity")
 local inference = require("inference")
 local gui = require("gui")
 local util = require("util")
+local gpu_visuals = require("gpu_visuals")
 
 local PROTOCOL_VERSION = "12"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
@@ -647,14 +648,6 @@ local function node_position(node)
   return node.position
 end
 
--- The port block on the front of the rig's board, in the middle.
-local GPU_CABLE_PORT = {
-  [defines.direction.north] = { -0.4, 0.22 },
-  [defines.direction.south] = { -0.4, 0.22 },
-  [defines.direction.east] = { 0.5, 0.54 },
-  [defines.direction.west] = { 0.5, 0.54 },
-}
-
 -- Where a cable hangs from a GPU server's port, an electric pole's wire
 -- point, or a painted tile's centre.
 local function cable_point(node)
@@ -662,7 +655,7 @@ local function cable_point(node)
   if node.type == "electric-pole" then
     return { x = node.position.x, y = node.position.y - 2.4 }
   end
-  local port = GPU_CABLE_PORT[node.direction]
+  local port = gpu_visuals.port(node)
   return { x = node.position.x + port[1], y = node.position.y + port[2] }
 end
 
@@ -1376,6 +1369,7 @@ local function endpoint_entity_removed(event)
   local server = storage.servers and storage.servers[entity.unit_number]
   if server then
     cancel_pending(server)
+    gpu_visuals.clear(server)
     if server.power and server.power.valid then server.power.destroy() end
     for _, endpoint in pairs(server.virtual or {}) do destroy_ids(endpoint.render_ids) end
     storage.servers[entity.unit_number] = nil
@@ -2189,9 +2183,11 @@ local function service_gpu_servers()
   for _, state in pairs(storage.servers or {}) do
     local server = state.entity
     if server.valid then
-      local busy = state.computing and has_power(server) and 1 or 0
+      local on = has_power(server)
+      local busy = state.computing and on and 1 or 0
       server_power(server).power_usage = (IDLE_KW + (BUSY_KW - IDLE_KW) * busy) * 1000 / 60
       state.utilisation = (state.utilisation or 0) * UTILISATION_DECAY + busy * (1 - UTILISATION_DECAY)
+      gpu_visuals.update(state, on, state.utilisation, busy == 1)
       write_state_signals(state)
     end
   end
@@ -2901,6 +2897,7 @@ script.on_configuration_changed(function()
       if label then label.destroy() end
       state.utilisation_label = nil
     end
+    gpu_visuals.clear(state)
     if not state.entity.valid then storage.servers[unit] = nil end
   end
   for _, player in pairs(game.players) do
@@ -2922,5 +2919,13 @@ script.on_configuration_changed(function()
   storage.model_loading = nil
   storage.server_connected = nil
   storage.server_watch_tick = game.tick
+  -- Cables follow the ports, which move with the artwork.
+  for _, link in pairs(storage.links or {}) do
+    local surface = game.surfaces[link.surface]
+    if surface then
+      destroy_ids(link.render_ids)
+      link.render_ids = draw_cable(surface, link.a, link.b)
+    end
+  end
   request_model_load()
 end)
