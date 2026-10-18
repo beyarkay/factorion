@@ -1,0 +1,37 @@
+description: |
+  INTERMEDIATE_BELT_2IN seed 1 at size 15. Two gear machines (west) drop
+  1.72 gears/s onto the y=4 belt; three transport_belt machines take them
+  off it, each emptied by one long-handed inserter onto the y=3 belt.
+
+  A long-handed hand moves 1.2 belts/s, so each product machine can only
+  run 0.6 crafts/s and only ever takes 0.6 gears/s: once its buffer is full
+  its gear inserters stop and the rest of the gears ride on to the next
+  machine. All three machines share the gears and the sink gets 2 × 1.72.
+  A pickup blind to that would let the first machine's two inserters take
+  every gear, leaving one 1.2/s output hand to carry the whole row.
+items:
+- { x: 0, y: 6, item: iron_gear_wheel }   # assembler recipes (anchor = top-left)
+- { x: 3, y: 6, item: iron_gear_wheel }
+- { x: 6, y: 6, item: transport_belt }
+- { x: 9, y: 6, item: transport_belt }
+- { x: 12, y: 6, item: transport_belt }
+- { x: 10, y: 11, item: iron_plate }      # source
+- { x: 13, y: 0, item: transport_belt }   # sink
+throughput:
+- { item: transport_belt, per_second: 3.44 }
+factory: |
+  .. .. .. .. .. .. .. .. .. .. .. .. .. K^ ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. b^ ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. b^ ..
+  .. .. .. .. .. .. .. .. b> b> b> b> b> b^ ..
+  .. b> b> b> b> b> b> b> b> b> b> b> b> b> b>
+  .. i^ .. i^ E. .. iv iv l^ iv l^ E. l^ iv iv
+  aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa
+  aa    aa aa    aa aa    aa aa    aa aa    aa
+  aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa
+  .. i^ i^ i^ i^ i^ i^ E. i^ i^ i^ i^ i^ i^ i^
+  .. b< b< b< b< b< b> b> b> b> b> b> b> b> b>
+  .. .. .. E. .. Y^^^Y .. .. .. Sv .. E. .. ..
+  .. .. .. .. .. b^ .. .. .. .. bv .. .. .. ..
+  .. .. .. .. .. b^ b< b< b< b< b< .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..

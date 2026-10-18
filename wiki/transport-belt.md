@@ -47,8 +47,7 @@ facing direction), and the two are **completely independent**:
 
 > **In Factorion:** each belt tile is two lane nodes (7.5 items/sec each)
 > in the flow graph; sideloading and inserter *drops* behave as described
-> here, but a pickup splits evenly over both lanes — and over the items on
-> each lane — instead of preferring the nearest.
+> here, pickups included (see [[inserter]] for the assembler exception).
 
 ### Curves & Placement
 
@@ -84,7 +83,10 @@ internal positions, early sideloads travel 188) that affect how a sideloading
 junction behaves under load.
 
 > **In Factorion:** a side feed onto a belt with another input pools both
-> feeder lanes onto the near-side lane (7.5 items/sec cap). Side feeds onto
+> feeder lanes onto the near-side lane (7.5 items/sec cap). The lane serves
+> the flow arriving straight on first, then the sideload, then inserter
+> drops, each filling only the gaps the ones before leave — so a sideload
+> onto a saturated lane gets nothing on. Side feeds onto
 > underground-belt tiles connect only the feeder lane over the tile's
 > surface half (aft half of an entrance, fore half of an exit) — the other
 > feeder lane is blocked by the ramp. The internal-position travel-distance

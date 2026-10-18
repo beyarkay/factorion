@@ -55,11 +55,15 @@ downstream will not short-circuit — the extracting inserter sees the item on
 the lane it doesn't read first.
 
 > **In Factorion:** drops target the far lane (right lane when the belt is
-> parallel/anti-parallel). Pickups are *not* prioritised — the hand splits
-> its rate evenly over both lanes, and each lane's share is divided across
-> the items riding it in proportion to their rates. A lane with nothing to
-> give leaves its share to the other. So an inserter cannot unmix a belt,
-> and nothing it can reach is ever starved by something it can also reach.
+> parallel/anti-parallel). Pickups fill from the near lane first (left lane
+> when parallel) and reach the far lane only for what the near one cannot
+> give; each lane's share is divided across the items riding it in
+> proportion to their rates. A hand only picks what its destination accepts:
+> into an assembler that is each ingredient in recipe proportion, from both
+> lanes at once, and no more than the crafts the machine's own output can
+> drain — the rest rides on to the next inserter. A corner (a curved belt)
+> is the exception, measured in-game: from either free side, a drop lands on
+> its inner lane and a pickup reads its left lane first.
 
 ### Variants
 
@@ -142,7 +146,7 @@ Python legacy names) but behave as infinite-capacity item endpoints.
 
 | Mechanic | Real Factorio | Factorion |
 |---|---|---|
-| Lane awareness | Drop on far lane, pick from near lane preferentially | Drop on far lane, pick evenly from both |
+| Lane awareness | Drop on far lane, pick from near lane preferentially | Same; into an assembler, both lanes in recipe proportion |
 | Stack size | 1 per swing (basic) | Not modeled — flow rate only |
 | Power | Requires electricity | No power simulation |
 | Variants | 5+ types | Basic only (+ Source/Sink) |

@@ -1,0 +1,103 @@
+description: |
+  Twelve inserters fill the left lane of the y=4 belt, which turns left at
+  (14,4), and a thirteenth drops onto that corner from its aft. A corner
+  takes every drop on its inner lane, here the full left one, so the corner
+  inserter never gets an item on and the sink sees the lane's 7.5 i/s.
+items:
+- { x: 0, y: 6, item: iron_plate }
+- { x: 1, y: 6, item: iron_plate }
+- { x: 2, y: 6, item: iron_plate }
+- { x: 3, y: 6, item: iron_plate }
+- { x: 4, y: 6, item: iron_plate }
+- { x: 5, y: 6, item: iron_plate }
+- { x: 6, y: 6, item: iron_plate }
+- { x: 7, y: 6, item: iron_plate }
+- { x: 8, y: 6, item: iron_plate }
+- { x: 9, y: 6, item: iron_plate }
+- { x: 10, y: 6, item: iron_plate }
+- { x: 11, y: 6, item: iron_plate }
+- { x: 14, y: 6, item: iron_plate }
+- { x: 9, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+factory: |
+  .. .. .. .. .. .. .. .. .. K< b< b< b< b< b< ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. b^ ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. b^ ..
+  .. .. .. .. .. .. .. .. .. .. .. .. .. .. b^ ..
+  b> b> b> b> b> b> b> b> b> b> b> b> b> b> b^ ..
+  i^ i^ i^ i^ i^ i^ i^ i^ i^ i^ i^ i^ .. .. i^ ..
+  S^ S^ S^ S^ S^ S^ S^ S^ S^ S^ S^ S^ .. .. S^ ..
+  .. e. .. .. .. e. .. .. .. e. .. .. .. e. .. ..
+---
+description: |
+  A left-turning corner carries iron on its left (inner) lane and copper on
+  its right. An inserter picks a corner's left lane first from either free
+  side, so from the outer side it still takes iron at the full hand rate.
+items:
+- { x: 1, y: 1, item: iron_plate }
+- { x: 1, y: 3, item: copper_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 4, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 6.64 }
+- { item: iron_plate, per_second: 0.86 }
+factory: |
+  .. .. K^ .. ..
+  .. Sv b^ .. ..
+  .. b> b^ i> K>
+  .. S^ .. e. ..
+  .. .. .. .. ..
+---
+description: |
+  The same pickup seen from a copper sink: no copper comes off.
+items:
+- { x: 1, y: 1, item: iron_plate }
+- { x: 1, y: 3, item: copper_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 4, y: 2, item: copper_plate }
+throughput:
+- { item: iron_plate, per_second: 6.64 }
+- { item: copper_plate, per_second: 0 }
+factory: |
+  .. .. K^ .. ..
+  .. Sv b^ .. ..
+  .. b> b^ i> K>
+  .. S^ .. e. ..
+  .. .. .. .. ..
+---
+description: |
+  A right-turning corner carries iron on its right (inner) lane and copper
+  on its left. Picked from its aft, the hand still takes the left lane:
+  copper at the full hand rate.
+items:
+- { x: 3, y: 1, item: iron_plate }
+- { x: 3, y: 3, item: copper_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 2, y: 4, item: copper_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+- { item: copper_plate, per_second: 0.86 }
+factory: |
+  .. .. K^ .. ..
+  .. .. b^ Sv ..
+  .. .. b^ b< ..
+  .. e. iv S^ ..
+  .. .. Kv .. ..
+---
+description: |
+  The same pickup seen from an iron sink: no iron comes off.
+items:
+- { x: 3, y: 1, item: iron_plate }
+- { x: 3, y: 3, item: copper_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 2, y: 4, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 0 }
+factory: |
+  .. .. K^ .. ..
+  .. .. b^ Sv ..
+  .. .. b^ b< ..
+  .. e. iv S^ ..
+  .. .. Kv .. ..

@@ -1,7 +1,8 @@
 # Every adjacent (entity, direction) x (source/sink, direction) pair, with
 # the exact edge build_graph produces. Source and sink connect like belts
 # (#174) and never to each other: a belt/inserter facing a source or sink
-# feeds it, one facing away produces nothing. Asserted edge-for-edge by
+# feeds it, one facing away produces nothing, and nothing flows out of a
+# sink. Asserted edge-for-edge by
 # check_graph in test_all_yamls_in_factories_dir.
 
 description: belt/N vs source/N
@@ -40,7 +41,7 @@ factory: |
   .. b^ Kv ..
 ---
 description: belt/N vs sink/W
-graph: "K@2,0 -> b@1,0"
+graph: ""
 factory: |
   .. b^ K< ..
 ---
@@ -120,7 +121,7 @@ factory: |
   .. bv Kv ..
 ---
 description: belt/S vs sink/W
-graph: "K@2,0 -> b@1,0"
+graph: ""
 factory: |
   .. bv K< ..
 ---
@@ -160,7 +161,7 @@ factory: |
   .. b< Kv ..
 ---
 description: belt/W vs sink/W
-graph: "K@2,0 -> b@1,0"
+graph: ""
 factory: |
   .. b< K< ..
 ---
@@ -305,22 +306,22 @@ factory: |
   E. i< S< ..
 ---
 description: inserter/W vs sink/N
-graph: "K@2,0 -> i@1,0"
+graph: ""
 factory: |
   E. i< K^ ..
 ---
 description: inserter/W vs sink/E
-graph: "K@2,0 -> i@1,0"
+graph: ""
 factory: |
   E. i< K> ..
 ---
 description: inserter/W vs sink/S
-graph: "K@2,0 -> i@1,0"
+graph: ""
 factory: |
   E. i< Kv ..
 ---
 description: inserter/W vs sink/W
-graph: "K@2,0 -> i@1,0"
+graph: ""
 factory: |
   E. i< K< ..
 ---
@@ -350,7 +351,7 @@ factory: |
   E. K^ i^ ..
 ---
 description: sink/N vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: ""
 factory: |
   E. K^ i> ..
 ---
@@ -445,17 +446,17 @@ factory: |
   .. K^ K< ..
 ---
 description: sink/E vs belt/N
-graph: "K@1,0 -> b@2,0"
+graph: ""
 factory: |
   .. K> b^ ..
 ---
 description: sink/E vs belt/E
-graph: "K@1,0 -> b@2,0"
+graph: ""
 factory: |
   .. K> b> ..
 ---
 description: sink/E vs belt/S
-graph: "K@1,0 -> b@2,0"
+graph: ""
 factory: |
   .. K> bv ..
 ---
@@ -470,7 +471,7 @@ factory: |
   E. K> i^ ..
 ---
 description: sink/E vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: ""
 factory: |
   E. K> i> ..
 ---
@@ -485,7 +486,7 @@ factory: |
   E. K> i< ..
 ---
 description: sink/E vs ug_up/N
-graph: "K@1,0 -> u@2,0"
+graph: ""
 factory: |
   .. K> u^ ..
 ---
@@ -495,7 +496,7 @@ factory: |
   .. K> u> ..
 ---
 description: sink/E vs ug_up/S
-graph: "K@1,0 -> u@2,0"
+graph: ""
 factory: |
   .. K> uv ..
 ---
@@ -505,17 +506,17 @@ factory: |
   .. K> u< ..
 ---
 description: sink/E vs ug_down/N
-graph: "K@1,0 -> d@2,0"
+graph: ""
 factory: |
   .. K> d^ ..
 ---
 description: sink/E vs ug_down/E
-graph: "K@1,0 -> d@2,0"
+graph: ""
 factory: |
   .. K> d> ..
 ---
 description: sink/E vs ug_down/S
-graph: "K@1,0 -> d@2,0"
+graph: ""
 factory: |
   .. K> dv ..
 ---
@@ -590,7 +591,7 @@ factory: |
   E. Kv i^ ..
 ---
 description: sink/S vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: ""
 factory: |
   E. Kv i> ..
 ---
@@ -710,7 +711,7 @@ factory: |
   E. K< i^ ..
 ---
 description: sink/W vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: ""
 factory: |
   E. K< i> ..
 ---
@@ -1320,7 +1321,7 @@ factory: |
   .. u^ Kv ..
 ---
 description: ug_up/N vs sink/W
-graph: "K@2,0 -> u@1,0"
+graph: ""
 factory: |
   .. u^ K< ..
 ---
@@ -1400,7 +1401,7 @@ factory: |
   .. uv Kv ..
 ---
 description: ug_up/S vs sink/W
-graph: "K@2,0 -> u@1,0"
+graph: ""
 factory: |
   .. uv K< ..
 ---
@@ -1480,7 +1481,7 @@ factory: |
   .. d^ Kv ..
 ---
 description: ug_down/N vs sink/W
-graph: "K@2,0 -> d@1,0"
+graph: ""
 factory: |
   .. d^ K< ..
 ---
@@ -1560,7 +1561,7 @@ factory: |
   .. dv Kv ..
 ---
 description: ug_down/S vs sink/W
-graph: "K@2,0 -> d@1,0"
+graph: ""
 factory: |
   .. dv K< ..
 ---
@@ -1600,6 +1601,6 @@ factory: |
   .. d< Kv ..
 ---
 description: ug_down/W vs sink/W
-graph: "K@2,0 -> d@1,0"
+graph: ""
 factory: |
   .. d< K< ..

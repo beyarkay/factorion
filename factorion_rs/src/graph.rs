@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
+use crate::entities::{entity_tiles, is_curved_belt, EntityEnum, FactoryEntity};
 use crate::power::PowerMap;
-use crate::types::{Item, Lane, Misc, NodeId};
+use crate::types::{Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
 use strum::IntoEnumIterator;
 
@@ -15,6 +15,9 @@ pub struct GraphNode {
     /// means the items channel was 0 (no item set).
     pub item: Option<Item>,
     pub misc: Misc,
+    pub direction: Direction,
+    /// A belt turning a corner, which inserters pick from differently.
+    pub curved: bool,
     /// Recipe for assembling machines (determines what they craft).
     /// `None` for non-assemblers and assemblers with no recipe set.
     pub recipe_item: Option<Item>,
@@ -143,6 +146,8 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                     entity_kind,
                     item,
                     misc,
+                    direction,
+                    curved: is_curved_belt(world, (x, y)),
                     recipe_item: if entity_kind == Item::AssemblingMachine1 {
                         item
                     } else {
@@ -174,6 +179,10 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     let mut predecessors = vec![Vec::new(); n];
 
     for (src_id, dst_id) in &edge_list {
+        // A sink destroys whatever reaches it, so nothing flows on out of it.
+        if src_id.entity_kind == Item::Sink {
+            continue;
+        }
         let src_remapped = remap_to_anchor(src_id, &anchor_of);
         let dst_remapped = remap_to_anchor(dst_id, &anchor_of);
         if let (Some(&src_idx), Some(&dst_idx)) =

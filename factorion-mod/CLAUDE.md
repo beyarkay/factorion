@@ -54,9 +54,18 @@ against the engine's prediction. Full sequence, from nothing to a report:
    beyond `--rel-tol`/`--abs-tol`). Known-expected divergences (so a real
    regression stands out): assembler crafting-time over-count, long-handed
    inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
-   smelting recipes → 0, and impossible >15/s rates from degenerate
-   sink-loop factories. Transport (belts/splitters/undergrounds) should be
-   exact.
+   smelting recipes → 0. Transport (belts/splitters/undergrounds) should be
+   exact. Intentional engine simplifications that also show up here:
+   - **Slow jams.** A lane carrying an item nobody drains, at less than the
+     lane's full rate, stays open in the engine; in-game it backs up and
+     in time blocks anything sideloading onto it. (A lane saturated by its
+     straight-on flow blocks sideloads in both, `sideload_priority.yaml`.)
+   - **Starved assemblers.** An assembler short of one ingredient still
+     draws the others at the rate its output inserters could drain, so a
+     shared belt downstream of it is under-counted.
+   - **Sideload refill.** An inserter picking from the tile a lane is
+     sideloaded onto leaves a gap the game refills on the same tile; the
+     engine charges the pickup to the lane (≈7.5 → 6.64 downstream).
 
 6. **After editing the mod Lua**, re-host to reload it (see *Reloading the
    mod after editing*) before the next run.
