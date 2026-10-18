@@ -83,7 +83,7 @@ fn belt_feeders(world: &World, pos: (usize, usize)) -> Vec<Direction> {
 /// (and inserters treat it specially); with any other input mix the belt
 /// stays straight and side feeds become sideloads. Underground belts and
 /// splitters never curve.
-fn is_curved_belt(world: &World, pos: (usize, usize)) -> bool {
+pub(crate) fn is_curved_belt(world: &World, pos: (usize, usize)) -> bool {
     let (x, y) = pos;
     if world.entity_at(x, y) != Some(Item::TransportBelt) {
         return false;
@@ -728,8 +728,8 @@ fn inserter_connections(
     // FAR lane when the belt runs perpendicular to the inserter (the arm
     // sweeps across to the opposite side — `Lane::on_side` of the arm's
     // direction), and the belt's RIGHT lane when it runs parallel or
-    // anti-parallel. A curved tile facing perpendicular to the arm gets the
-    // far side via the same expression.
+    // anti-parallel. A curve takes every drop on its inner lane, whichever
+    // side the arm reaches it from (measured in Factorio).
     let dst_x = x as i64 + dx * reach;
     let dst_y = y as i64 + dy * reach;
     if world.in_bounds(dst_x, dst_y) {
@@ -747,7 +747,16 @@ fn inserter_connections(
             if dst_is_insertable {
                 if dst_entity.is_lane_aware() {
                     let dst_dir = world.direction_at(dx_u, dy_u);
-                    let lane = Lane::on_side(dst_dir, dir).unwrap_or(Lane::Right);
+                    let side = if is_curved_belt(world, (dx_u, dy_u)) {
+                        belt_feeders(world, (dx_u, dy_u))
+                            .first()
+                            .map(|travel| travel.opposite())
+                    } else {
+                        Some(dir)
+                    };
+                    let lane = side
+                        .and_then(|side| Lane::on_side(dst_dir, side))
+                        .unwrap_or(Lane::Right);
                     edges.push((
                         NodeId::new(self_kind, x, y, None),
                         NodeId::new(dst_entity, dx_u, dy_u, Some(lane)),

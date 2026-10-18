@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
+use crate::entities::{entity_tiles, is_curved_belt, EntityEnum, FactoryEntity};
 use crate::power::PowerMap;
 use crate::types::{Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
@@ -16,6 +16,8 @@ pub struct GraphNode {
     pub item: Option<Item>,
     pub misc: Misc,
     pub direction: Direction,
+    /// A belt turning a corner, which inserters pick from differently.
+    pub curved: bool,
     /// Recipe for assembling machines (determines what they craft).
     /// `None` for non-assemblers and assemblers with no recipe set.
     pub recipe_item: Option<Item>,
@@ -145,6 +147,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                     item,
                     misc,
                     direction,
+                    curved: is_curved_belt(world, (x, y)),
                     recipe_item: if entity_kind == Item::AssemblingMachine1 {
                         item
                     } else {

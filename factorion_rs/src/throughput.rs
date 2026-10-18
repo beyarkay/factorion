@@ -489,9 +489,14 @@ fn pickup_input(
     let mut preds = graph.predecessors[node_idx].clone();
     preds.sort_by_key(|&p| {
         let pred = &graph.nodes[p];
-        pred.id
-            .lane
-            .is_some_and(|lane| lane != Lane::on_side(pred.direction, dir).unwrap_or(Lane::Left))
+        // A curve's near lane is its left one from either free side (measured
+        // in Factorio).
+        let near = if pred.curved {
+            Lane::Left
+        } else {
+            Lane::on_side(pred.direction, dir).unwrap_or(Lane::Left)
+        };
+        pred.id.lane.is_some_and(|lane| lane != near)
     });
     let into_assembler = graph.nodes[dest].entity_kind == Item::AssemblingMachine1;
     let groups: Vec<&[usize]> = if into_assembler {
@@ -704,6 +709,7 @@ mod tests {
                     item: None,
                     misc: Misc::None,
                     direction: Direction::North,
+                    curved: false,
                     recipe_item: None,
                     anchor: (0, 0),
                     output: HashMap::new(),
@@ -714,6 +720,7 @@ mod tests {
                     item: None,
                     misc: Misc::None,
                     direction: Direction::North,
+                    curved: false,
                     recipe_item: None,
                     anchor: (1, 0),
                     output: HashMap::new(),

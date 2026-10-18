@@ -61,7 +61,9 @@ the lane it doesn't read first.
 > proportion to their rates. A hand only picks what its destination accepts:
 > into an assembler that is each ingredient in recipe proportion, from both
 > lanes at once, and no more than the crafts the machine's own output can
-> drain — the rest rides on to the next inserter.
+> drain — the rest rides on to the next inserter. A corner (a curved belt)
+> is the exception, measured in-game: from either free side, a drop lands on
+> its inner lane and a pickup reads its left lane first.
 
 ### Variants
 
