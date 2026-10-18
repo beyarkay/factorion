@@ -176,6 +176,10 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     let mut predecessors = vec![Vec::new(); n];
 
     for (src_id, dst_id) in &edge_list {
+        // A sink destroys whatever reaches it, so nothing flows on out of it.
+        if src_id.entity_kind == Item::Sink {
+            continue;
+        }
         let src_remapped = remap_to_anchor(src_id, &anchor_of);
         let dst_remapped = remap_to_anchor(dst_id, &anchor_of);
         if let (Some(&src_idx), Some(&dst_idx)) =

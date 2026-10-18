@@ -41,3 +41,21 @@ factory: |
   .. .. Sv .. ..
   .. .. b> bv ..
   S> b> b^ b> K>
+---
+description: |
+  A sink facing onto a belt destroys what reaches it rather than passing it
+  on: the copper sink at (2,0) takes the whole copper belt, and none of it
+  reaches the belt at (1,0), which only carries the iron sideloaded from
+  the west.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: copper_plate }
+- { x: 2, y: 0, item: copper_plate }
+- { x: 1, y: 2, item: copper_plate }
+throughput:
+- { item: copper_plate, per_second: 15 }
+- { item: copper_plate, per_second: 0 }
+factory: |
+  S> bv K< b< S<
+  .. bv .. .. ..
+  .. Kv .. .. ..

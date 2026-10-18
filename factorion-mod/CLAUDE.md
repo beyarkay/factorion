@@ -54,8 +54,7 @@ against the engine's prediction. Full sequence, from nothing to a report:
    beyond `--rel-tol`/`--abs-tol`). Known-expected divergences (so a real
    regression stands out): assembler crafting-time over-count, long-handed
    inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
-   smelting recipes → 0, and impossible >15/s rates from degenerate
-   sink-loop factories. Transport (belts/splitters/undergrounds) should be
+   smelting recipes → 0. Transport (belts/splitters/undergrounds) should be
    exact. Intentional engine simplifications that also show up here:
    - **Slow jams.** A lane carrying an item nobody drains, at less than the
      lane's full rate, stays open in the engine; in-game it backs up and
