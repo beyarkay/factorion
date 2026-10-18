@@ -627,26 +627,7 @@ def train_sft(args: SftArgs):
     t_window, data_s, window_samples = time.time(), 0.0, 0
     pbar = tqdm.tqdm(total=args.num_samples, unit="smpl", unit_scale=True)
     it = iter(loader)
-    prof = None  # PROFILE-TMP
-    _cg = Path("/sys/fs/cgroup/cpu.max")
-    print(f"[profile] cpu_count={os.cpu_count()} affinity={len(os.sched_getaffinity(0))} workers={workers} cpu.max={_cg.read_text().strip() if _cg.exists() else None}")
     while samples_seen < args.num_samples:
-        if step == 40:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            t_prof = time.time()
-            prof = torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
-            )
-            prof.start()
-        if step == 60 and prof is not None:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            prof.stop()
-            print(f"[profile] 20 steps took {time.time() - t_prof:.3f}s, data wait {data_s:.3f}s total so far")
-            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=60, max_name_column_width=80))
-            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=40, max_name_column_width=80))
-            prof = None
         t_data = time.time()
         state_cpu, noisy_cpu = next(it)
         data_s += time.time() - t_data
