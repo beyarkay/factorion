@@ -1704,7 +1704,7 @@ local function region_warnings(area, endpoints, signals)
   return warnings
 end
 
--- The server's painted areas, the sources and sinks on or beside them, and
+-- The server's painted areas, the sources and sinks on them, and
 -- the model's grid around them all; or nil and why not.
 local function region_for(server, groups)
   if not storage.model then
@@ -1771,15 +1771,17 @@ local function region_for(server, groups)
   end
   if not signals then
     for _, entity in pairs(server.surface.find_entities_filtered({
-      area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
+      area = { { min_x, min_y }, { max_x + 1, max_y + 1 } },
       name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
     })) do
-      local config = register_endpoint(entity)
-      table.insert(candidates, {
-        x = math.floor(entity.position.x), y = math.floor(entity.position.y),
-        role = config.role, item = config.item,
-        direction = FACTORIO_TO_DIRECTION[entity.direction], unit = entity.unit_number,
-      })
+      local x, y = math.floor(entity.position.x), math.floor(entity.position.y)
+      if area[tile_key(x, y)] then
+        local config = register_endpoint(entity)
+        table.insert(candidates, {
+          x = x, y = y, role = config.role, item = config.item,
+          direction = FACTORIO_TO_DIRECTION[entity.direction], unit = entity.unit_number,
+        })
+      end
     end
   end
   local endpoints, notes = {}, {}
@@ -1895,10 +1897,10 @@ local function predictable_region(server)
   local region, reason = region_for(server)
   if not region then return nil, "Can't predict: " .. reason .. "." end
   if #region.sources == 0 then
-    return nil, "No source on or beside the build region."
+    return nil, "No source on the build region."
   end
   if #region.sinks == 0 then
-    return nil, "No sink on or beside the build region."
+    return nil, "No sink on the build region."
   end
   return region
 end
