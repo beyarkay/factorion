@@ -34,13 +34,9 @@ def code(path):
     return re.sub(r"--[^\n]*", "", text)
 
 
-def lua_members(name):
-    runtime = lua52.LuaRuntime()
-    return set(runtime.eval(name).keys())
-
-
 def test_runtime_only_calls_library_functions_that_exist():
-    members = {library: lua_members(library) for library in LIBRARIES}
+    runtime = lua52.LuaRuntime()
+    members = {library: set(runtime.eval(library).keys()) for library in LIBRARIES}
     unknown = []
     for name in RUNTIME_FILES:
         for library, field in re.findall(r"(?<![\w.])(" + "|".join(LIBRARIES) + r")\.(\w+)", code(MOD / name)):
