@@ -133,12 +133,15 @@ class TestTrialFactory:
     @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
     def test_analytic_max_throughput(self, kind):
         """The normalization ceiling is one fully-fed assembler's output rate
-        of the sink recipe — positive without any reference solution."""
+        of the sink recipe — its yield per craft at assembling machine 1's
+        crafting speed (0.5) over the recipe's crafting time — positive
+        without any reference solution."""
         f = build_factory(size=SIZE, kind=kind, seed=0)
         assert f is not None
         sink, _ = _markers(f)
+        recipe = recipes[sink]
         assert f.max_throughput > 0
-        assert f.max_throughput == recipes[sink].produces[sink]
+        assert f.max_throughput == pytest.approx(recipe.produces[sink] * 0.5 / recipe.crafting_time)
 
     @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
     def test_markers_sit_on_the_edge_working_inward(self, kind):

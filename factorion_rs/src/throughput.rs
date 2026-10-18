@@ -404,7 +404,7 @@ fn downstream_demand(graph: &FactoryGraph) -> Vec<Demand> {
                         .produces
                         .iter()
                         .map(|&(item, rate)| total(item) / rate)
-                        .fold(1.0, f64::min);
+                        .fold(kind.flow_rate() / recipe.crafting_time, f64::min);
                     Demand {
                         rest: 0.0,
                         items: recipe

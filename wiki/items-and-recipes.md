@@ -45,10 +45,10 @@ exists as an inventory item.
 
 ## Recipes
 
-All recipes are 0.5s craft time on an `Assembling Machine 1`
-(`crafting_speed = 0.5`). Throughput math (`transform_flow`) operates on
-ratios, so absolute scaling is not material; we keep the wiki values
-verbatim.
+Recipes keep the wiki's per-craft quantities and craft times verbatim. An
+`Assembling Machine 1` (`crafting_speed = 0.5`) finishes at most
+`0.5 / craft time` crafts per second (`transform_flow`), so both the
+quantities and the craft time set its rates.
 
 ### Copper Cable
 

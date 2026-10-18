@@ -434,8 +434,9 @@ impl FactoryEntity for AssemblingMachine {
             None => return HashMap::new(),
         };
 
-        // Find the minimum ratio of available input to required input
-        let mut min_ratio: f64 = 1.0;
+        // Crafts per second: the machine's crafting speed (its flow rate) over
+        // the recipe's crafting time, unless an ingredient runs short first.
+        let mut min_ratio: f64 = self.flow_rate() / recipe.crafting_time;
         for &(item, required) in recipe.consumes.iter() {
             let available = input.get(&item).copied().unwrap_or(0.0);
             let ratio = available / required;
