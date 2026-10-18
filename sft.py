@@ -580,8 +580,8 @@ def train_sft(args: SftArgs):
     fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
     if fwd is not model:
         # Both run on the full logits every training step.
-        model.losses = torch.compile(model.losses, dynamic=False)
-        model.pick = torch.compile(model.pick, dynamic=False)
+        for name in ("losses", "pick"):
+            setattr(model, name, torch.compile(getattr(model, name), dynamic=False))
 
     optimizer = optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99), fused=device.type == "cuda"
