@@ -323,3 +323,42 @@ lua-language-server --check factorion-mod/mod --checklevel=Warning
 For full API typing, install
 [FMTK / vscode-factoriomod-debug](https://github.com/justarandomgeek/vscode-factoriomod-debug)
 which ships full Factorio API definitions for LLS.
+
+## Cable fold artwork
+
+The entity is built from procedural Blender geometry in
+[`art/cable_fold.py`](art/cable_fold.py). There is one physical 4×2 model.
+The 2×4 sprite is that entire assembly turned 90°, with the camera and sun fixed.
+Camera pixel aspect corrects ground foreshortening without stretching the model.
+
+Rebuild the editable model, body sprites, separate shadows, utilisation light
+atlases, icon, wire anchors and blue data-port positions from the repository root:
+
+```bash
+uv run --no-sync python factorion-mod/art/build_cable_fold.py
+# Other installations: --blender /path/to/blender --device CPU
+```
+
+The model is `art/cable-fold/cable-fold.blend`: timeline frame 1 shows 4×2,
+frame 2 turns the same assembly to 2×4. Both exports record the same geometry
+fingerprint and assert every object follows the assembly’s rigid rotation. Raw
+renders are 128 px/tile; the packer exports 64 px/tile with Factorio scale 0.5.
+Every crop uses the exported camera anchor. Shadows project the evaluated model
+along the render sun, then receive a small soft edge. No image-generation service
+or external texture is needed to rebuild them.
+
+`gpu_visuals.lua` selects one of six glow frames: the blue power pilot alone,
+then one through five amber utilisation segments. It uses the existing smoothed
+utilisation value, shows at least one segment while computing, and removes all
+lights on power loss. Small blue and amber runtime lights illuminate the machine
+at night. Glow sprites use Factorio's
+[`draw_as_glow`](https://lua-api.factorio.com/latest/types/SpriteParameters.html#draw_as_glow);
+the pools use [`LuaRendering.draw_light`](https://lua-api.factorio.com/latest/classes/LuaRendering.html#draw_light).
+
+Serve `factorion-mod` locally and open `art/cable-fold/gallery.html` to compare
+dense grids (3 px gap by default), activity levels and layers at game scale. To reproduce the real
+Factorio day/night captures and runtime light checks in a temporary profile:
+
+```bash
+uv run --no-sync python factorion-mod/art/review_cable_fold.py --factorio /path/to/factorio
+```

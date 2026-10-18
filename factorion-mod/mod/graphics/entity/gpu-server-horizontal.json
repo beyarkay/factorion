@@ -1,0 +1,66 @@
+{
+  "main": {
+    "filename": "__factorion__/graphics/entity/gpu-server-horizontal.png",
+    "width": 266,
+    "height": 218,
+    "shift": [
+      0.0,
+      -0.71875
+    ]
+  },
+  "shadow": {
+    "filename": "__factorion__/graphics/entity/gpu-server-horizontal-shadow.png",
+    "width": 280,
+    "height": 138,
+    "shift": [
+      0.140625,
+      0.0625
+    ]
+  },
+  "glow": {
+    "filename": "__factorion__/graphics/entity/gpu-server-horizontal-glow.png",
+    "width": 164,
+    "height": 88,
+    "shift": [
+      -0.75,
+      -0.09375
+    ],
+    "frame_count": 6
+  },
+  "footprint": [
+    4,
+    2
+  ],
+  "geometry_sha256": "deb22955fdf4802cc66ac5ea2fa7fa7688ee647de5468166045f5a9d17d2c13f",
+  "assembly_rotation_degrees": 0,
+  "data_port": [
+    -1.6200000047683716,
+    0.48869256754593415
+  ],
+  "activity_light": [
+    0.20000000298023224,
+    0.4777015413630802
+  ],
+  "circuit": {
+    "wire": {
+      "red": [
+        -1.2699999809265137,
+        -0.2600878827668551
+      ],
+      "green": [
+        -1.1100000143051147,
+        -0.2600878827668551
+      ]
+    },
+    "shadow": {
+      "red": [
+        -0.8532726764678955,
+        0.8075273036956787
+      ],
+      "green": [
+        -0.6932727098464966,
+        0.8075273036956787
+      ]
+    }
+  }
+}

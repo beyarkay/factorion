@@ -78,7 +78,7 @@ extra-paths = ["tests", "scripts"]
 
 [tool.ty.src]
 # Runs inside Blender, whose bpy, bmesh and mathutils exist nowhere else.
-exclude = ["factorion-mod/art/gpu_server.py"]
+exclude = ["factorion-mod/art/gpu_server.py", "factorion-mod/art/cable_fold.py"]
 
 [tool.ruff]
 # Existing code has many pre-existing violations in the training script.

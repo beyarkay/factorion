@@ -13,7 +13,7 @@ import pytest
 from lupa import lua52
 
 MOD = Path(__file__).resolve().parent.parent / "factorion-mod" / "mod"
-RUNTIME_FILES = ["control.lua", "gui.lua", "inference.lua", "parity.lua"]
+RUNTIME_FILES = ["control.lua", "gui.lua", "inference.lua", "parity.lua", "gpu_visuals.lua"]
 LIBRARIES = ["table", "string", "math", "bit32", "coroutine"]
 
 # Factorio's runtime globals, beside Lua's base library.
