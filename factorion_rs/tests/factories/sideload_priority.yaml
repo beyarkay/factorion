@@ -59,3 +59,18 @@ factory: |
   S> bv K< b< S<
   .. bv .. .. ..
   .. Kv .. .. ..
+---
+description: |
+  A splitter sideloads copper onto the iron belt along y=2, which straight-on
+  iron already fills. Both splitter tiles feed each tile below them, one of
+  them diagonally, and both are sideloads: no copper gets on.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 2, y: 0, item: copper_plate }
+- { x: 5, y: 2, item: copper_plate }
+throughput:
+- { item: copper_plate, per_second: 0 }
+factory: |
+  .. .. Sv .. .. ..
+  .. .. YvvvY .. ..
+  S> b> b> b> b> K>

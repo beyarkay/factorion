@@ -323,16 +323,13 @@ fn lane_input(
     n_others: &[usize],
 ) -> HashMap<Item, f64> {
     let node = &graph.nodes[node_idx];
-    let (dx, dy) = node.direction.delta();
     let priority = |p: usize| {
         let pred = &graph.nodes[p];
-        let (ox, oy) = (
-            pred.id.x as i64 - node.id.x as i64,
-            pred.id.y as i64 - node.id.y as i64,
-        );
         if matches!(pred.entity_kind, Item::Inserter | Item::LongHandedInserter) {
             2
-        } else if ox.abs() + oy.abs() == 1 && ox * dx + oy * dy == 0 {
+        } else if pred.direction != node.direction {
+            // Judged by travel, not adjacency: a splitter feeds each tile
+            // beside it from its far tile too.
             1
         } else {
             0
