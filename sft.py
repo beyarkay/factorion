@@ -573,7 +573,8 @@ def train_sft(args: SftArgs):
     model.amp = args.amp and device.type == "cuda"
     ema = copy.deepcopy(model).requires_grad_(False)
     ema.eval()
-    ema_params, model_params = list(ema.parameters()), list(model.parameters())
+    ema_params: list[torch.Tensor] = list(ema.parameters())
+    model_params: list[torch.Tensor] = list(model.parameters())
     # The compiled module shares the model's parameters; generation and the
     # val metrics run on the EMA copy, uncompiled (their shapes vary).
     fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
