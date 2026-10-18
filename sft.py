@@ -570,7 +570,7 @@ def train_sft(args: SftArgs):
         model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     # NHWC is cuDNN's native layout; NCHW convs pay a transpose each way.
-    model.to(device, memory_format=torch.channels_last)
+    model.to(device, memory_format=torch.channels_last)  # ty: ignore[no-matching-overload]  (torch stubs omit it)
     model.amp = args.amp and device.type == "cuda"
     ema = copy.deepcopy(model).requires_grad_(False)
     ema.eval()
