@@ -73,13 +73,21 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 /// 4. Collect each sink's delivery of its configured item
 /// 5. Count unreachable nodes
 pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
+    let (deliveries, unreachable, _) = simulate(graph);
+    (deliveries, unreachable)
+}
+
+/// [`calc_throughput`], plus the number of jammed lanes: lanes where a
+/// sideload or an inserter drop is offered items but has no room for any,
+/// so its feed stalls for good.
+pub(crate) fn simulate(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, usize) {
     if graph.node_count() == 0 {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, 0);
     }
 
     // 1. Cycle detection — no deliveries (downstream treats as 0 throughput).
     if has_cycle(graph) {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, 0);
     }
 
     let sources: Vec<usize> = (0..graph.node_count())
@@ -94,6 +102,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         return (
             Vec::new(),
             count_unreachable_entities(graph, &HashSet::new()),
+            0,
         );
     }
 
@@ -154,6 +163,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     let mut taken: Vec<HashMap<Item, f64>> = vec![HashMap::new(); graph.node_count()];
     let demand = downstream_demand(graph);
     let mut room = demand.clone();
+    let mut jammed = 0;
 
     let mut already_processed: HashSet<usize> = HashSet::new();
 
@@ -193,7 +203,14 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                         &mut room,
                     )
                 } else if entity_kind.is_lane_aware() {
-                    lane_input(graph, node_idx, &node_outputs, &taken, &n_others)
+                    lane_input(
+                        graph,
+                        node_idx,
+                        &node_outputs,
+                        &taken,
+                        &n_others,
+                        &mut jammed,
+                    )
                 } else {
                     let mut acc: HashMap<Item, f64> = HashMap::new();
                     for &pred in &graph.predecessors[node_idx] {
@@ -293,7 +310,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .copied()
         .collect();
 
-    (deliveries, count_unreachable_entities(graph, &on_path))
+    (
+        deliveries,
+        count_unreachable_entities(graph, &on_path),
+        jammed,
+    )
 }
 
 /// Count entity units with NO node on a source→sink path. Since dual lanes,
@@ -321,6 +342,7 @@ fn lane_input(
     node_outputs: &[HashMap<Item, f64>],
     taken: &[HashMap<Item, f64>],
     n_others: &[usize],
+    jammed: &mut usize,
 ) -> HashMap<Item, f64> {
     let node = &graph.nodes[node_idx];
     let (dx, dy) = node.direction.delta();
@@ -357,6 +379,9 @@ fn lane_input(
             }
         }
         let total: f64 = offered.values().sum();
+        if rank > 0 && total > 0.0 && room <= 1e-9 {
+            *jammed += 1;
+        }
         let scale = if total > room { room / total } else { 1.0 };
         for (item, rate) in offered {
             *input.entry(item).or_insert(0.0) += rate * scale;
@@ -993,6 +1018,37 @@ mod tests {
             "expected fallback pickup of 0.86, got {:?}",
             output
         );
+    }
+
+    #[test]
+    fn test_feed_onto_full_lane_jams() {
+        // sideload_priority.yaml: a sideload onto the lane straight-on iron
+        // fills is jammed; sideloads onto lanes of their own are not.
+        let specs =
+            crate::textual::parse_many(include_str!("../tests/factories/sideload_priority.yaml"))
+                .unwrap();
+        let jams: Vec<usize> = specs
+            .iter()
+            .map(|spec| simulate(&build_graph(&spec.world)).2)
+            .collect();
+        assert_eq!(jams, [1, 1, 0, 0]);
+
+        // So is an inserter dropping onto a lane straight-on flow fills.
+        let mut w = World::empty(4, 3);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+        w.place(1, 1, Item::Inserter, Direction::North, None);
+        w.place(
+            1,
+            2,
+            Item::Source,
+            Direction::North,
+            Some(Item::CopperPlate),
+        );
+        w.place(2, 1, Item::SmallElectricPole, Direction::None, None);
+        assert_eq!(simulate(&build_graph(&w)).2, 1);
     }
 
     #[test]
