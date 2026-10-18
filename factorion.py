@@ -980,7 +980,8 @@ def refresh_power(world: torch.Tensor) -> None:
     """Rewrite the POWER channel of a ``(C, W, H)`` world or ``(B, C, W, H)``
     batch, in place, from its poles."""
     batch = world if world.dim() == 4 else world[None]
-    worlds_BWHC = batch.permute(0, 2, 3, 1).to("cpu", torch.int64).contiguous().numpy()
+    # Every channel fits a byte; copying bytes off the GPU is 8x less to wait on.
+    worlds_BWHC = batch.permute(0, 2, 3, 1).to(torch.uint8).contiguous().cpu().numpy().astype(np.int64)
     powered = torch.from_numpy(factorion_rs.py_power_map(worlds_BWHC))
     batch[:, Channel.POWER.value] = powered.to(batch.device, batch.dtype)
 
