@@ -18,7 +18,7 @@
 use crate::graph::{build_graph, unit_anchors};
 use crate::power::{Outside, PlacedPole, PowerMap};
 use crate::rng::Rng;
-use crate::throughput::{calc_throughput, factory_score, simulate};
+use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
 use nonempty::NonEmpty;
@@ -5525,13 +5525,7 @@ fn finish(
         world.set(x, y, Channel::Footprint, 0);
     }
     PowerMap::of(&world).write(&mut world);
-    // A jammed feed's entities never move an item in the game, and a lesson
-    // would teach building them.
-    let (deliveries, _, jammed) = simulate(&build_graph(&world));
-    if jammed > 0 {
-        return None;
-    }
-    let max_throughput = factory_score(&deliveries);
+    let max_throughput = world_throughput(&world);
     Some(BuiltFactory {
         world,
         total_entities,
