@@ -55,6 +55,11 @@ feeder belt connects from.
 This is the primary mechanism for **lane control** (isolating an item type
 to one lane, swapping lanes, or compressing a partially-full belt).
 
+Flow arriving straight on has priority: a sideload only fills the gaps it
+leaves, so sideloading onto a saturated lane puts nothing on. To merge two
+full belts onto one, sideload each onto an opposite side of a belt with no
+straight-on input, giving each its own lane.
+
 ### Inserters
 
 See [[inserter]].

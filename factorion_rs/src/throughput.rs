@@ -192,6 +192,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                         &demand,
                         &mut room,
                     )
+                } else if entity_kind.is_lane_aware() {
+                    lane_input(graph, node_idx, &node_outputs, &taken, &n_others)
                 } else {
                     let mut acc: HashMap<Item, f64> = HashMap::new();
                     for &pred in &graph.predecessors[node_idx] {
@@ -307,6 +309,61 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
         *hit |= on_path.contains(&idx);
     }
     unit_on_path.values().filter(|&&hit| !hit).count()
+}
+
+/// A lane node's input. Flow arriving straight on fills the lane first,
+/// then sideloads from its flanks, then inserter drops: each only fills the
+/// gaps the ones before it leave, so a sideload onto a saturated lane gets
+/// nothing.
+fn lane_input(
+    graph: &FactoryGraph,
+    node_idx: usize,
+    node_outputs: &[HashMap<Item, f64>],
+    taken: &[HashMap<Item, f64>],
+    n_others: &[usize],
+) -> HashMap<Item, f64> {
+    let node = &graph.nodes[node_idx];
+    let (dx, dy) = node.direction.delta();
+    let priority = |p: usize| {
+        let pred = &graph.nodes[p];
+        let (ox, oy) = (
+            pred.id.x as i64 - node.id.x as i64,
+            pred.id.y as i64 - node.id.y as i64,
+        );
+        if matches!(pred.entity_kind, Item::Inserter | Item::LongHandedInserter) {
+            2
+        } else if ox.abs() + oy.abs() == 1 && ox * dx + oy * dy == 0 {
+            1
+        } else {
+            0
+        }
+    };
+    let cap = node.entity_kind.flow_rate() / 2.0;
+    let mut room = cap;
+    let mut input: HashMap<Item, f64> = HashMap::new();
+    for rank in 0..3 {
+        let mut offered: HashMap<Item, f64> = HashMap::new();
+        for &pred in graph.predecessors[node_idx]
+            .iter()
+            .filter(|&&p| priority(p) == rank)
+        {
+            // What the inserters leave is shared, not copied, so no item is
+            // counted once per branch (#87). A source's infinite rate is
+            // clamped to what the lane could ever take.
+            for (&item, &flow_rate) in &node_outputs[pred] {
+                let left = flow_rate - taken[pred].get(&item).copied().unwrap_or(0.0);
+                *offered.entry(item).or_insert(0.0) +=
+                    (left.max(0.0) / n_others[pred] as f64).min(cap);
+            }
+        }
+        let total: f64 = offered.values().sum();
+        let scale = if total > room { room / total } else { 1.0 };
+        for (item, rate) in offered {
+            *input.entry(item).or_insert(0.0) += rate * scale;
+        }
+        room -= total.min(room);
+    }
+    input
 }
 
 /// How much of each item a node can pass on in steady state, set by what

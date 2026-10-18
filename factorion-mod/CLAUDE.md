@@ -57,11 +57,10 @@ against the engine's prediction. Full sequence, from nothing to a report:
    smelting recipes → 0, and impossible >15/s rates from degenerate
    sink-loop factories. Transport (belts/splitters/undergrounds) should be
    exact. Intentional engine simplifications that also show up here:
-   - **Mixed-lane jams.** An item nobody drains (e.g. an ingredient the
-     assembler already holds enough of) backs up its lane in-game and
-     blocks anything trying to sideload onto it, often jamming the factory
-     to 0 (`mixed_belt_pickup.yaml`); the engine lets the hand keep taking
-     in recipe proportion.
+   - **Slow jams.** A lane carrying an item nobody drains, at less than the
+     lane's full rate, stays open in the engine; in-game it backs up and
+     in time blocks anything sideloading onto it. (A lane saturated by its
+     straight-on flow blocks sideloads in both, `sideload_priority.yaml`.)
    - **Starved assemblers.** An assembler short of one ingredient still
      draws the others at the rate its output inserters could drain, so a
      shared belt downstream of it is under-counted.

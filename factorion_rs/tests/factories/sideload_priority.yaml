@@ -1,0 +1,43 @@
+description: |
+  Iron runs straight along y=2 on both lanes at the full 15 i/s, and copper
+  comes down from the north to sideload onto its left lane. A lane gives the
+  flow arriving straight on priority and a sideload only fills its gaps, and
+  a saturated lane has none: no copper ever gets on.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 2, y: 0, item: copper_plate }
+- { x: 4, y: 2, item: copper_plate }
+throughput:
+- { item: copper_plate, per_second: 0 }
+factory: |
+  .. .. Sv .. ..
+  .. .. bv .. ..
+  S> b> b> b> K>
+---
+description: |
+  The same merge seen from an iron sink: the iron keeps both lanes.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 2, y: 0, item: copper_plate }
+- { x: 4, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  .. .. Sv .. ..
+  .. .. bv .. ..
+  S> b> b> b> K>
+---
+description: |
+  The merge that works: the iron curves north and sideloads from the south
+  onto a belt the copper sideloads onto from the north, so each owns a lane
+  and both deliver 7.5 i/s.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 2, y: 0, item: copper_plate }
+- { x: 4, y: 2, item: copper_plate }
+throughput:
+- { item: copper_plate, per_second: 7.5 }
+factory: |
+  .. .. Sv .. ..
+  .. .. b> bv ..
+  S> b> b^ b> K>
