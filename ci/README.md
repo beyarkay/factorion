@@ -12,21 +12,21 @@ flags (don't type the brackets); counts (`N`) accept an SI-ish suffix —
 
 ```
 /ci sft [--num-samples N]                  # SFT from scratch at the PR head
-/ci ppo --start-from j0s5y2mc              # PPO from an SFT checkpoint
+/ci rl --start-from j0s5y2mc               # RL from an SFT checkpoint
 /ci compare sft [--seeds 3] [--num-samples N]   # PR head vs main, seed-paired
 assert pr:val/thput@8 > main:val/thput@8   # optional pass/fail conditions
 assert pr:val/acc >= 0.5                   #   → commit status check
 assert pr:sps == main:sps +- 100           # ~equal within a tolerance
-/ci compare ppo --start-from j0s5y2mc      # PPO compare, same flow
+/ci compare rl --start-from j0s5y2mc       # RL compare, same flow
 /ci sweep sft [--pods 2] [--agents-per-pod 1]   # W&B sweep (ci/sweep_sft.yaml)
-/ci sweep ppo                              # ... from ci/sweep_ppo.yaml
+/ci sweep rl                               # ... from ci/sweep_rl.yaml
 /ci pods                                   # list CI pods + cost + deadline
 /ci kill --all                             # terminate CI pods (or: /ci kill <pod_id>)
 /ci watchdog --dry-run                     # preview the leaked-pod reaper
 /ci help                                   # usage + examples
 ```
 
-`sft`, `ppo`, `compare` and `sweep` also take `--gpu-type "<RunPod GPU id>"`.
+`sft`, `rl`, `compare` and `sweep` also take `--gpu-type "<RunPod GPU id>"`.
 `HELP.md` lists each job's default card and the per-card speed and cost table.
 
 What comes back as PR comments:
@@ -36,7 +36,7 @@ What comes back as PR comments:
   has run to completion** (for `compare`, that includes the report posting
   and its assertions passing);
 - a **launch comment** immediately (pod ids, W&B links);
-- for `sft`/`ppo`: a **result comment** with headline metrics when the run
+- for `sft`/`rl`: a **result comment** with headline metrics when the run
   finishes (posted by the reporter cron, so runs longer than GitHub's 6h job
   limit still report);
 - for `compare`: an **every-metric comparison** — headline metrics up front,
@@ -44,12 +44,12 @@ What comes back as PR comments:
   inside a `<details>` block — plus a `factorion-ci/compare` **commit
   status** that passes/fails your `assert` lines. Headline metrics are the
   `HEADLINE_PATTERNS` regexes in `ci/report.py` (thput overall + per
-  lesson, overall + per-head accuracies for SFT; eval/rollout/critic
-  headliners for PPO) — edit freely;
+  lesson, overall + per-head accuracies for SFT; eval/rollout
+  headliners for RL) — edit freely;
 - for `compare`: a second **factory-diff comment** (`factory_diff.py`): both
   sides' checkpoints best-of-N rebuild the same 50 held-out factories per lesson,
   and every factory whose throughput disagrees is rendered side by side,
-  largest gap first — the qualitative read on what the PR's policy learned and
+  largest gap first — the qualitative read on what the PR's model learned and
   what it lost. Rendering runs on the GitHub runner, which installs torch + the
   Rust engine on demand (`_ensure_render_deps` — not a workflow step, because
   `issue_comment` always runs the DEFAULT branch's YAML), and is best-effort: a
@@ -90,7 +90,7 @@ pod is pinned to whatever it landed on. RunPod can't reserve capacity, so if
 a later pod can't get that GPU the pods already created are terminated and
 the command fails — just repost it.
 
-W&B runs are tagged `ci`, `kind:<sft|ppo>`, `sha:<sha7>`, `pr:<num>` (and
+W&B runs are tagged `ci`, `kind:<sft|rl>`, `sha:<sha7>`, `pr:<num>` (and
 `cmp:<sha7>` + `cmp-side:<pr|main>` for compare runs). Raw logs are in the
 RunPod console (the pod's container logs; the job also tees to
 `/workspace/job.log`).
@@ -125,7 +125,7 @@ RunPod console (the pod's container logs; the job also tees to
   history (`TAIL_FRACTION`), never as the single point in its W&B summary.
 - `github_api.py` — PR comments + commit statuses.
 - `stats.py` — dependency-free paired/Welch t-tests.
-- `sweep_ppo.yaml` / `sweep_sft.yaml` — W&B sweep configs.
+- `sweep_rl.yaml` / `sweep_sft.yaml` — W&B sweep configs.
 
 ## GitHub Actions (thin pointers into this directory)
 
@@ -142,4 +142,4 @@ GitHub 401s anonymous git from RunPod's egress IPs, so the pod authenticates
 its clone. It prefers `FCI_GITHUB_TOKEN` — a long-lived `contents: read` token
 — and falls back to the workflow's automatic `GITHUB_TOKEN`, which is revoked
 when the launching job ends and so only reliably covers the blocking `compare`
-path, not fire-and-forget `sft`/`ppo` launches.
+path, not fire-and-forget `sft`/`rl` launches.

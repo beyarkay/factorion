@@ -9,7 +9,7 @@ compares the measured per-sink items/s against the engine's prediction.
 Run from the repo root with a Factorio instance hosting a save that has
 the factorion mod enabled and RCON reachable (see factorion-mod/README.md):
 
-    uv run python factorion-mod/server/parity.py \
+    uv run python -m factorion_server.parity \
         --rcon-port 64502 --rcon-password <pw> \
         --lessons all --seeds 5 --size 15
 
@@ -29,13 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
-# Make the repo root importable when this script is run via uv from elsewhere.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import factorion_rs  # noqa: E402
-from factorion import (  # noqa: E402
+import factorion_rs
+from factorion import (
     Channel,
     LessonKind,
     Misc,
@@ -46,8 +41,8 @@ from factorion import (  # noqa: E402
     str2ent,
 )
 
-from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
-from rcon import RconClient  # noqa: E402
+from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
+from .rcon import RconClient
 
 
 # --------------------------------------------------------------------------- #
@@ -70,15 +65,10 @@ _DEFAULT_TIMING = dict(
     converge_floor=0.02,
 )
 
-# Substation-grid pitch: a substation supplies an 18x18 area and its wire
-# reaches 18 tiles, so an 18-tile grid of substations both powers and
-# connects everything. Each factory sits centred in one 18x18 cell, clear
-# of the substations at the cell corners.
-_PITCH = 18
 
 
-def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
-    """Tensor → (entities, sources, sinks, grid_size) in factory-local tiles.
+def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int, int]:
+    """Tensor → (entities, sources, sinks, width, height) in factory-local tiles.
 
     Mirrors blueprint.py's conventions: entity positions are Factorio
     centers (1x1 at tile (3,5) → 3.5,5.5; E/W-facing multi-tile entities
@@ -175,18 +165,20 @@ def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
                     if 0 <= tx < W and 0 <= ty < H:
                         seen[tx, ty] = True
 
-    return spec_entities, sources, sinks, max(W, H)
+    return spec_entities, sources, sinks, W, H
 
 
 def world_to_parity_spec(world_CWH, *, run_id: str, **timing) -> dict:
     """Single-factory spec (entities/sources/sinks at top level). The mod
     treats this as a one-factory batch. `timing` overrides `_DEFAULT_TIMING`.
     """
-    ents, sources, sinks, grid_size = _convert_world(world_CWH)
+    ents, sources, sinks, w, h = _convert_world(world_CWH)
     spec = {**_DEFAULT_TIMING, **timing}
     spec.update({
         "run_id": run_id,
-        "grid_size": grid_size,
+        "grid_size": max(w, h),
+        "width": w,
+        "height": h,
         "entities": ents,
         "sources": sources,
         "sinks": sinks,
@@ -195,47 +187,43 @@ def world_to_parity_spec(world_CWH, *, run_id: str, **timing) -> dict:
 
 
 def build_batch_spec(factory_worlds, *, run_id: str = "batch", **timing) -> dict:
-    """Assemble many factories into one spec, each tiled in its own cell of
-    an 18-tile substation grid.
+    """Assemble many factories into one spec, each tiled in its own square
+    cell 8 tiles wider than the largest grid: a substation's supply area
+    reaches 8 tiles past the edge of its grid, so neighbours sit that far
+    apart lest one factory's poles power another's machines. The mod's ring
+    of off-map poles around each grid fits in the gap.
 
     `factory_worlds` is a list of (run_id, world_CWH). Factories are laid
     out in a near-square col×row grid; factory k sits centred in cell
-    (k%cols, k//cols). Substations are placed on every cell corner (an
-    (cols+1)×(rows+1) grid), which both powers and wires the whole field.
-    Returns a spec whose `factories` list the mod builds and measures in
-    parallel.
+    (k%cols, k//cols). Returns a spec whose `factories` list the mod builds
+    and measures in parallel.
     """
     n = len(factory_worlds)
     cols = math.ceil(math.sqrt(n)) if n else 1
     rows = math.ceil(n / cols) if n else 1
+    converted = [(fid, *_convert_world(world)) for fid, world in factory_worlds]
+    pitch = max((max(w, h) for *_, w, h in converted), default=0) + 8
 
     factories = []
-    for idx, (fid, world) in enumerate(factory_worlds):
-        ents, sources, sinks, grid_size = _convert_world(world)
-        margin = max((_PITCH - grid_size) // 2, 0)
+    for idx, (fid, ents, sources, sinks, w, h) in enumerate(converted):
         col, row = idx % cols, idx // cols
         factories.append({
             "run_id": fid,
-            "grid_size": grid_size,
-            "offset_x": col * _PITCH + margin,
-            "offset_y": row * _PITCH + margin,
+            "grid_size": max(w, h),
+            "width": w,
+            "height": h,
+            "offset_x": col * pitch + (pitch - w) // 2,
+            "offset_y": row * pitch + (pitch - h) // 2,
             "entities": ents,
             "sources": sources,
             "sinks": sinks,
         })
 
-    substations = [
-        [i * _PITCH, j * _PITCH]
-        for i in range(cols + 1)
-        for j in range(rows + 1)
-    ]
-
     spec = {**_DEFAULT_TIMING, **timing}
     spec.update({
         "run_id": run_id,
-        "extent_x": cols * _PITCH + _PITCH,
-        "extent_y": rows * _PITCH + _PITCH,
-        "substations": substations,
+        "extent_x": cols * pitch,
+        "extent_y": rows * pitch,
         "factories": factories,
     })
     return spec
@@ -542,7 +530,7 @@ def main():
     if args.dry_run:
         for job in jobs:
             world = job["world"]
-            ents, srcs, snks, _ = _convert_world(world)
+            ents, srcs, snks, *_ = _convert_world(world)
             print(f"=== {job['run_id']} (dry run) ===")
             for row in render_factory(world).splitlines():
                 print("  " + row)
@@ -585,6 +573,8 @@ def main():
                     report.error = batch_error
                 elif fres is None:
                     report.error = "factory missing from batch result"
+                elif fres.get("error"):
+                    report.error = fres["error"]
                 else:
                     report.sinks = compare_sinks(
                         j["expected"], fres.get("sinks", []),

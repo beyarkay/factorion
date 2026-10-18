@@ -31,7 +31,7 @@ items:
 throughput:
 - { item: copper_cable, per_second: 1.2 }
 factory: |
-  S> .. l> .. K>
+  S> E. l> .. K>
 ---
 description: |
   A long-handed inserter caps a full-speed (15/s) belt line: source -> belt,
@@ -43,4 +43,4 @@ items:
 throughput:
 - { item: iron_plate, per_second: 1.2 }
 factory: |
-  S> b> .. l> .. K>
+  S> b> E. l> .. K>

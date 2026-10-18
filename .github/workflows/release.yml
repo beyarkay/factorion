@@ -1,0 +1,156 @@
+# Cut a release: push a vX.Y.Z tag, or run this workflow with a version (it
+# tags the chosen commit). Every release ships, under the one version:
+#   - the factorion-server wheels  → PyPI          (`uvx factorion-server@X.Y.Z`)
+#   - the Factorio mod zip         → mod portal + GitHub release
+#   - the mod's default checkpoint → GitHub release, as <run_id>.pt
+# See RELEASING.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.7.0 (tags the chosen commit vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          V="${{ inputs.version || github.ref_name }}"
+          V="${V#v}"
+          # Factorio mod versions are exactly three numbers.
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad version: $V" >&2; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag "v${{ steps.v.outputs.version }}"
+          git push origin "v${{ steps.v.outputs.version }}"
+
+  wheels:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp the version
+        run: |
+          sed -i.bak 's/^version = "0.0.0"$/version = "${{ needs.version.outputs.version }}"/' pyproject.toml
+          grep -q '^version = "${{ needs.version.outputs.version }}"$' pyproject.toml
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+
+  checkpoint:
+    needs: wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-x86_64-unknown-linux-gnu
+          path: wheels
+      - name: Install the wheel (CPU torch)
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/venv" uv pip install wheels/*.whl wandb \
+            --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+      - name: Fetch the checkpoint and run it on the installed wheel
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          cd "$RUNNER_TEMP"
+          venv/bin/python -I "$GITHUB_WORKSPACE/ci/release_checkpoint.py" \
+            "$GITHUB_WORKSPACE/factorion-mod/mod/inference.lua" "$GITHUB_WORKSPACE/checkpoint"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint
+          path: checkpoint/*.pt
+
+  github-release:
+    needs: [version, checkpoint]
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Zip the mod
+        run: |
+          cp -r factorion-mod/mod "$RUNNER_TEMP/factorion_$V"
+          sed -i "s/\"version\": \"0.0.0\"/\"version\": \"$V\"/" "$RUNNER_TEMP/factorion_$V/info.json"
+          grep -q "\"version\": \"$V\"" "$RUNNER_TEMP/factorion_$V/info.json"
+          (cd "$RUNNER_TEMP" && zip -r "$GITHUB_WORKSPACE/dist/factorion_$V.zip" "factorion_$V" -x '*/.luarc.json')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod
+          path: dist/factorion_*.zip
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v$V" dist/* --title "Factorion $V" --generate-notes
+
+  pypi:
+    needs: github-release
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  mod-portal:
+    needs: [version, github-release]
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+      FACTORIO_API_KEY: ${{ secrets.FACTORIO_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod
+      - name: Upload to the mod portal
+        run: |
+          [[ -n "$FACTORIO_API_KEY" ]] || { echo "FACTORIO_API_KEY secret not set" >&2; exit 1; }
+          api=https://mods.factorio.com/api/v2/mods
+          auth="Authorization: Bearer $FACTORIO_API_KEY"
+          resp=$(curl -sS -H "$auth" -F mod=factorion "$api/releases/init_upload")
+          extra=()
+          # The first release creates the mod's page.
+          if [[ $(jq -r .error <<<"$resp") == UnknownMod ]]; then
+            resp=$(curl -sS -H "$auth" -F mod=factorion "$api/init_publish")
+            extra=(-F license=default_mit -F category=utilities -F source_url=https://github.com/beyarkay/factorion)
+          fi
+          url=$(jq -er .upload_url <<<"$resp") || { echo "$resp" >&2; exit 1; }
+          curl -sS --fail-with-body -F "file=@factorion_$V.zip" "${extra[@]}" "$url"

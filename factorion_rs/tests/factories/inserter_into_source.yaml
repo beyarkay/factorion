@@ -12,6 +12,7 @@ graph: ""
 factory: |
   S>
   i^
+  E.
 ---
 description: inserter above the source, facing down into it
 ignored: true
@@ -19,15 +20,18 @@ graph: ""
 factory: |
   iv
   S>
+  E.
 ---
 description: inserter right of the source, facing left into it
 ignored: true
 graph: ""
 factory: |
   S> i<
+  E. ..
 ---
 description: inserter left of the source, facing right into it
 ignored: true
 graph: ""
 factory: |
   i> S>
+  E. ..

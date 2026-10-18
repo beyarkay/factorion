@@ -111,7 +111,7 @@ done
 
 # ----- run the harness --------------------------------------------------------
 cd "$REPO_ROOT"
-uv run python factorion-mod/server/parity.py \
+uv run python -m factorion_server.parity \
   --rcon-host 127.0.0.1 \
   --rcon-port "$RCON_PORT" \
   --rcon-password "$RCON_PASSWORD" \

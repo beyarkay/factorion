@@ -17,7 +17,7 @@ import sys
 from ci.config import (
     CompareJob,
     Job,
-    PpoJob,
+    RlJob,
     SftJob,
     SweepJob,
     job_from_dict,
@@ -26,7 +26,7 @@ from ci.config import (
 WORK_DIR = "/workspace/factorion"
 
 
-def _tags(job: SftJob | PpoJob, *extra: str) -> list[str]:
+def _tags(job: SftJob | RlJob, *extra: str) -> list[str]:
     return [
         "--tags",
         "ci",
@@ -37,7 +37,7 @@ def _tags(job: SftJob | PpoJob, *extra: str) -> list[str]:
     ]
 
 
-def _run_overrides(job: SftJob | PpoJob) -> list[str]:
+def _run_overrides(job: SftJob | RlJob) -> list[str]:
     out = []
     if job.seed is not None:
         out += ["--seed", str(job.seed)]
@@ -56,8 +56,8 @@ def sft_command(job: SftJob) -> list[str]:
     return cmd + _run_overrides(job) + _tags(job)
 
 
-def ppo_command(job: PpoJob) -> list[str]:
-    cmd = [sys.executable, "ppo.py", "--track", "--start-from", job.start_from]
+def rl_command(job: RlJob) -> list[str]:
+    cmd = [sys.executable, "rl.py", "--track", "--start-from", job.start_from]
     if job.total_timesteps is not None:
         cmd += ["--total-timesteps", str(job.total_timesteps)]
     return cmd + _run_overrides(job) + _tags(job, f"from:{job.start_from}")
@@ -67,7 +67,7 @@ def sweep_agent_command(job: SweepJob) -> list[str]:
     return ["wandb", "agent", job.sweep_path]
 
 
-def _compare_subjob(job: CompareJob, seed: int) -> SftJob | PpoJob:
+def _compare_subjob(job: CompareJob, seed: int) -> SftJob | RlJob:
     """The single-run job for one seed of a compare side — carries the same
     group and tags so every seed lands in one W&B group."""
     if job.algo == "sft":
@@ -79,7 +79,7 @@ def _compare_subjob(job: CompareJob, seed: int) -> SftJob | PpoJob:
             extra_tags=job.extra_tags,
         )
     assert job.start_from is not None  # enforced by compare_fanout
-    return PpoJob(
+    return RlJob(
         sha=job.sha,
         start_from=job.start_from,
         total_timesteps=job.total_timesteps,
@@ -99,7 +99,7 @@ def run_compare(job: CompareJob) -> None:
     failed = []
     for seed in job.seeds:
         sub = _compare_subjob(job, seed)
-        cmd = sft_command(sub) if isinstance(sub, SftJob) else ppo_command(sub)
+        cmd = sft_command(sub) if isinstance(sub, SftJob) else rl_command(sub)
         # compare_renders rebuilds factories from both sides' W&B checkpoints.
         cmd += ["--min-upload-minutes", "0"]
         print(f">>> Compare seed {seed}/{job.seeds[-1]}: {cmd}", flush=True)
@@ -140,8 +140,8 @@ def run_sweep(job: SweepJob) -> None:
 def run(job: Job) -> None:
     if isinstance(job, SftJob):
         subprocess.run(sft_command(job), cwd=WORK_DIR, check=True)
-    elif isinstance(job, PpoJob):
-        subprocess.run(ppo_command(job), cwd=WORK_DIR, check=True)
+    elif isinstance(job, RlJob):
+        subprocess.run(rl_command(job), cwd=WORK_DIR, check=True)
     elif isinstance(job, SweepJob):
         run_sweep(job)
     elif isinstance(job, CompareJob):

@@ -27,8 +27,7 @@ local SERVER_TIMEOUT_TICKS = 5 * 60
 -- Loading a checkpoint (often a W&B download) blocks the server's polls.
 local MODEL_LOAD_TIMEOUT_TICKS = 60 * 60
 local STOP_REASONS = {
-  eot = "the model chose to stop",
-  max_steps = "hit the %s-step limit",
+  eot = "the build is complete",
   placement_error = "Factorio refused a placement",
   server_error = "the server hit an error",
 }
@@ -49,11 +48,6 @@ end
 -- Sampling settings named in the request message when not at their default.
 local SAMPLING_SUMMARY = {
   { "temperature", "temperature %g" },
-  { "top_k", "top-k %d" },
-  { "top_p", "top-p %g" },
-  { "stop_rule", "stop rule: %s" },
-  { "stop_threshold", "stop threshold %g" },
-  { "max_steps", "max %d steps" },
   { "seed", "seed %d" },
 }
 
@@ -177,6 +171,9 @@ local MODEL_ENTITY_NAMES = {
   "assembling-machine-1",
   "underground-belt",
   "splitter",
+  "small-electric-pole",
+  "medium-electric-pole",
+  "substation",
 }
 local SINK_LABEL_REFRESH_TICKS = 30
 
@@ -820,8 +817,6 @@ end)
 
 script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_changed)
 script.on_event(defines.events.on_gui_confirmed, inference.on_gui_confirmed)
-script.on_event(defines.events.on_gui_selection_state_changed,
-  inference.on_gui_selection_state_changed)
 
 -- The server keeps its built-in window only so clicking it raises this event;
 -- the shared inference window replaces it straight away.
@@ -1032,8 +1027,8 @@ local function gather_existing_entities(state, surface, fp)
   })
   for _, entity in pairs(candidates) do
     if not predicted[entity.unit_number] and not entity.to_be_deconstructed() then
-      local direction = entity.type == "assembling-machine"
-        and 0 or FACTORIO_TO_DIRECTION[entity.direction]
+      local facingless = entity.type == "assembling-machine" or entity.type == "electric-pole"
+      local direction = facingless and 0 or FACTORIO_TO_DIRECTION[entity.direction]
       if direction then
         -- Factorio stores an inserter's drop direction; the model stores its
         -- pickup direction.
@@ -1132,11 +1127,6 @@ local function gather_request(state, player_index)
     grid_size     = fp.w,
     placement_delay_s = setting("factorion-placement-delay"),
     temperature   = config.temperature,
-    top_k         = config.top_k,
-    top_p         = config.top_p,
-    stop_rule     = config.stop_rule,
-    stop_threshold = config.stop_threshold,
-    max_steps     = config.max_steps,
     seed          = config.seed,
     entities      = model_entities,
     sources       = sources,
@@ -1271,6 +1261,14 @@ local function server_alive()
     and game.tick - storage.server_contact_tick < timeout
 end
 
+-- Every release publishes the mod and the server under the same version;
+-- 0.0.0 is a development checkout.
+local function server_command()
+  local version = script.active_mods["factorion"]
+  if version == "0.0.0" then return "./start-mod.sh from the factorion repo" end
+  return "uvx factorion-server@" .. version
+end
+
 -- game.is_multiplayer() is false for a GUI host playing alone, even with
 -- RCON open, so it can't tell a hosted game from single-player.
 local function server_help()
@@ -1279,14 +1277,14 @@ local function server_help()
       "A model server is reaching the game, but it speaks protocol %s and " ..
       "this mod speaks %s. Whichever side is older needs restarting: quit " ..
       "and re-host Factorio to load the latest mod, or restart the server " ..
-      "with ./start-mod.sh.",
-      tostring(storage.server_protocol or "unknown"), PROTOCOL_VERSION)
+      "with %s.",
+      tostring(storage.server_protocol or "unknown"), PROTOCOL_VERSION,
+      server_command())
   end
-  return "Start it from the factorion repo with ./start-mod.sh. Factorio only " ..
-    "opens RCON while hosting (Play > Multiplayer > Host), and its config.ini " ..
-    "needs local-rcon-socket=127.0.0.1:64502 and " ..
-    "local-rcon-password=<password> under [other]; restart Factorio after " ..
-    "editing it."
+  return "In a terminal, run " .. server_command() .. " (it needs uv: " ..
+    "https://docs.astral.sh/uv). Factorio only lets the server in while " ..
+    "hosting, so load your game with Play > Multiplayer > Host saved game " ..
+    "(or Host new game)."
 end
 
 local function check_server()

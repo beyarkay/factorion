@@ -74,9 +74,10 @@ class TestPyItemsBinding:
         # reaches two tiles instead of one). Placeability is decided per-item,
         # not by id range, so it sits in the placeable set despite its id.
         lhi_id = next(v for v in ids if rs[v]["name"] == "long_handed_inserter")
-        # Placeable: agent-buildable (1..5) + the long-handed inserter +
-        # env-spawned source/sink (last two).
-        placeable = {1, 2, 3, 4, 5, lhi_id, sink_id, source_id}
+        poles = {v for v in ids if rs[v]["name"] in ("small_electric_pole", "medium_electric_pole", "substation")}
+        # Placeable: agent-buildable (1..5) + the long-handed inserter + the
+        # poles + env-spawned source/sink (last two).
+        placeable = {1, 2, 3, 4, 5, lhi_id, *poles, sink_id, source_id}
         for value in placeable:
             assert rs[value]["is_placeable"] is True, f"id {value} should be placeable"
         # Everything else (non-placeable items) — recipe ingredients,
@@ -99,55 +100,6 @@ class TestPyItemsBinding:
         sp = rs[5]
         assert sp["width"] == 2
         assert sp["height"] == 1
-
-
-class TestSourceSinkAreLastTwoIds:
-    """LOAD-BEARING INVARIANT — DO NOT REMOVE.
-
-    Source and Sink MUST be the last two ids in the unified Item enum.
-    The PPO policy in ppo.py sizes its entity head to ``len(entities) - 2``
-    to structurally exclude env-spawned source/sink from agent placement
-    (see ppo.py line ~780). If anyone reorders the enum and breaks this
-    invariant, the head will sample Source/Sink as agent actions, the
-    env will reject them, and training will silently regress.
-
-    The Rust mirror is `test_source_and_sink_are_last_two_ids` in
-    factorion_rs/src/types.rs — keep both. If you genuinely need to
-    remove this protection, you must also rewrite AgentCNN.__init__'s
-    entity-head sizing in ppo.py.
-    """
-
-    def test_source_is_last_id(self):
-        rs = factorion_rs.py_items()
-        max_id = max(rs.keys())
-        assert rs[max_id]["name"] == "stack_inserter", (
-            f"the highest item id ({max_id}) must be Source/stack_inserter, "
-            f"got {rs[max_id]['name']!r}. ppo.py:780 depends on this."
-        )
-
-    def test_sink_is_second_last_id(self):
-        rs = factorion_rs.py_items()
-        ids = sorted(rs.keys())
-        second_last_id = ids[-2]
-        assert rs[second_last_id]["name"] == "bulk_inserter", (
-            f"the second-highest item id ({second_last_id}) must be Sink/"
-            f"bulk_inserter, got {rs[second_last_id]['name']!r}. "
-            f"ppo.py:780 depends on this."
-        )
-
-    def test_excluding_last_two_gives_no_source_or_sink(self):
-        """Simulate ppo.py's `len(entities) - 2` slice and verify the
-        remaining id range contains no source or sink."""
-        rs = factorion_rs.py_items()
-        ids = sorted(rs.keys())
-        # The agent's entity head sees ids[0:len(ids)-2] (the last two are
-        # excluded). After unification we have an extra synthetic 0=empty
-        # in the Python dict, but this slice is a sanity check that the
-        # `entities[:len-2]` pattern keeps the env-only entities out.
-        agent_visible = ids[:-2]
-        names = {rs[i]["name"] if i in rs else "empty" for i in agent_visible}
-        assert "stack_inserter" not in names
-        assert "bulk_inserter" not in names
 
 
 class TestPythonItemsDict:

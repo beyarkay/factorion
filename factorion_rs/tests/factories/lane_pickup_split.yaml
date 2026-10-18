@@ -26,7 +26,7 @@ graph: |
   i@3,1 -> K@4,1
   i@2,2 -> K@2,3
 factory: |
-  .. Sv .. .. ..
+  E. Sv .. .. ..
   .. b> b> i> K>
   .. S^ iv .. ..
   .. .. Kv .. ..
@@ -42,6 +42,6 @@ items:
 throughput:
 - { item: iron_plate, per_second: 0.86 }
 factory: |
-  .. .. Sv
+  .. e. Sv
   K< i< b>
   .. .. S^

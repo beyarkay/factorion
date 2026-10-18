@@ -1,16 +1,17 @@
-"""RL finetuning of the whole-factory denoiser (`denoise.py`) by online
-rejection-sampling fine-tuning (RAFT; Dong et al., "RAFT: Reward rAnked
-FineTuning", 2023).
+"""RL fine-tuning of an SFT denoiser (`denoise.py`) by online rejection-sampling
+fine-tuning (RAFT; Dong et al., "RAFT: Reward rAnked FineTuning", 2023).
 
-`ppo.py --start-from <denoiser checkpoint>` hands off to `train_raft`. Every
-iteration builds `raft_groups` fresh factories, blanks each to its markers,
-and generates `raft_group_size` builds of each the way the eval does, only
-hotter (`raft_temperature`). Each build earns PPO's reward (raw throughput ×
-cost efficiency ÷ reference), and the model takes a step of SFT's denoising
-loss toward each factory's best build. SFT's loss on the iteration's lesson
-references rides along (`raft_sft_coef`): without it entity cost climbs and
-greedy refinement decays. A policy gradient on the same builds learned far
-slower: one score spread over a thousand sampled tiles is mostly noise (#484).
+Every iteration builds `groups` fresh factories, blanks each to its markers,
+and generates `group_size` builds of each the way the eval does, only hotter
+(`temperature`). Each build earns the reward (raw throughput × cost efficiency
+÷ reference), and the model takes a step of SFT's denoising loss toward each
+factory's best build. SFT's loss on the iteration's lesson references rides
+along (`sft_coef`): without it entity cost climbs and greedy refinement
+decays. A policy gradient on the same builds learned far slower: one score
+spread over a thousand sampled tiles is mostly noise (#484).
+
+Usage:
+    python rl.py --start-from <sft run id or .pt> --total-timesteps 3000000
 """
 
 import os
@@ -22,12 +23,21 @@ import numpy as np
 import torch
 import torch.optim as optim
 import tqdm
+import tyro
 
 from denoise import CH_PART, generate, legalize, load_denoiser, score_world, world_to_state
-from factorion import LESSON_IS_TRIAL, TRAINING_KINDS, Factory, LessonKind, blank_entities, build_factory
-from ppo import _upload_replacing, assert_device_ok, cuda_env_info
-from sft import build_eval_factories, denoise_step, generation_metrics
-from training_config import PpoArgs, SftArgs, wsd_multiplier
+from factorion import LESSON_IS_TRIAL, TRAINING_KINDS, Factory, LessonKind, blank_entities
+from sft import (
+    assert_device_ok,
+    build_eval_factories,
+    build_lesson,
+    cuda_env_info,
+    denoise_step,
+    generation_metrics,
+    resolve_checkpoint,
+    upload_replacing,
+)
+from training_config import RlArgs, SftArgs, wsd_multiplier
 
 # Far above the eval seeds (9M-11M); build_factory seeds numpy, which caps
 # seeds at 2**32 - 1, so a run gets 10M seeds and run seeds up to 229.
@@ -36,41 +46,41 @@ _TRAIN_SEED_BASE = 2_000_000_000
 _CHUNK = 256
 
 
-def _signature(args: PpoArgs) -> str:
+def _signature(args: RlArgs) -> str:
     return (
-        f"raft-s{args.size}-lr{args.raft_lr:g}-g{args.raft_groups}x{args.raft_group_size}"
-        f"-t{args.raft_temperature:g}-sft{args.raft_sft_coef:g}"
+        f"raft-s{args.size}-lr{args.lr:g}-g{args.groups}x{args.group_size}"
+        f"-t{args.temperature:g}-sft{args.sft_coef:g}"
         f"-from{os.path.basename(str(args.start_from)).removesuffix('.pt')}-seed{args.seed}"
     )
 
 
-def _factories(args: PpoArgs) -> Iterator[tuple[LessonKind, Factory]]:
+def _factories(args: RlArgs) -> Iterator[tuple[LessonKind, Factory]]:
     """Fresh training factories forever, kinds drawn uniformly."""
     rng = random.Random(args.seed)
     seed = _TRAIN_SEED_BASE + args.seed * 10_000_000
     while True:
         kind = rng.choice(TRAINING_KINDS)
         seed += 1
-        factory = build_factory(size=args.size, kind=kind, seed=seed)
+        factory = build_lesson(kind, seed, args.size, args.box_frac)
         if factory is not None:
             yield kind, factory
 
 
-def rollout(model, batch, args: PpoArgs, gen: SftArgs, generator) -> dict:
-    """`raft_group_size` builds of each (kind, factory) in `batch`, their
+def rollout(model, batch, args: RlArgs, gen: SftArgs, generator) -> dict:
+    """`group_size` builds of each (kind, factory) in `batch`, their
     scores, and the training targets: each factory's best build (none when all
     its builds scored alike) and the lesson references."""
     device = next(model.parameters()).device
-    G = args.raft_group_size
+    G = args.group_size
     cond = torch.as_tensor(np.stack([world_to_state(blank_entities(f)[0].numpy()) for _, f in batch]))
     cond = cond.to(device).repeat_interleave(G, 0)
     model.eval()
-    outs = [generate(model, c, gen.gen_steps, gen.gen_refine, args.raft_temperature, generator) for c in cond.split(_CHUNK)]
+    outs = [generate(model, c, gen.gen_steps, gen.gen_refine, args.temperature, generator) for c in cond.split(_CHUNK)]
     typ, rec, part = (torch.cat([o[0][j] for o in outs]).cpu().numpy() for j in range(3))
     conf = torch.cat([o[1] for o in outs]).float().cpu().numpy()
     cond_np = cond[:, :CH_PART].cpu().numpy().astype(np.int64)
     worlds = [
-        legalize(cond_np[i], typ[i], rec[i], part[i] if model.io == "token" else None, conf[i]) for i in range(len(cond))
+        legalize(cond_np[i], typ[i], rec[i], part[i], conf[i]) for i in range(len(cond))
     ]
     scores = [score_world(w, batch[i // G][1].max_throughput, args.entity_cost_scale) for i, w in enumerate(worlds)]
     reward = np.array([s["score"] for s in scores]).reshape(-1, G)
@@ -80,17 +90,17 @@ def rollout(model, batch, args: PpoArgs, gen: SftArgs, generator) -> dict:
     return {"scores": scores, **targets}
 
 
-def update(model, optimizer, roll: dict, args: PpoArgs, gen: SftArgs) -> dict:
+def update(model, optimizer, roll: dict, args: RlArgs, gen: SftArgs) -> dict:
     """One optimizer step of SFT's denoising loss toward the best builds, plus
-    `raft_sft_coef` times it toward the lesson references."""
+    `sft_coef` times it toward the lesson references."""
     stats: dict[str, float] = {}
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    for key, coef, targets in (("losses/raft", 1.0, roll["best"]), ("losses/sft", args.raft_sft_coef, roll["refs"])):
+    for key, coef, targets in (("losses/raft", 1.0, roll["best"]), ("losses/sft", args.sft_coef, roll["refs"])):
         if targets is None:
             continue
         for t in targets.long().split(_CHUNK):
-            loss, _ = denoise_step(model, t, torch.zeros(len(t), device=t.device), gen)
+            loss, _ = denoise_step(model, t, gen)
             w = len(t) / len(targets)
             (coef * w * loss).backward()
             stats[key] = stats.get(key, 0.0) + w * float(loss.detach())
@@ -100,7 +110,7 @@ def update(model, optimizer, roll: dict, args: PpoArgs, gen: SftArgs) -> dict:
 
 
 def rollout_metrics(batch, roll: dict, G: int) -> dict:
-    """rollout/ stats, lessons and trials pooled apart as PPO pools them."""
+    """rollout/ stats, lessons and trials pooled apart as the eval pools them."""
     out: dict = {}
     pools: dict[str, dict[str, list[float]]] = {}
     for f, (kind, _) in enumerate(batch):
@@ -117,31 +127,29 @@ def rollout_metrics(batch, roll: dict, G: int) -> dict:
     return out
 
 
-def train_raft(args: PpoArgs, ckpt_path: str):
+def train_rl(args: RlArgs):
+    if args.start_from is None:
+        raise SystemExit("--start-from is required: the SFT denoiser to fine-tune")
     t_start = time.time()
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(
-        "cuda"
-        if torch.cuda.is_available() and args.cuda
-        else "mps"
-        if torch.backends.mps.is_available() and args.metal
-        else "cpu"
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
     assert_device_ok(device)
-    model = load_denoiser(ckpt_path, device)
+    model = load_denoiser(resolve_checkpoint(args.start_from, args.wandb_project_name, args.wandb_entity)[0], device)
     model.amp = args.amp and device.type == "cuda"
-    optimizer = optim.Adam(model.parameters(), lr=args.raft_lr, eps=args.adam_epsilon)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
     # Generation schedule and eval set as SFT's: eval/ at iteration 0 is the
     # base's own val/.
-    gen = SftArgs(seed=args.seed, size=args.size, eval_best_of=args.eval_best_of)
+    gen = SftArgs(seed=args.seed, size=args.size, eval_best_of=args.eval_best_of, box_frac=args.box_frac)
     eval_factories = build_eval_factories(gen)
-    G = args.raft_group_size
-    steps_per_iter = args.raft_groups * G * gen.gen_steps
+    G = args.group_size
+    steps_per_iter = args.groups * G * gen.gen_steps
     num_iterations = max(1, args.total_timesteps // steps_per_iter)
     run_name = _signature(args)
-    print(f"RAFT on {device}: {num_iterations} iterations of {args.raft_groups} factories x {G} builds")
+    print(f"RAFT on {device}: {num_iterations} iterations of {args.groups} factories x {G} builds")
 
     run = None
     if args.track:
@@ -154,8 +162,8 @@ def train_raft(args: PpoArgs, ckpt_path: str):
             name=run_name,
             group=args.wandb_group,
             tags=["raft", *(args.tags or [])],
-            id=args.start_from_wandb or args.wandb_run_id,
-            resume="must" if args.start_from_wandb else "allow" if args.wandb_run_id else None,
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
         )
         wandb.define_metric("*", step_metric="global_step")
 
@@ -168,12 +176,10 @@ def train_raft(args: PpoArgs, ckpt_path: str):
     for it in tqdm.trange(0, num_iterations + 1):
         metrics: dict = {"global_step": global_step}
         if it:
-            lr = args.raft_lr * wsd_multiplier(
-                it - 1, num_iterations, args.lr_warmup_iters, args.lr_cooldown_frac, args.lr_min_ratio
-            )
+            lr = args.lr * wsd_multiplier(it - 1, num_iterations, args.warmup_iters, args.cooldown_frac, args.min_lr_ratio)
             optimizer.param_groups[0]["lr"] = lr
             t0 = time.time()
-            batch = [next(stream) for _ in range(args.raft_groups)]
+            batch = [next(stream) for _ in range(args.groups)]
             roll = rollout(model, batch, args, gen, generator)
             t1 = time.time()
             metrics |= update(model, optimizer, roll, args, gen)
@@ -202,7 +208,7 @@ def train_raft(args: PpoArgs, ckpt_path: str):
                 torch.save({"arch": model.arch, "model": model.state_dict()}, ckpt_out)
                 pending = True
             if run is not None and pending and time.time() - t_start >= 60 * args.min_upload_minutes:
-                uploaded = _upload_replacing(
+                uploaded = upload_replacing(
                     run, run_name, [ckpt_out], {"best_eval_throughput": best}, ["latest", f"thp{best:.3f}"], uploaded
                 )
                 pending = False
@@ -212,3 +218,7 @@ def train_raft(args: PpoArgs, ckpt_path: str):
         run.summary[f"best_{key}"] = best
         run.finish()
     return model
+
+
+if __name__ == "__main__":
+    train_rl(tyro.cli(RlArgs))

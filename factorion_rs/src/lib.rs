@@ -23,6 +23,7 @@ extern crate alloc;
 mod entities;
 mod factory_gen;
 mod graph;
+mod power;
 mod render;
 mod rng;
 #[cfg(test)]
@@ -32,7 +33,7 @@ mod types;
 mod world;
 
 #[cfg(feature = "pyo3-bindings")]
-use numpy::{IntoPyArray, PyReadonlyArray3};
+use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray4};
 #[cfg(feature = "pyo3-bindings")]
 use pyo3::prelude::*;
 #[cfg(feature = "pyo3-bindings")]
@@ -41,9 +42,11 @@ use pyo3::types::PyDict;
 #[cfg(feature = "pyo3-bindings")]
 use entities::entity_tiles;
 #[cfg(feature = "pyo3-bindings")]
-use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, LessonKind};
+use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, place_poles, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
 use graph::{build_graph, unit_anchors};
+#[cfg(feature = "pyo3-bindings")]
+use power::PowerMap;
 #[cfg(feature = "pyo3-bindings")]
 use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
@@ -58,7 +61,8 @@ use world::World;
 /// Calculate the throughput score of a factory represented as a 3D tensor.
 ///
 /// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
-///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
+///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint,
+///   5: power (ignored — recomputed from the poles)
 ///
 /// Returns: (score, num_unreachable).
 /// The score is the power mean (see [`factory_score`]) of each sink's
@@ -71,6 +75,47 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     let graph = build_graph(&world);
     let (deliveries, num_unreachable) = calc_throughput(&graph);
     Ok((factory_score(&deliveries), num_unreachable))
+}
+
+/// The powered tiles of each world in a `(B, W, H, C)` batch, as a
+/// `(B, W, H)` bool array: what [`power::PowerMap`] computes and
+/// `Channel::Power` stores (the engine itself never reads that channel).
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_power_map(py: Python<'_>, worlds: PyReadonlyArray4<i64>) -> Py<numpy::PyArray3<bool>> {
+    let worlds = worlds.as_array();
+    let (b, w, h, c) = worlds.dim();
+    let mut out = numpy::ndarray::Array3::from_elem((b, w, h), false);
+    for (i, view) in worlds.outer_iter().enumerate() {
+        let world = World::new(view.iter().copied().collect(), w, h, c);
+        let map = PowerMap::of(&world);
+        for x in 0..w {
+            for y in 0..h {
+                out[[i, x, y]] = map.tile(x, y);
+            }
+        }
+    }
+    out.into_pyarray(py).unbind()
+}
+
+/// `world` with medium poles on its free tiles powering every inserter and
+/// assembler, as the lesson generators power theirs, or `None` when there is
+/// no room for them.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_place_poles(
+    py: Python<'_>,
+    world: PyReadonlyArray3<i64>,
+) -> PyResult<Option<Py<numpy::PyArray3<i64>>>> {
+    let mut world = World::from_numpy(&world);
+    if place_poles(&mut world).is_none() {
+        return Ok(None);
+    }
+    PowerMap::of(&world).write(&mut world);
+    let (data, w, h, c) = world.into_whc();
+    let arr = numpy::ndarray::Array3::from_shape_vec((w, h, c), data)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(Some(arr.into_pyarray(py).unbind()))
 }
 
 /// Python-facing shape of one sink's delivery: the sink's anchor tile, the
@@ -293,19 +338,17 @@ type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>, f64);
 /// exhausted. Raises `ValueError` for an unknown lesson kind.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
-#[pyo3(signature = (size, kind, seed, random_item=true, max_entities=f64::INFINITY))]
+#[pyo3(signature = (size, kind, seed, random_item=true))]
 fn build_factory(
     py: Python<'_>,
     size: usize,
     kind: i64,
     seed: i64,
     random_item: bool,
-    max_entities: f64,
 ) -> PyResult<Option<PyFactory>> {
     let lesson = LessonKind::from_i64(kind)
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown kind {kind}")))?;
-    let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item, max_entities)
-    {
+    let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item) {
         Some(b) => b,
         None => return Ok(None),
     };
@@ -385,6 +428,8 @@ fn py_lesson_is_trial(py: Python<'_>) -> PyResult<Py<PyDict>> {
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
     m.add_function(wrap_pyfunction!(py_sink_deliveries, m)?)?;
+    m.add_function(wrap_pyfunction!(py_power_map, m)?)?;
+    m.add_function(wrap_pyfunction!(py_place_poles, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_unit_tiles, m)?)?;

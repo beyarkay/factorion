@@ -10,9 +10,12 @@ pub enum Channel {
     Items = 2,
     Misc = 3,
     Footprint = 4,
+    /// 1 where the tile is powered (see [`crate::power`]). Derived from the
+    /// poles for the models' input; the engine recomputes it, never reads it.
+    Power = 5,
 }
 
-pub const NUM_CHANNELS: usize = 5;
+pub const NUM_CHANNELS: usize = 6;
 
 impl Channel {
     pub fn index(self) -> usize {
@@ -158,15 +161,12 @@ impl Misc {
 ///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
 ///   6..=65  — mostly non-placeable items (recipe ingredients / products /
 ///             raw materials / non-modeled buildings exposed only as items).
-///             The one exception is `LongHandedInserter` (34): it carries a
-///             recipe like the others but is *also* a placeable entity (an
-///             inserter variant that reaches two tiles instead of one), so it
-///             returns `true` from `is_placeable`. Placeability is decided by
-///             `is_placeable`, not by id range — the head excludes only the
-///             last two ids, so a placeable id in the middle is fine.
-///   last two — env-spawned (Sink, Source) — MUST remain the last two
-///             ids; ppo.py sizes its entity head to `len(items)-2` to
-///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
+///             The exceptions are `LongHandedInserter` (34) and the electric
+///             poles (36, 37, 39): they carry recipes like the others but are
+///             *also* placeable entities, so they return `true` from
+///             `is_placeable`. Placeability is decided by `is_placeable`, not
+///             by id range.
+///   last two — the Sink and Source markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Item {
     // Placeable, agent-buildable (1..=5)
@@ -262,12 +262,10 @@ pub enum Item {
     FluidWagon = 81,
     LightArmor = 82,
     DischargeDefenseRemote = 83,
-    PersonalRoboport = 84,
+    PersonalRoboportEquipment = 84,
     FlamethrowerTurret = 85,
     AssemblingMachine3 = 86,
-    // Env-spawned, not agent-placeable — must remain the LAST two ids so
-    // the policy's entity head can be sized to `len(items) - 2` and
-    // structurally exclude them from sampling (see ppo.py).
+    // The source/sink markers, placed by lesson generators only.
     Sink = 87,   // named "bulk_inserter"
     Source = 88, // named "stack_inserter"
 }
@@ -360,7 +358,7 @@ impl Item {
             81 => Some(Item::FluidWagon),
             82 => Some(Item::LightArmor),
             83 => Some(Item::DischargeDefenseRemote),
-            84 => Some(Item::PersonalRoboport),
+            84 => Some(Item::PersonalRoboportEquipment),
             85 => Some(Item::FlamethrowerTurret),
             86 => Some(Item::AssemblingMachine3),
             87 => Some(Item::Sink),
@@ -467,7 +465,7 @@ impl Item {
             Item::FluidWagon => "fluid_wagon",
             Item::LightArmor => "light_armor",
             Item::DischargeDefenseRemote => "discharge_defense_remote",
-            Item::PersonalRoboport => "personal_roboport",
+            Item::PersonalRoboportEquipment => "personal_roboport_equipment",
             Item::FlamethrowerTurret => "flamethrower_turret",
             Item::AssemblingMachine3 => "assembling_machine_3",
         }
@@ -487,7 +485,39 @@ impl Item {
                 | Item::Sink
                 | Item::Source
                 | Item::Splitter
+                | Item::SmallElectricPole
+                | Item::MediumElectricPole
+                | Item::Substation
         )
+    }
+
+    /// Whether this entity does nothing unless it is powered (see
+    /// [`crate::power`]). Sources and sinks stand in for the off-map world,
+    /// so they need no power.
+    pub fn needs_power(self) -> bool {
+        matches!(
+            self,
+            Item::Inserter | Item::LongHandedInserter | Item::AssemblingMachine1
+        )
+    }
+
+    /// The electric pole this entity is, if it is one.
+    pub fn pole(self) -> Option<Pole> {
+        match self {
+            Item::SmallElectricPole => Some(Pole {
+                supply: 2,
+                reach_x2: 15,
+            }),
+            Item::MediumElectricPole => Some(Pole {
+                supply: 3,
+                reach_x2: 18,
+            }),
+            Item::Substation => Some(Pole {
+                supply: 8,
+                reach_x2: 36,
+            }),
+            _ => None,
+        }
     }
 
     /// Whether this entity's tiles carry two independent belt lanes.
@@ -597,7 +627,7 @@ impl Item {
             | Item::FluidWagon
             | Item::LightArmor
             | Item::DischargeDefenseRemote
-            | Item::PersonalRoboport
+            | Item::PersonalRoboportEquipment
             | Item::FlamethrowerTurret
             | Item::AssemblingMachine3 => 0.0,
         }
@@ -610,14 +640,25 @@ impl Item {
         match self {
             Item::AssemblingMachine1 => (3, 3),
             Item::Splitter => (2, 1),
+            Item::Substation => (2, 2),
             _ => (1, 1),
         }
     }
 }
 
-/// Every Item variant, in enum declaration order — so Sink/Source come last
-/// (`test_source_and_sink_are_last_two_ids`) and ids stay stable. Python's
-/// `items` dict is built from this via the PyO3 `py_items` binding.
+/// An electric pole's reach (wiki/electric-network.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pole {
+    /// How many tiles the square supply area extends past the pole's own
+    /// footprint on every side.
+    pub supply: i64,
+    /// Twice the wire reach (centre-to-centre), so the small pole's 7.5 is
+    /// an integer.
+    pub reach_x2: i64,
+}
+
+/// Every Item variant, in enum declaration order. Python's `items` dict is
+/// built from this via the PyO3 `py_items` binding.
 pub fn all_items() -> Vec<Item> {
     Item::iter().collect()
 }
@@ -1597,7 +1638,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
             },
         ),
         (
-            Item::PersonalRoboport,
+            Item::PersonalRoboportEquipment,
             Recipe {
                 consumes: nonempty![
                     (Item::AdvancedCircuit, 10.0),
@@ -1605,7 +1646,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                     (Item::IronGearWheel, 40.0),
                     (Item::SteelPlate, 20.0)
                 ],
-                produces: nonempty![(Item::PersonalRoboport, 1.0)],
+                produces: nonempty![(Item::PersonalRoboportEquipment, 1.0)],
                 crafting_time: 10.0,
                 produced_by: ASSEMBLING_MACHINES,
             },
@@ -1837,57 +1878,6 @@ mod tests {
                 non_placeable
             );
         }
-    }
-
-    /// LOAD-BEARING INVARIANT — DO NOT REMOVE.
-    ///
-    /// Source and Sink MUST be the last two ids in the Item enum (and the
-    /// last two entries in `all_items()`). The PPO policy in ppo.py sizes
-    /// its entity head to `len(items) - 2` to structurally exclude
-    /// env-spawned source/sink from agent placement (`ppo.py` line 780).
-    /// If anyone reorders the enum and breaks this invariant, the head
-    /// will start sampling Source/Sink as agent actions, the env will
-    /// reject them, and training will silently regress.
-    ///
-    /// Mirror tests live in tests/test_recipes.py — keep both. If you
-    /// genuinely need to remove this protection, you must also rewrite
-    /// `AgentCNN.__init__`'s entity-head sizing in ppo.py.
-    #[test]
-    fn test_source_and_sink_are_last_two_ids() {
-        let all = all_items();
-        let n = all.len();
-        assert!(n >= 2, "all_items() must contain at least Source and Sink");
-        assert_eq!(
-            all[n - 2],
-            Item::Sink,
-            "Item::Sink must be the second-to-last entry in all_items() — \
-             ppo.py's entity-head sizing depends on this"
-        );
-        assert_eq!(
-            all[n - 1],
-            Item::Source,
-            "Item::Source must be the last entry in all_items() — \
-             ppo.py's entity-head sizing depends on this"
-        );
-
-        // The integer values must also be the two highest. Using `as i64`
-        // here is the canonical way to read the discriminant.
-        let max_id = all.iter().map(|&i| i as i64).max().unwrap();
-        let second_max_id = {
-            let mut ids: Vec<i64> = all.iter().map(|&i| i as i64).collect();
-            ids.sort();
-            ids[ids.len() - 2]
-        };
-        assert_eq!(
-            Item::Source as i64,
-            max_id,
-            "Item::Source must have the highest id"
-        );
-        assert_eq!(
-            Item::Sink as i64,
-            second_max_id,
-            "Item::Sink must have the second-highest id"
-        );
     }
 
     #[test]

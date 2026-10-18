@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
+use crate::power::PowerMap;
 use crate::types::{Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
 use strum::IntoEnumIterator;
@@ -74,13 +75,16 @@ impl FactoryGraph {
 
 /// Build a directed graph from a World, with edges per the engine's
 /// entity-connection rules. This is the single source of truth for factory
-/// graph construction.
+/// graph construction. An entity that needs power and has no powered tile
+/// gets no node, as if it weren't there.
 ///
 /// Nodes are not 1:1 with entities: lane-aware entities (belts, underground
 /// belts, and EACH tile of a splitter) get one node per lane; everything
 /// else gets a single node at its anchor tile (multi-tile assemblers still
-/// collapse their secondary tiles onto the anchor).
+/// collapse their secondary tiles onto the anchor). Poles carry no items, so
+/// they get no node.
 pub fn build_graph(world: &World) -> FactoryGraph {
+    let power = PowerMap::of(world);
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();
     let mut edge_list: Vec<(NodeId, NodeId)> = Vec::new();
@@ -98,12 +102,15 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             // Empty cell, or a stray non-placeable item in the entities
             // channel (data error). Either way, no graph node.
             let entity_kind = match world.entity_at(x, y) {
-                Some(k) if k.is_placeable() => k,
+                Some(k) if k.is_placeable() && k.pole().is_none() => k,
                 _ => continue,
             };
 
             let secondary_of = anchor_of.get(&(x, y)).copied();
             if secondary_of.is_some() && !entity_kind.is_lane_aware() {
+                continue;
+            }
+            if entity_kind.needs_power() && !power.powers(world, x, y) {
                 continue;
             }
             let secondary_lane_tile = secondary_of.is_some();
@@ -476,12 +483,13 @@ mod tests {
     #[test]
     fn test_inserter_chain_graph() {
         // Source → Inserter → Belt → Inserter → Sink
-        let mut w = World::empty(5, 1);
+        let mut w = World::empty(5, 2);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::Inserter, Direction::East, None);
         w.place(2, 0, Item::TransportBelt, Direction::East, None);
         w.place(3, 0, Item::Inserter, Direction::East, None);
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(2, 1, Item::MediumElectricPole, Direction::None, None);
 
         let g = build_graph(&w);
         // Source + 2 inserters + sink (single) + belt (2 lane nodes).

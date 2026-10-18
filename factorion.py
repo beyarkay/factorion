@@ -1,13 +1,7 @@
-"""factorion: environment utilities (datatypes + helpers).
-
-Plain Python module — was previously a marimo notebook, but the notebook
-interface was never used outside of factorion.py itself, so the cell
-wrappers have been stripped and identifiers are exported directly.
-"""
+"""factorion: environment utilities (datatypes + helpers)."""
 
 import base64
 import functools
-import glob
 import hashlib
 import importlib.util
 import json
@@ -17,18 +11,13 @@ import random
 import subprocess
 import sys
 import zlib
-from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
-import plotly.graph_objects as go
 import torch
-import tqdm
-import wandb
-from torch.distributions import Categorical
 
 _RS_DIR = Path(__file__).resolve().parent / "factorion_rs"
 
@@ -72,9 +61,6 @@ if (_RS_DIR / "src").is_dir():
 
 import factorion_rs  # noqa: E402
 
-wandb.login()
-
-
 class Html:
     """Minimal HTML wrapper, replaces ``marimo.Html`` for renderers that
     inspected ``.text`` or ``.data`` on the returned object.
@@ -102,6 +88,10 @@ class Channel(Enum):
     MISC = 3
     # 1 if you can build there, 0 if you can't
     FOOTPRINT = 4
+    # 1 if the tile is powered (wiki/electric-network.md). Derived from the
+    # poles for the models' input — refresh_power() after moving a pole; the
+    # engine recomputes it and never reads it.
+    POWER = 5
 
 
 class Footprint(Enum):
@@ -113,11 +103,6 @@ class Misc(Enum):
     NONE = 0
     UNDERGROUND_DOWN = 1
     UNDERGROUND_UP = 2
-
-
-class Dim(Enum):
-    X = 0
-    Y = 1
 
 
 class Direction(Enum):
@@ -163,9 +148,8 @@ for _val, _props in factorion_rs.py_items().items():
 # Post-unification, every grid-placeable entity is also an Item, so
 # `entities[v]` returns the same dataclass as `items[v]`. The Rust
 # binding hands us the canonical ordering: 1..5 = agent-placeable
-# (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
-# Source — placed last so the policy head can exclude them via
-# len(entities)-2), 8..12 = non-placeable items.
+# (TB, Inserter, AM1, UB, Splitter), 6..7 = the Sink and Source markers,
+# 8..12 = non-placeable items.
 entities = items
 # Backwards-compat alias for the now-unified Item dataclass.
 Entity = Item
@@ -206,7 +190,7 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
     for name, is_trial in factorion_rs.py_lesson_is_trial().items()
 }
 
-# The kinds SFT and PPO sample and evaluate on (SFT skips the trials, which
+# The kinds SFT and RL sample and evaluate on (SFT skips the trials, which
 # have no demonstrations). Every other kind stays buildable and testable, but
 # is left out of training while the belt-routing and full-factory lessons are
 # trialled alone.
@@ -304,7 +288,7 @@ def str2item(s):
     )
 
 
-@functools.cache  # pure fn of `s` (entities is import-time constant); see EXPERIMENT_LOG.md
+@functools.cache  # pure fn of `s`: entities is an import-time constant
 def str2ent(s):
     if s is None:
         print(f"WARN: given string  is None")
@@ -337,6 +321,12 @@ def str2ent(s):
 _EMPTY_ENT_VAL = str2ent("empty").value
 _SOURCE_ENT_VAL = str2ent("source").value
 _SINK_ENT_VAL = str2ent("sink").value
+_INSERTER_ENT_VALS = torch.tensor([str2ent(n).value for n in ("inserter", "long_handed_inserter")])
+_ASM_ENT_VAL = str2ent("assembling_machine_1").value
+# Poles have no facing: they're stored with Direction.NONE.
+POLE_ENT_IDS = tuple(
+    str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "substation")
+)
 _EMPTY_ITEM_VAL = str2item("empty").value
 
 
@@ -365,32 +355,6 @@ def new_world(width=8, height=8):
     world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
     world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
     return world
-
-
-def add_entity(
-    world,
-    proto_str,
-    x,
-    y,
-    direction=Direction.NONE,
-    recipe="empty",
-    misc=Misc.NONE,
-):
-    proto = str2ent(proto_str)
-    EMPTY = str2ent("empty")
-    if proto is None:
-        proto = EMPTY
-    recipe_proto = str2ent(recipe)
-    if recipe_proto is None:
-        recipe_proto = EMPTY
-    assert world[x, y, Channel.ENTITIES.value] == EMPTY.value, (
-        f"Can't place {proto_str} at {x},{y} because {entities[world[x, y, Channel.ENTITIES.value]]} is there"
-    )
-    assert 0 <= x < len(world), f"{x=} is not in [0, {len(world)})"
-    assert 0 <= y < len(world[0]), f"{y=} is not in [0, {len(world[0])})"
-
-    world[x, y, Channel.ENTITIES.value] = proto.value
-    world[x, y, Channel.DIRECTION.value] = direction.value
 
 
 def world2html(world_WHC, highlights=None):
@@ -605,7 +569,7 @@ assert not _aliased_tiers & {i.name for i in items.values() if i.is_placeable}, 
 )
 
 # Arrow virtual signals in a constant-combinator marker encode the
-# source/sink direction (see factorion-mod/server/blueprint.py).
+# source/sink direction (see factorion_server/blueprint.py).
 _ARROW_TO_DIR = {
     "up-arrow": Direction.NORTH,
     "right-arrow": Direction.EAST,
@@ -648,7 +612,7 @@ def _parse_combinator_marker(e):
 
 def blueprint2world(bp):
     """Decode a Factorio blueprint string into a (C, W, H) world
-    tensor matching the encoder in factorion-mod/server/blueprint.py.
+    tensor matching the encoder in factorion_server/blueprint.py.
 
     Conventions:
       - Position in a Factorio blueprint is the entity's *center*; for
@@ -719,7 +683,7 @@ def blueprint2world(bp):
                 f"{bp_dir} at ({cx},{cy})"
             )
             continue
-        model_dir = _BP_DIR_TO_MODEL[bp_dir]
+        model_dir = Direction.NONE if proto.value in POLE_ENT_IDS else _BP_DIR_TO_MODEL[bp_dir]
 
         # Multi-tile entities rotate footprint when facing E/W.
         w, h = proto.width, proto.height
@@ -772,7 +736,9 @@ def blueprint2world(bp):
                     world[x, y, Channel.MISC.value] = misc.value
 
     # Return (C, W, H) to match the encoder's input shape.
-    return np.transpose(world, (2, 0, 1))
+    world_CWH = np.transpose(world, (2, 0, 1))
+    refresh_power(torch.from_numpy(world_CWH))
+    return world_CWH
 
 
 def read_blueprint_file(path):
@@ -792,8 +758,8 @@ def read_blueprint_file(path):
 def plot_flow_network(G):
     # Lazy imports: matplotlib + networkx are visualization-only (this function
     # and build_graph_nx). Importing them at module scope cost ~0.44s on every
-    # `import factorion` — paid by ppo/sft training that never plots. Deferring
-    # them here keeps those import-bound entry points (and the benchmarks) fast.
+    # `import factorion` — paid by sft/rl training that never plots. Deferring
+    # them here keeps those import-bound entry points fast.
     import matplotlib.pyplot as plt
     import networkx as nx
 
@@ -827,267 +793,6 @@ def plot_flow_network(G):
     plt.show()
 
 
-def plot_loss_history(loss_history):
-    # Create a figure
-    fig = go.Figure()
-    # Add traces for each key in loss_history
-    for k in loss_history[-1].keys():
-        fig.add_trace(
-            go.Scatter(
-                x=list(
-                    range(len(loss_history))
-                ),  # X-axis: range of iterations
-                y=[
-                    float(v[k]) if k in v else np.nan for v in loss_history
-                ],  # Y-axis: values for the current key
-                mode="lines",  # Plot as lines
-                name=k,  # Legend label
-                line=dict(width=0.5),  # Set line width
-            )
-        )
-    # Update layout for better readability
-    fig.update_layout(
-        title="Loss History",  # Title of the plot
-        xaxis_title="Iteration",  # X-axis label
-        yaxis_title="Loss",  # Y-axis label
-        width=800,  # Set figure width
-        height=500,  # Set figure height
-    )
-    # Show the plot
-    fig.show()
-
-
-def normalise_world(world_T, og_world):
-    assert torch.is_tensor(world_T), (
-        f"world_T is {type(world_T)}, not a tensor"
-    )
-    assert torch.is_tensor(og_world), (
-        f"og_world is {type(og_world)}, not a tensor"
-    )
-    assert len(world_T.shape) == 3, (
-        f"Expected world_T to have 3 dimensions, but is of shape {world_T.shape}"
-    )
-    assert len(og_world.shape) == 3, (
-        f"Expected og_world to have 3 dimensions, but is of shape {og_world.shape}"
-    )
-    assert world_T.shape[0] == world_T.shape[1], (
-        f"Expected world_T to be square, but is of shape {world_T.shape}"
-    )
-    assert og_world.shape[0] == og_world.shape[1], (
-        f"Expected og_world to be square, but is of shape {og_world.shape}"
-    )
-
-    empty_entity_value = str2ent("empty").value
-
-    bulk_inserter_mask = (
-        world_T[:, :, Channel.ENTITIES.value] == str2ent("bulk_inserter").value
-    )
-    world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
-        empty_entity_value
-    )
-
-    stack_inserter_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("stack_inserter").value
-    )
-    world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = (
-        empty_entity_value
-    )
-
-    green_circ_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("electronic_circuit").value
-    )
-    world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
-
-    # Remove all transport belts without direction
-    belt_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("transport_belt").value
-    )
-    no_direction_mask = (
-        world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
-    )
-    world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = (
-        empty_entity_value
-    )
-
-    # Ensure the model can't just overwrite existing factories with a simpler thing.
-    tworld = og_world.clone().detach().to(torch.int64)
-    original_had_something = (
-        tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
-    )
-    for ch in list(Channel):
-        replacements = tworld[:, :, ch.value][original_had_something]
-        world_T[:, :, ch.value][original_had_something] = replacements
-    return world_T
-
-
-def get_min_belts(world_CWH):
-    assert world_CWH.shape[1] == world_CWH.shape[2], (
-        "Wrong shape: {world_CWH.shape}"
-    )
-    C, W, H = world_CWH.shape
-
-    stack_inserter_id = str2ent("stack_inserter").value
-    bulk_inserter_id = str2ent("bulk_inserter").value
-    coords1 = torch.where(
-        world_CWH[Channel.ENTITIES.value] == bulk_inserter_id
-    )
-    assert len(coords1[0]) == len(coords1[1]) == 1, (
-        f"Expected 1 bulk inserter, found {coords1} in world {world_CWH}"
-    )
-    w1, h1 = coords1[0][0], coords1[1][0]
-
-    coords2 = torch.where(
-        world_CWH[Channel.ENTITIES.value] == stack_inserter_id
-    )
-    assert len(coords2[0]) == len(coords2[1]) == 1, (
-        f"Expected 1 stack inserter, found {coords2} in world {world_CWH}"
-    )
-    w2, h2 = coords2[0][0], coords2[1][0]
-
-    # we want an estimate for how many belts are required, so get the
-    # coords of the transport belt tile closest to the source/sink
-    w1 = torch.clamp(w1, 1, W - 2)
-    h1 = torch.clamp(h1, 1, H - 2)
-    w2 = torch.clamp(w2, 1, W - 2)
-    h2 = torch.clamp(h2, 1, H - 2)
-
-    manhat_dist = torch.abs(w1 - w2) + torch.abs(h1 - h2)
-    min_belts = manhat_dist + 1
-    return min_belts
-
-
-def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
-    stack_inserter_value = str2ent("stack_inserter").value
-    bulk_inserter_value = str2ent("bulk_inserter").value
-    empty_value = str2ent("empty").value
-
-    if seed is not None:
-        np.random.seed(seed)
-    assert min_belts != [1], f"min_belts of [1] is sometimes unsatisfiable"
-    if min_belts is None:
-        min_belts = list(range(0, 64))
-    w = new_world(width=n, height=n)
-    boundary_tiles = []
-    for i in range(n):
-        for j in range(n):
-            if i in (0, n - 1) and j in (0, n - 1):
-                continue
-            if i in (0, n - 1) or j in (0, n - 1):
-                boundary_tiles.append((i, j))
-
-    # Put a source and a sink on one of the boundaries
-    source = boundary_tiles[np.random.choice(len(boundary_tiles))]
-    w[source[0], source[1], Channel.ENTITIES.value] = stack_inserter_value
-    # TODO not the most efficient, but it'll be okay for now
-    limit = 1000
-    while limit > 0:
-        # Find random location for the sink
-        sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
-        # Ensure the sink isn't on top of the source
-        if source == sink:
-            continue
-        # Add the sink to the world
-        w[sink[0], sink[1], Channel.ENTITIES.value] = bulk_inserter_value
-        # Calculate the manhatten distance
-        min_belt = get_min_belts(torch.tensor(w).permute(2, 0, 1))
-        # If manhatten distance is acceptable and source != sink, we've got
-        # our world
-        if (source != sink) and (min_belt in min_belts):
-            break
-        # else, remove the sink from the world and try again
-        w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
-    assert limit > 0, "Infinite loop blocked"
-
-    if source_item is not None:
-        w[source[0], source[1], Channel.ITEMS.value] = source_item
-    if sink_item is not None:
-        w[sink[0], sink[1], Channel.ITEMS.value] = sink_item
-
-    # Figure out the direction of the source + sink
-    for x, y, is_source in [(*source, True), (*sink, False)]:
-        if x == 0:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.EAST if is_source else Direction.WEST
-            ).value
-        if x == n - 1:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.WEST if is_source else Direction.EAST
-            ).value
-        if y == 0:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.SOUTH if is_source else Direction.NORTH
-            ).value
-        if y == n - 1:
-            w[x, y, Channel.DIRECTION.value] = (
-                Direction.NORTH if is_source else Direction.SOUTH
-            ).value
-
-    return torch.tensor(w).to(torch.float)
-
-
-def sample_world(probabilities):
-    assert torch.is_tensor(probabilities), (
-        f"probabilities is {type(probabilities)} not torch.Tensor"
-    )
-    distribution = Categorical(probs=probabilities)
-    samples = distribution.sample()
-    # make the directions fit the expected values
-    d_direction = samples[:, :, Channel.DIRECTION.value]
-    mask = d_direction > 0
-    d_direction[mask] = d_direction[mask] * 4 - 4
-    d_direction[~mask] = -1
-    return samples
-
-
-def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
-    torch.manual_seed(42)
-    evals = []
-    iterator = torch.randint(0, 2**16 - 1, (num_evaluations,)).tolist()
-    if pbar:
-        iterator = tqdm.tqdm(iterator)
-    for seed in iterator:
-        original_world = get_new_world(seed, n=4)
-        probabilities = actor(original_world)
-        normalised_world = normalise_world(
-            sample_world(probabilities), original_world
-        )
-        value = critic(normalised_world.to(torch.float))
-        # FIXME(#161): still the old fixed /15.0 normalization. This is the
-        # legacy RL-from-scratch eval (no current callers) and its random
-        # get_new_world() inputs have no reference factory to normalize by, so
-        # there's no per-factory max to use here — left as-is intentionally.
-        throughput = torch.tensor(
-            factorion_rs.simulate_throughput(
-                normalised_world.to(torch.int64).numpy()
-            )[0]
-            / 15.0,
-            dtype=value.dtype,
-        )
-        num_entities = (
-            normalised_world[:, :, Channel.ENTITIES.value]
-            != str2ent("empty").value
-        ).sum()
-        evals.append(
-            {
-                "seed": seed,
-                "original_world": original_world,
-                "normalised_world": normalised_world,
-                "throughput": throughput,
-                "num_entities": num_entities,
-            }
-        )
-
-    avg_throughput = sum([eval["throughput"] for eval in evals]) / len(evals)
-    avg_num_entities = sum([eval["num_entities"] for eval in evals]) / len(
-        evals
-    )
-
-    return evals, avg_throughput, float(avg_num_entities)
-
-
 def build_graph_nx(world_WHC):
     """Build the factory connection graph as a networkx ``DiGraph``.
 
@@ -1116,7 +821,8 @@ def build_graph_nx(world_WHC):
 def count_dangling_inserters(world_CWH) -> tuple[int, int]:
     """(inserters with no input, inserters with no output) per the engine's
     factory graph. A finished factory should have zero of each: every inserter
-    the agent places should both pick up from and drop onto something."""
+    the agent places should both pick up from and drop onto something. An
+    unpowered inserter has no node, so `count_unpowered` counts it instead."""
     arr = world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
     nodes, edges = factorion_rs.py_build_graph(arr)
     fed = {dst for _, dst in edges}
@@ -1126,6 +832,14 @@ def count_dangling_inserters(world_CWH) -> tuple[int, int]:
         sum(i not in fed for i in inserters),
         sum(i not in draining for i in inserters),
     )
+
+
+def count_unpowered(world_CWH) -> int:
+    """Inserters and assemblers no pole powers, which do nothing."""
+    ent = world_CWH[Channel.ENTITIES.value]
+    placed = int(torch.isin(ent, _INSERTER_ENT_VALS).sum()) + int((ent == _ASM_ENT_VAL).sum()) // 9
+    nodes, _ = factorion_rs.py_build_graph(world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+    return placed - sum(n[0] in "ila" for n in nodes)
 
 
 def _remove_entities(
@@ -1227,7 +941,6 @@ def build_factory(
     *,
     seed: Optional[int] = None,
     random_item: bool = True,
-    max_entities: float = float("inf"),
 ) -> Optional[Factory]:
     """Build a complete, valid factory of the given lesson ``kind``.
 
@@ -1247,9 +960,7 @@ def build_factory(
     else:
         rs_seed = random.randrange(2**63)
 
-    result = factorion_rs.build_factory(
-        size, kind.value, rs_seed, random_item, max_entities
-    )
+    result = factorion_rs.build_factory(size, kind.value, rs_seed, random_item)
     if result is None:
         return None
     world_WHC, total_entities, protected, max_throughput = result
@@ -1263,6 +974,15 @@ def build_factory(
         max_throughput=max_throughput,
         protected_positions=frozenset(map(tuple, protected)),
     )
+
+
+def refresh_power(world: torch.Tensor) -> None:
+    """Rewrite the POWER channel of a ``(C, W, H)`` world or ``(B, C, W, H)``
+    batch, in place, from its poles."""
+    batch = world if world.dim() == 4 else world[None]
+    worlds_BWHC = batch.permute(0, 2, 3, 1).to("cpu", torch.int64).contiguous().numpy()
+    powered = torch.from_numpy(factorion_rs.py_power_map(worlds_BWHC))
+    batch[:, Channel.POWER.value] = powered.to(batch.device, batch.dtype)
 
 
 def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
@@ -1325,155 +1045,67 @@ def blank_entities(
         num_missing_entities,
         protected_positions=set(factory.protected_positions),
     )
+    refresh_power(partial)
     return partial, min_entities_required
 
 
-def _bfs_shortest(grid_h, grid_w, start, end, blocked):
-    """BFS from start to end, avoiding blocked cells.
+def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[str]:
+    """Validate and apply one placement action to ``world_CWH`` in place.
 
-    Returns (dist_map, parents_map) where parents_map tracks ALL
-    equal-length parents for enumerating all shortest paths.
-    Returns (None, None) if no path exists.
+    The one placement path for the factory-builder UI and the mod server, so
+    multi-tile footprints and rejection rules cannot drift between them.
+
+    Placements overwrite: every entity the footprint touches is removed whole
+    first, so ``empty`` deletes the entity under ``xy`` and any other entity
+    replaces what it lands on. Walls (which include a lesson's protected
+    entities) and sources/sinks can't be edited. Moving a pole refreshes the
+    POWER channel.
+
+    Returns ``None`` when applied, else why the placement was rejected.
     """
-    def in_bounds(cell):
-        r, c = cell
-        return 0 <= r < grid_h and 0 <= c < grid_w
+    x, y = action["xy"]
+    entity_id, direc, item_id, misc = action["entity"], action["direction"], action["item"], action["misc"]
+    size_x, size_y = world_CWH.shape[1:3]
+    assert 0 <= x < size_x and 0 <= y < size_y, f"({x}, {y}) out of bounds"
 
-    if not in_bounds(start) or not in_bounds(end):
-        return None, None
-    if start in blocked or end in blocked:
-        return None, None
+    asm = str2ent("assembling_machine_1").value
+    ug = str2ent("underground_belt").value
+    if entity_id not in entities or not 0 <= direc < len(Direction):
+        return "unknown_entity_or_direction"
+    if entity_id in (_SOURCE_ENT_VAL, _SINK_ENT_VAL):
+        return "placed_source_or_sink"
+    if entity_id == asm and item_id == _EMPTY_ITEM_VAL:
+        return "place_asm_mach_wo_recipe"
+    if entity_id not in (_EMPTY_ENT_VAL, asm, *POLE_ENT_IDS) and direc == Direction.NONE.value:
+        return "placement_wo_direction"
+    if entity_id in POLE_ENT_IDS and direc != Direction.NONE.value:
+        return "pole_with_direction"
+    if entity_id == _EMPTY_ENT_VAL and direc != Direction.NONE.value:
+        return "direction_wo_entity"
+    if (misc == Misc.NONE.value) == (entity_id == ug):
+        return "ug_belt_wo_up_or_down" if entity_id == ug else "placement_with_unneeded_misc"
 
-    deltas = list(DIR_TO_DELTA.values())
-    dist = {start: 0}
-    parents = defaultdict(list)
-    q = deque([start])
-
-    # Hot loop: ~1.5M iterations across a build. Inline the bounds check, cache
-    # the current cell's distance (was re-looked-up 4×/expansion), and build each
-    # neighbour tuple once. Neighbours are still visited in `deltas` order and
-    # appended to `parents` in the same order, so dist/parents — and therefore
-    # the enumerated paths and the random.shuffle that consumes them — stay
-    # byte-identical to the original.
-    while q:
-        r, c = q.popleft()
-        if (r, c) == end:
-            break
-        nd = dist[(r, c)] + 1
-        for dr, dc in deltas:
-            nr, nc = r + dr, c + dc
-            if not (0 <= nr < grid_h and 0 <= nc < grid_w):
-                continue
-            ncell = (nr, nc)
-            if ncell in blocked:
-                continue
-            cur = dist.get(ncell)
-            if cur is None:
-                dist[ncell] = nd
-                parents[ncell].append((r, c))
-                q.append(ncell)
-            elif cur == nd:
-                parents[ncell].append((r, c))
-
-    if end not in dist:
-        return None, None
-    return dist, parents
-
-def _path_to_belts(path, end_dir):
-    """Convert a list of (x, y) cells into belt placements with directions."""
-    belts: List[Tuple[int, int, Direction]] = []
-    for (r1, c1), (r2, c2) in zip(path, path[1:]):
-        d = DELTA_TO_DIR.get((r2 - r1, c2 - c1))
-        if d is not None:
-            belts.append((r1, c1, d))
-    belts.append((path[-1][0], path[-1][1], end_dir))
-    return belts
-
-def find_belt_path(
-    grid_h: int,
-    grid_w: int,
-    start: Tuple[int, int],
-    end: Tuple[int, int],
-    end_dir: Direction,
-    blocked: set,
-) -> Optional[List[Tuple[int, int, Direction]]]:
-    """Find a single shortest belt path from start to end, avoiding blocked cells.
-
-    Returns a list of (x, y, Direction) tuples for belt placements,
-    or None if no path exists. The last belt gets end_dir as its direction.
-    """
-    dist, parents = _bfs_shortest(grid_h, grid_w, start, end, blocked)
-    if dist is None:
-        return None
-
-    # Reconstruct single path via parent chain
-    path = []
-    cell = end
-    while cell != start:
-        path.append(cell)
-        cell = parents[cell][0]  # Take first parent for single path
-    path.append(start)
-    path.reverse()
-
-    return _path_to_belts(path, end_dir)
-
-def find_belt_paths_with_source_sink_orient(
-    entities: torch.Tensor,
-    directions: torch.Tensor,
-    source_value: int = str2ent("source").value,
-    sink_value: int = str2ent("sink").value,
-) -> List[List[Tuple[int, int, Direction]]]:
-    """Find all shortest belt-placement paths from source to sink.
-
-    Returns a list of paths, each being a list of (row, col, Direction)
-    tuples. If no valid path exists, returns [].
-    """
-    if (
-        entities.ndim != 2
-        or directions.ndim != 2
-        or entities.shape != directions.shape
-    ):
-        raise ValueError(
-            "entities and directions must be 2D tensors of the same shape"
-        )
-    H, W = entities.shape
-
-    src_pos = (entities == source_value).nonzero(as_tuple=False)
-    sink_pos = (entities == sink_value).nonzero(as_tuple=False)
-    if len(src_pos) != 1 or len(sink_pos) != 1:
-        raise ValueError("must have exactly one source and one sink")
-    src = tuple(src_pos[0].tolist())
-    sink = tuple(sink_pos[0].tolist())
-
-    src_dir = Direction(directions[src].item())
-    sink_dir = Direction(directions[sink].item())
-    if src_dir == Direction.NONE or sink_dir == Direction.NONE:
-        return []
-
-    dr_s, dc_s = DIR_TO_DELTA[src_dir]
-    start = (src[0] + dr_s, src[1] + dc_s)
-    dr_k, dc_k = DIR_TO_DELTA[sink_dir]
-    end = (sink[0] - dr_k, sink[1] - dc_k)
-
-    if start == src or start == sink or end == src or end == sink:
-        return []
-
-    blocked = {src, sink}
-    dist, parents = _bfs_shortest(H, W, start, end, blocked)
-    if dist is None:
-        return []
-
-    # Backtrack all shortest paths
-    all_paths: List[List[Tuple[int, int, Direction]]] = []
-
-    def backtrack(cell, rev_path):
-        if cell == start:
-            path = [start] + list(reversed(rev_path))
-            all_paths.append(_path_to_belts(path, sink_dir))
-            return
-        for p in parents[cell]:
-            backtrack(p, rev_path + [cell])
-
-    backtrack(end, [])
-    return all_paths
-
+    proto = entities[entity_id]
+    tiles = [tuple(t) for t in factorion_rs.py_entity_tiles(x, y, direc, proto.width, proto.height) or [(x, y)]]
+    # A zero-copy view, validated for every tile before any is written, so a
+    # rejected multi-tile placement never leaves a partial entity behind.
+    world = world_CWH.numpy()
+    ent = world[Channel.ENTITIES.value]
+    if any(not (0 <= tx < size_x and 0 <= ty < size_y) for tx, ty in tiles):
+        return "too_wide"
+    if any(world[Channel.FOOTPRINT.value, tx, ty] == Footprint.UNAVAILABLE.value for tx, ty in tiles):
+        return "placed_on_masked_tile"
+    if any(ent[tx, ty] in (_SOURCE_ENT_VAL, _SINK_ENT_VAL) for tx, ty in tiles):
+        return "replaced_source_or_sink"
+    occupied = [(tx, ty) for tx, ty in tiles if ent[tx, ty] != _EMPTY_ENT_VAL]
+    moves_pole = entity_id in POLE_ENT_IDS or any(ent[tx, ty] in POLE_ENT_IDS for tx, ty in occupied)
+    if occupied:
+        world_WHC = np.ascontiguousarray(world.transpose(1, 2, 0), dtype=np.int64)
+        for tx, ty in factorion_rs.py_unit_tiles(world_WHC, occupied):
+            world[:4, tx, ty] = (_EMPTY_ENT_VAL, Direction.NONE.value, _EMPTY_ITEM_VAL, Misc.NONE.value)
+    if entity_id != _EMPTY_ENT_VAL:
+        for tx, ty in tiles:
+            world[:4, tx, ty] = (entity_id, direc, item_id, misc)
+    if moves_pole:
+        refresh_power(world_CWH)
+    return None

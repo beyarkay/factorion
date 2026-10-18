@@ -3,8 +3,8 @@
 Run with:
     python tests/bench_throughput.py
 
-All calls go through the Rust engine's Python bindings,
-mirroring real-world usage in FactorioEnv.step().
+All calls go through the Rust engine's Python bindings, as training's
+`denoise.score_world` does.
 
 Covers:
   - Tiny/small/medium/large random worlds

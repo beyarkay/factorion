@@ -111,8 +111,8 @@ done
 
 # ----- start the server ------------------------------------------------------
 cd "$REPO_ROOT"
-echo "[launch] Starting Factorion server (uv run python factorion-mod/server/server.py)…"
-uv run python factorion-mod/server/server.py \
+echo "[launch] Starting Factorion server (uv run python -m factorion_server)…"
+uv run python -m factorion_server \
   --checkpoint "$CHECKPOINT" \
   --rcon-host 127.0.0.1 \
   --rcon-port "$RCON_PORT" \

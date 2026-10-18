@@ -7,6 +7,7 @@ description: |
 graph: ""
 factory: |
   i< YvvvY i>
+  E. .. .. ..
 ---
 description: |
   A splitter's output should feed an inserter directly below it
@@ -17,6 +18,6 @@ graph: |
   S@0,0 -> Y@0,1
   Y@0,1 -> i@0,2
 factory: |
-  Sv ..
+  Sv E.
   YvvvY
   iv ..

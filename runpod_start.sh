@@ -16,7 +16,7 @@ setup_ssh() {
     fi
 }
 
-# Make RUNPOD_* (used by ppo_train.sh's self-terminate watchdog) and PATH visible
+# Make RUNPOD_* (used by ci/runner.sh's self-termination) and PATH visible
 # to SSH sessions, matching RunPod's stock start script.
 export_env_vars() {
     printenv | grep -E '^RUNPOD_|^PATH=|^_=' \

@@ -33,6 +33,6 @@ FIXTURE_DUMP_PATH="$FIXTURES" cargo test \
 echo "[regression] replaying all lessons (${SEEDS} seeds) + fixtures through Factorio…"
 # --lessons/--seeds/--game-speed are defaults; anything in "$@" (RCON args,
 # a different --seeds, tolerances, --json-out) overrides via argparse.
-exec uv run python factorion-mod/server/parity.py \
+exec uv run python -m factorion_server.parity \
   --lessons all --seeds "$SEEDS" --game-speed 100 \
   --fixtures "$FIXTURES" "$@"

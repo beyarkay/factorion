@@ -25,13 +25,13 @@ factory: |
   .. .. .. .. .. .. .. .. .. .. .. .. .. b^ ..
   .. .. .. .. .. .. .. .. b> b> b> b> b> b^ ..
   .. b> b> b> b> b> b> b> b> b> b> b> b> b> b>
-  .. i^ .. i^ .. .. iv iv l^ iv l^ .. l^ iv iv
+  .. i^ .. i^ E. .. iv iv l^ iv l^ E. l^ iv iv
   aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa
   aa    aa aa    aa aa    aa aa    aa aa    aa
   aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa
-  .. i^ i^ i^ i^ i^ i^ .. i^ i^ i^ i^ i^ i^ i^
+  .. i^ i^ i^ i^ i^ i^ E. i^ i^ i^ i^ i^ i^ i^
   .. b< b< b< b< b< b> b> b> b> b> b> b> b> b>
-  .. .. .. .. .. Y^^^Y .. .. .. Sv .. .. .. ..
+  .. .. .. E. .. Y^^^Y .. .. .. Sv .. E. .. ..
   .. .. .. .. .. b^ .. .. .. .. bv .. .. .. ..
   .. .. .. .. .. b^ b< b< b< b< b< .. .. .. ..
   .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..

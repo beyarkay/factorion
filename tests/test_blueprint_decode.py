@@ -17,8 +17,6 @@ recipes, directions) get their own named test functions below, which
 load the same fixture file by name.
 """
 
-import os
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -32,13 +30,6 @@ from factorion import (
     str2ent,
     str2item,
 )
-
-# Round-trip tests need the mod's tensor → blueprint encoder.
-_SERVER_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "factorion-mod", "server"
-)
-if _SERVER_DIR not in sys.path:
-    sys.path.insert(0, _SERVER_DIR)
 
 _BP_DIR = Path(__file__).parent.parent / "lesson_blueprints"
 
@@ -57,12 +48,12 @@ def _load_bp(name: str) -> str:
     ids=lambda p: p.stem,
 )
 def test_blueprint_fixture_decodes(bp_path):
-    """Every fixture in lesson_blueprints/ must decode into a 5-channel,
+    """Every fixture in lesson_blueprints/ must decode into a len(Channel)-channel,
     non-empty world tensor. New blueprints get this check for free —
     add specific assertions in a named test below if you want more."""
     bp = read_blueprint_file(bp_path)
     w = blueprint2world(bp)
-    assert w.ndim == 3 and w.shape[0] == 5, (
+    assert w.ndim == 3 and w.shape[0] == len(Channel), (
         f"unexpected tensor shape for {bp_path.name}: {w.shape}"
     )
     assert w.shape[1] > 0 and w.shape[2] > 0
@@ -76,7 +67,7 @@ def test_blueprint_fixture_decodes(bp_path):
 
 def test_decode_gears_factory_shape():
     w = blueprint2world(_load_bp("gears_factory"))
-    assert w.shape == (5, 13, 15)
+    assert w.shape == (len(Channel), 13, 15)
     assert w.dtype.kind == "i"
 
 
@@ -152,7 +143,7 @@ def _round_trip(world_CWH):
     """Encode a (C, W, H) world to a blueprint string, then decode it
     back. The encoder crops to non-empty cells, so the result is
     tightly bounded around the placed entities."""
-    from blueprint import world_tensor_to_blueprint_string
+    from factorion_server.blueprint import world_tensor_to_blueprint_string
 
     bp = world_tensor_to_blueprint_string(world_CWH)
     return blueprint2world(bp)
@@ -167,7 +158,7 @@ def test_round_trip_single_belt_north():
     w[1, 1, Channel.DIRECTION.value] = Direction.NORTH.value
     decoded = _round_trip(np.transpose(w, (2, 0, 1)))
 
-    assert decoded.shape == (5, 1, 1)
+    assert decoded.shape == (len(Channel), 1, 1)
     assert int(decoded[Channel.ENTITIES.value, 0, 0]) == tb.value
     assert int(decoded[Channel.DIRECTION.value, 0, 0]) == Direction.NORTH.value
 

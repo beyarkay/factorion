@@ -68,12 +68,12 @@ def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
 # ── End-of-run metrics ─────────────────────────────────────────────
 # A run's W&B summary holds ONE logged point per metric — the last, or
 # whatever single statistic define_metric picked. That is noise for a
-# stochastic policy (eval/thput@N swings between neighbouring evals), so
+# stochastic model (eval/thput@N swings between neighbouring evals), so
 # reporting it decides comparisons on where a run happened to stop, or on its
 # single luckiest eval. Reports average the tail of the history instead.
 
 # Enough points to average out eval noise, few enough that the tail is all one
-# policy: on a 40M-step run 2% is still ~25 evals, where 10% would reach 4M
+# model: on a 40M-step run 2% is still ~25 evals, where 10% would reach 4M
 # steps back and average in iterates that are genuinely worse.
 TAIL_FRACTION = 0.02
 TAIL_MIN_POINTS = 3
@@ -213,7 +213,7 @@ def compare_metric_rows(
 # every-metric table sits inside it). Ordered regexes; a metric is headline
 # when any matches, and headline rows sort by first-matching pattern. Lesson
 # names are matched, never hardcoded (`val/{LESSON}/thput` covers every
-# current and future lesson). SFT (val/) and PPO (eval/, rollout/, ...) key
+# current and future lesson). SFT (val/) and RL (eval/, rollout/) key
 # spaces are disjoint, so one list serves both kinds.
 HEADLINE_PATTERNS = [
     # SFT: throughput first (overall then per-lesson), then accuracies
@@ -223,11 +223,9 @@ HEADLINE_PATTERNS = [
     r"^val/[A-Z0-9_]+/thput@\d+$",
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
-    # PPO: on-policy rollout health (overall then per-lesson), then speed.
+    # RL: the training builds (overall then per-lesson), then speed.
     r"^rollout/thput$",
     r"^rollout/reward$",
-    r"^rollout/length$",
-    r"^rollout/invalid_frac$",
     r"^rollout/[A-Z0-9_]+/thput$",
     r"^perf/update_seconds$",
     r"^perf/rollout_seconds$",
@@ -551,7 +549,7 @@ def compare_renders(
     main_group: str, pr_group: str, per_kind: Optional[int] = None
 ) -> str:
     """Qualitative companion to `compare_report`: the factories each side's
-    policy actually builds, side by side wherever they disagree.
+    model actually builds, side by side wherever they disagree.
 
     Every seed of both sides is rolled out over ONE shared factory set (the
     lowest common seed's), so a factory is only reported as different when the

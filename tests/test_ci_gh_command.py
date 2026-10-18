@@ -130,21 +130,21 @@ class TestSftDispatch:
         assert "#issuecomment-999" in body
 
 
-class TestPpoDispatch:
-    def test_ppo_carries_checkpoint(self, gh_ctx, monkeypatch):
-        monkeypatch.setenv("COMMENT_BODY", "/ci ppo --start-from j0s5y2mc")
+class TestRlDispatch:
+    def test_rl_carries_checkpoint(self, gh_ctx, monkeypatch):
+        monkeypatch.setenv("COMMENT_BODY", "/ci rl --start-from j0s5y2mc")
         gh_command.main()
 
         (pod,) = gh_ctx["pods"]
         spec = _job_spec(pod)
-        assert spec["kind"] == "ppo"
+        assert spec["kind"] == "rl"
         assert spec["start_from"] == "j0s5y2mc"
-        assert spec["total_timesteps"] is None  # PpoArgs default applies
+        assert spec["total_timesteps"] is None  # RlArgs default applies
 
 
 class TestGpuSelection:
-    """SFT is GPU-bound and gets the fast card by default; PPO is CPU-bound and
-    keeps the lineup head; `--gpu-type` overrides either."""
+    """SFT gets the fast card by default; RL keeps the lineup head;
+    `--gpu-type` overrides either."""
 
     @pytest.mark.parametrize(
         "command, expected",
@@ -152,9 +152,9 @@ class TestGpuSelection:
             ("/ci sft", SFT_DEFAULT_GPU),
             ("/ci compare sft --seeds 1", SFT_DEFAULT_GPU),
             ("/ci sweep sft", SFT_DEFAULT_GPU),
-            ("/ci ppo --start-from j0s5y2mc", GPU_FALLBACKS[0]),
-            ("/ci compare ppo --start-from j0s5y2mc --seeds 1", GPU_FALLBACKS[0]),
-            ("/ci sweep ppo", GPU_FALLBACKS[0]),
+            ("/ci rl --start-from j0s5y2mc", GPU_FALLBACKS[0]),
+            ("/ci compare rl --start-from j0s5y2mc --seeds 1", GPU_FALLBACKS[0]),
+            ("/ci sweep rl", GPU_FALLBACKS[0]),
             ('/ci sft --gpu-type "NVIDIA L40S"', "NVIDIA L40S"),
             ('/ci compare sft --gpu-type "NVIDIA RTX A4000"', "NVIDIA RTX A4000"),
         ],
@@ -317,10 +317,10 @@ class TestCompareDispatch:
         assert "training_config.py" in body
 
 
-class TestComparePpoDispatch:
-    def test_positional_algo_ppo(self, gh_ctx, monkeypatch):
+class TestCompareRlDispatch:
+    def test_positional_algo_rl(self, gh_ctx, monkeypatch):
         monkeypatch.setenv(
-            "COMMENT_BODY", "/ci compare ppo --start-from j0s5y2mc --seeds 1"
+            "COMMENT_BODY", "/ci compare rl --start-from j0s5y2mc --seeds 1"
         )
         monkeypatch.setattr(gh_command, "resolve_ref", lambda ref: "b" * 40)
         monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
@@ -333,7 +333,7 @@ class TestComparePpoDispatch:
         assert len(gh_ctx["pods"]) == 2  # one pod per side
         specs = [_job_spec(p) for p in gh_ctx["pods"]]
         assert {s["kind"] for s in specs} == {"compare"}
-        assert {s["algo"] for s in specs} == {"ppo"}
+        assert {s["algo"] for s in specs} == {"rl"}
         assert {s["start_from"] for s in specs} == {"j0s5y2mc"}
         assert all(s["seeds"] == [1] for s in specs)
 
@@ -384,12 +384,12 @@ class TestSiCounts:
             ("/ci sft --num-samples 500k", "num_samples", 500_000),
             ("/ci sft --num-samples 200000", "num_samples", 200_000),
             (
-                "/ci ppo --start-from j0s5y2mc --total-timesteps 1.5M",
+                "/ci rl --start-from j0s5y2mc --total-timesteps 1.5M",
                 "total_timesteps",
                 1_500_000,
             ),
             (
-                "/ci ppo --start-from j0s5y2mc --total-timesteps 2B",
+                "/ci rl --start-from j0s5y2mc --total-timesteps 2B",
                 "total_timesteps",
                 2_000_000_000,
             ),
@@ -421,7 +421,7 @@ class TestClaudeAuthoredLimits:
             ("/ci sft", "num_samples", 5_000_000, None),
             ("/ci sft --num-samples 200000", "num_samples", 200000, 200000),
             (
-                "/ci ppo --start-from j0s5y2mc --total-timesteps 40000000",
+                "/ci rl --start-from j0s5y2mc --total-timesteps 40000000",
                 "total_timesteps",
                 5_000_000,
                 40000000,
@@ -461,7 +461,7 @@ class TestClaudeAuthoredLimits:
     def test_compare_seeds_and_timesteps(self, gh_ctx, monkeypatch):
         monkeypatch.setenv(
             "COMMENT_BODY",
-            "/ci compare ppo --start-from j0s5y2mc --seeds 8 "
+            "/ci compare rl --start-from j0s5y2mc --seeds 8 "
             "--total-timesteps 10000000" + FOOTER,
         )
         monkeypatch.setattr(gh_command, "resolve_ref", lambda ref: "b" * 40)
@@ -510,7 +510,7 @@ class TestHomogeneousGpus:
 
     @pytest.mark.parametrize(
         "command,n_pods",
-        [("/ci compare ppo --start-from j0s5y2mc --seeds 1", 2), ("/ci sweep ppo --pods 3", 3)],
+        [("/ci compare rl --start-from j0s5y2mc --seeds 1", 2), ("/ci sweep rl --pods 3", 3)],
     )
     def test_later_pods_pinned_to_first_pods_gpu(self, gh_ctx, monkeypatch, command, n_pods):
         monkeypatch.setenv("COMMENT_BODY", command)
@@ -564,9 +564,9 @@ class TestBadInput:
         ((_, body),) = gh_ctx["comments"]
         for snippet in (
             "/ci sft --num-samples 5M",  # concrete example, not just grammar
-            "/ci ppo --start-from",
+            "/ci rl --start-from",
             "/ci compare sft",
-            "/ci compare ppo --start-from",
+            "/ci compare rl --start-from",
             "assert pr:val/thput@8 > main:val/thput@8",
             "/ci sweep sft",
             "/ci pods",

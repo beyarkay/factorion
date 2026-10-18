@@ -33,12 +33,14 @@ from factorion import (
     count_dangling_inserters,
 )
 from helpers import (
+    power,
     build_factory_graph,
     make_world,
     set_assembler,
     set_entity,
     set_splitter,
 )
+
 
 
 # Entity-name → grid-registry char, for the canonical ``<char>@x,y`` node
@@ -89,7 +91,7 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 1, 0, "transport_belt", Direction.EAST)
         set_entity(w, 2, 0, "transport_belt", Direction.EAST)
         set_entity(w, 3, 0, "sink", Direction.EAST, "copper_cable")
-        nodes, edges = _summary(build_factory_graph(w))
+        nodes, edges = _summary(build_factory_graph(power(w)))
         b1l, b1r = _lanes("transport_belt", 1, 0)
         b2l, b2r = _lanes("transport_belt", 2, 0)
         assert nodes == {
@@ -117,7 +119,7 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 2, 0, "transport_belt", Direction.EAST)
         set_entity(w, 3, 0, "inserter", Direction.EAST)
         set_entity(w, 4, 0, "sink", Direction.EAST, "copper_cable")
-        nodes, edges = _summary(build_factory_graph(w))
+        nodes, edges = _summary(build_factory_graph(power(w)))
         bl, br = _lanes("transport_belt", 2, 0)
         assert nodes == {
             _n("stack_inserter", 0, 0),
@@ -145,7 +147,7 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 0, 0, "source", Direction.EAST, "copper_cable")
         set_entity(w, 2, 0, "long_handed_inserter", Direction.EAST)
         set_entity(w, 4, 0, "sink", Direction.EAST, "copper_cable")
-        nodes, edges = _summary(build_factory_graph(w))
+        nodes, edges = _summary(build_factory_graph(power(w)))
         assert nodes == {
             _n("stack_inserter", 0, 0),
             _n("long_handed_inserter", 2, 0),
@@ -164,7 +166,7 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 0, 0, "transport_belt", Direction.EAST)
         set_entity(w, 1, 0, "long_handed_inserter", Direction.EAST)
         set_entity(w, 2, 0, "transport_belt", Direction.EAST)
-        nodes, edges = _summary(build_factory_graph(w))
+        nodes, edges = _summary(build_factory_graph(power(w)))
         assert nodes == {
             *_lanes("transport_belt", 0, 0),
             _n("long_handed_inserter", 1, 0),
@@ -214,7 +216,7 @@ class TestHandcraftedGraphSnapshots:
         w = make_world(6)
         set_entity(w, 1, 1, "inserter", Direction.EAST)
         set_entity(w, 2, 1, "inserter", Direction.EAST)
-        nodes, edges = _summary(build_factory_graph(w))
+        nodes, edges = _summary(build_factory_graph(power(w)))
         assert nodes == {_n("inserter", 1, 1), _n("inserter", 2, 1)}
         assert edges == set()
 
@@ -229,15 +231,15 @@ class TestHandcraftedGraphSnapshots:
         set_assembler(w, 4, 6, "heat_pipe")
         set_entity(w, 7, 7, "inserter", Direction.EAST)
         set_entity(w, 8, 7, "sink", Direction.EAST, "heat_pipe")
-        assert count_dangling_inserters(w.permute(2, 0, 1)) == (1, 0)
+        assert count_dangling_inserters(power(w).permute(2, 0, 1)) == (1, 0)
 
         # Routing the belt to the aft cell wires it; a bare inserter dangles
         # on both sides, and inserter → inserter never counts as either.
         set_entity(w, 4, 10, "transport_belt", Direction.EAST)
-        assert count_dangling_inserters(w.permute(2, 0, 1)) == (0, 0)
+        assert count_dangling_inserters(power(w).permute(2, 0, 1)) == (0, 0)
         set_entity(w, 0, 0, "long_handed_inserter", Direction.EAST)
         set_entity(w, 1, 0, "inserter", Direction.EAST)
-        assert count_dangling_inserters(w.permute(2, 0, 1)) == (2, 2)
+        assert count_dangling_inserters(power(w).permute(2, 0, 1)) == (2, 2)
 
     def test_opposing_belts_do_not_connect(self):
         # A belt never feeds a belt pointing straight back at it.
@@ -255,7 +257,7 @@ class TestHandcraftedGraphSnapshots:
         w = make_world(5)
         set_entity(w, 0, 0, "source", Direction.EAST, "copper_cable")
         set_entity(w, 1, 0, "transport_belt", Direction.EAST)
-        _, edges = _summary(build_factory_graph(w))
+        _, edges = _summary(build_factory_graph(power(w)))
         bl, br = _lanes("transport_belt", 1, 0)
         # A source fills BOTH lanes of the belt it points into.
         assert edges == {
@@ -267,7 +269,7 @@ class TestHandcraftedGraphSnapshots:
         w = make_world(5)
         set_entity(w, 0, 0, "transport_belt", Direction.EAST)
         set_entity(w, 1, 0, "sink", Direction.EAST, "copper_cable")
-        _, edges = _summary(build_factory_graph(w))
+        _, edges = _summary(build_factory_graph(power(w)))
         bl, br = _lanes("transport_belt", 0, 0)
         # A sink drains BOTH lanes of the belt feeding it.
         assert edges == {
@@ -345,7 +347,7 @@ class TestAssemblerGraphSnapshots:
         # output inserter east of the body, facing away from the assembler
         set_entity(w, ax + 3, ay + 1, "inserter", Direction.EAST)
         set_entity(w, ax + 4, ay + 1, "sink", Direction.EAST, "copper_cable")
-        nodes, edges = _summary(build_factory_graph(w))
+        nodes, edges = _summary(build_factory_graph(power(w)))
         assert nodes == {
             _n("assembling_machine_1", 4, 4),
             _n("stack_inserter", 2, 5),
@@ -371,7 +373,7 @@ def _graph_of_generated(kind, seed, size=10):
     if factory is None:
         return None
     world_CWH, _ = blank_entities(factory, num_missing_entities=0)
-    return build_factory_graph(world_CWH.permute(1, 2, 0))
+    return build_factory_graph(power(world_CWH.permute(1, 2, 0)))
 
 
 # Every lesson kind whose generator wires a source → … → sink chain. These
@@ -382,8 +384,6 @@ _CONNECTIVITY_KINDS = [
     LessonKind.MOVE_VIA_UG_BELT,
     LessonKind.SPLITTER_SPLIT,
     LessonKind.SPLITTER_MERGE_SIDELOADED,
-    # LessonKind.ASSEMBLE_1IN_1OUT,
-    # LessonKind.ASSEMBLE_2IN_1OUT,
 ]
 
 class TestGeneratedWorldConnectivity:
@@ -423,7 +423,7 @@ class TestGeneratedWorldConnectivity:
         if factory is None:
             pytest.skip(f"{kind.name} seed={seed}: layout search returned None")
         world_CWH, _ = blank_entities(factory, num_missing_entities=0)
-        graph = build_factory_graph(world_CWH.permute(1, 2, 0))
+        graph = build_factory_graph(power(world_CWH.permute(1, 2, 0)))
         ent_ch = world_CWH[0]
         non_empty = int((ent_ch != 0).sum().item())
         assert 0 < graph.number_of_nodes() <= 2 * non_empty, (

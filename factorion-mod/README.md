@@ -1,8 +1,8 @@
 # Factorion Mod
 
 A Factorio mod + local Python server that lets you ask a trained
-Factorion policy to design a factory layout from inside the game and
-place the predicted entities directly into the world as the model runs.
+Factorion model to design a factory layout from inside the game and
+place the predicted entities directly into the world.
 
 ## Round trip
 
@@ -80,51 +80,48 @@ factorion-mod/
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
 │   └── prototypes/           ← endpoint belts, footprint tool, hotkeys, GPU server
-├── server/                   ← local inference daemon + parity harness
-│   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
-│   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
-│   ├── rcon.py               ← shared minimal Source-RCON client
-│   ├── blueprint.py          ← tensor → blueprint utility used by tests/tooling
-│   └── README.md
 └── scripts/
     ├── install_mod.sh        ← symlink mod/ into Factorio's mods dir
     ├── serve.sh              ← one-command GUI setup + W&B/local model server
     ├── launch.sh             ← spawn Factorio with auto-RCON + start server (headless)
     └── parity_launch.sh      ← headless Factorio + parity harness, one command
+
+factorion_server/             ← the Python side (repo root, so it's importable)
+├── server.py                 ← RCON poll loop → denoiser (best of 8 builds) → RCON push
+├── parity.py                 ← engine ↔ Factorio throughput comparison (issue #261)
+├── rcon.py                   ← shared minimal Source-RCON client
+├── blueprint.py              ← tensor → blueprint utility used by tests/tooling
+└── README.md
 ```
 
 ## Quick start (GUI)
 
-1. Configure GUI-host RCON once in `config.ini` as described above. Then start
-   the mod from the repo root:
+1. Start the mod from the repo root:
 
    ```bash
    ./start-mod.sh
    ```
 
    This installs dependencies and builds the Rust extension when needed,
-   installs and enables the mod, and waits for Factorio.
+   installs and enables the mod, enables GUI-host RCON in `config.ini` if it
+   isn't (quit Factorio first), and waits for Factorio.
 
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
 The model is chosen in-game: **Settings → Mod settings → Map → Factorion
-checkpoint** takes a bare W&B run id (default `mvbipbr0`), `entity/project/id`,
-or a local `.pt` path on the server's machine. On a new game or a change to
-the setting, the mod asks the server to load it; the server downloads the run's
-latest model artifact, reads its grid and encoder architecture from the W&B
-config, and reports the grid size back. The region tool then stamps a region
-of that size. Loaded models stay cached, so switching back is instant.
+checkpoint** takes a bare W&B run id (default: the release's checkpoint),
+`entity/project/id`, or a local `.pt` path on the server's machine. On a new
+game or a change to the setting, the mod asks the server to load it; the server
+downloads the run's checkpoint from a GitHub release that carries it, or else
+the run's latest W&B model artifact, and reports its grid size (`--grid-size`,
+default 32) back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
 
 For a manual or headless setup, start the server directly:
 
 ```bash
-uv run python factorion-mod/server/server.py \
+uv run python -m factorion_server \
   --rcon-port 64502 --rcon-password <pw>
 ```
-
-For local files, an `agent.hp.json` sidecar with
-`{"grid_size": 15, "layers": [93, 69, 96], "kernel_size": 3}` is read
-automatically.
 
 3. In Factorio:
 
@@ -136,9 +133,10 @@ automatically.
      ordinary belts. Click each endpoint to choose its item, and hover it and
      press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
-   - Each predicted entity is placed directly into the marked region as soon
-     as the model emits it. When the model stops, chat reports how many
-     steps it took, how many were invalid, and why inference ended.
+   - The server generates eight factories around your markers, keeps the
+     highest-throughput one, and places its entities into the marked region
+     one by one, building around any entities already there. Chat then
+     reports how many it placed and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
 
@@ -160,7 +158,7 @@ same factory inside the game, and compares measured per-sink items/s.
    build_factory(lesson, seed)
    world → spec JSON        ──ᴿᶜᴼᴺ──►      parity_start(spec):
    py_sink_deliveries(world)                 lab-tiles surface, own force,
-                                             EEI+substation power, entities
+                                             off-map power ring, entities
    poll parity_poll()       ◄──ᴿᶜᴼᴺ──       warmup → measure at game.speed≫1
    compare per-sink rates                    per-sink counts + diagnostics
 ```
@@ -180,7 +178,7 @@ Or against an already-running instance (headless or GUI host, same RCON
 setup as above):
 
 ```bash
-uv run python factorion-mod/server/parity.py \
+uv run python -m factorion_server.parity \
   --rcon-port 64502 --rcon-password <pw> \
   --lessons MOVE_ONE_ITEM,SPLITTER_SPLIT --seeds 5 --size 15
 ```
@@ -235,7 +233,9 @@ To check on the first live run (in rough order):
 3. `create_entity` direction semantics for inserters match blueprint
    import (the +8 flip) — MEMORISE lessons stall at 0/s if wrong.
 4. Power: machines/inserters show `working`, not `no_power`, in
-   `status_counts` (substation ring + electric-energy-interface).
+   `status_counts` — powered only by the factory's own poles, which wire
+   to the ring of off-map poles around its grid exactly when the engine
+   says they reach off the map.
 5. AM1 accepts 3-5-ingredient recipes on the all-recipes force
    (MEMORISE_3..\_5 lessons).
 6. `game.speed` actually reached (wall-clock per run ≈
@@ -267,8 +267,6 @@ Server-callable remote methods exposed by the mod:
   mining, rotation, copy/paste, blueprint, and Alt-mode behavior.
 - Model actions stream over RCON and create real entities in the player's
   world; rerun/reset cleanup is limited to entities created by the mod.
-- `eot_head` is wired as the iterative stop signal (PPO PR #103 landed
-  via the main-merge).
 
 ### What doesn't work / wasn't possible
 
@@ -289,10 +287,6 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
-- **Full multi-tile action masking.** The tile head masks occupied anchor
-  tiles, and Factorio rejects a streamed entity whose rotated footprint lies
-  outside the region or hits an entity crossing its edge. The model-side mask does not
-  yet pre-mask every invalid multi-tile anchor.
 - **Cross-platform `launch.sh` binary discovery**. macOS Steam install
   verified; Linux / Windows paths are heuristics. Override with
   `FACTORIO_BIN=…` if it can't find yours.
