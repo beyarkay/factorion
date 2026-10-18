@@ -522,6 +522,7 @@ def train_sft(args: SftArgs):
         else "cpu"
     )
     assert_device_ok(device)
+    torch.backends.cudnn.benchmark = True
 
     train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
     factories = build_eval_factories(args)
@@ -548,11 +549,14 @@ def train_sft(args: SftArgs):
     model.amp = args.amp and device.type == "cuda"
     ema = copy.deepcopy(model).requires_grad_(False)
     ema.eval()
+    ema_params, model_params = list(ema.parameters()), list(model.parameters())
     # The compiled module shares the model's parameters; generation and the
     # val metrics run on the EMA copy, uncompiled (their shapes vary).
     fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+    optimizer = optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99), fused=device.type == "cuda"
+    )
     total_steps = max(1, math.ceil(args.num_samples / args.batch_size))
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
@@ -635,8 +639,7 @@ def train_sft(args: SftArgs):
         scheduler.step()
         decay = min(args.ema_decay, (1 + step) / (10 + step))
         with torch.no_grad():
-            for pe, pm in zip(ema.parameters(), model.parameters()):
-                pe.lerp_(pm, 1 - decay)
+            torch._foreach_lerp_(ema_params, model_params, 1 - decay)
         step += 1
         samples_seen += state.shape[0]
         window_samples += state.shape[0]

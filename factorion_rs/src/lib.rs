@@ -48,6 +48,8 @@ use graph::{build_graph, unit_anchors};
 #[cfg(feature = "pyo3-bindings")]
 use power::PowerMap;
 #[cfg(feature = "pyo3-bindings")]
+use rayon::prelude::*;
+#[cfg(feature = "pyo3-bindings")]
 use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
 use std::collections::HashMap;
@@ -85,17 +87,24 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
 fn py_power_map(py: Python<'_>, worlds: PyReadonlyArray4<i64>) -> Py<numpy::PyArray3<bool>> {
     let worlds = worlds.as_array();
     let (b, w, h, c) = worlds.dim();
-    let mut out = numpy::ndarray::Array3::from_elem((b, w, h), false);
-    for (i, view) in worlds.outer_iter().enumerate() {
-        let world = World::new(view.iter().copied().collect(), w, h, c);
-        let map = PowerMap::of(&world);
-        for x in 0..w {
-            for y in 0..h {
-                out[[i, x, y]] = map.tile(x, y);
-            }
-        }
-    }
-    out.into_pyarray(py).unbind()
+    let worlds: Vec<World> = worlds
+        .outer_iter()
+        .map(|view| World::new(view.iter().copied().collect(), w, h, c))
+        .collect();
+    // Training refreshes a whole batch's power between two forwards, with the
+    // GPU waiting on it.
+    let maps: Vec<Vec<bool>> = py.allow_threads(|| {
+        worlds
+            .par_iter()
+            .map(|world| {
+                let map = PowerMap::of(world);
+                (0..w * h).map(|i| map.tile(i / h, i % h)).collect()
+            })
+            .collect()
+    });
+    numpy::ndarray::Array3::from_shape_fn((b, w, h), |(i, x, y)| maps[i][x * h + y])
+        .into_pyarray(py)
+        .unbind()
 }
 
 /// `world` with medium poles on its free tiles powering every inserter and
