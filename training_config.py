@@ -74,7 +74,7 @@ class SharedArgs:
     """No checkpoint goes to W&B before the run is this old (the pending best
     uploads at the first eval after): short smoke/sweep runs are rarely
     resumed from, and their checkpoints were half the storage quota."""
-    box_frac: float = 0.25
+    box_frac: float = 0.75
     """fraction of lessons (SFT and RL, training and held-out alike) built
     inside a random box, every tile outside it unbuildable
     (`sft.boxed_factory`): the buildable area in the game is whatever the
