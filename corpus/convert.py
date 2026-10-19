@@ -81,7 +81,7 @@ class Raster:
     misc: np.ndarray
     inst: np.ndarray
     tiles: np.ndarray  # tile count of each instance
-    unknown: frozenset[str]
+    masked: list[tuple[str, int, int, int, int]]  # name, x, y, w, h
 
 
 def rasterise(bp: dict) -> Optional[Raster]:
@@ -108,8 +108,7 @@ def rasterise(bp: dict) -> Optional[Raster]:
     W = max(p[2] + p[4] for p in placed) - min_x
     H = max(p[3] + p[5] for p in placed) - min_y
     z = [np.zeros((W, H), np.int64) for _ in range(5)]
-    r = Raster(z[0], z[1], z[2], z[3], z[4], np.zeros(0, np.int64), frozenset())
-    unknown = set()
+    r = Raster(z[0], z[1], z[2], z[3], z[4], np.zeros(0, np.int64), [])
     ugs = []
     for i, (name, d, x0, y0, w, h, e) in enumerate(placed, 1):
         sl = (slice(x0 - min_x, x0 - min_x + w), slice(y0 - min_y, y0 - min_y + h))
@@ -123,7 +122,7 @@ def rasterise(bp: dict) -> Optional[Raster]:
         if "inserter" in name:
             d = (d + 8) % 16  # blueprint faces the drop tile, the engine the pickup
         if ent is None or d not in _DIR16:
-            unknown.add(name)
+            r.masked.append((name, sl[0].start, sl[1].start, w, h))
             r.inst[sl] = -1
             continue
         r.ent[sl], r.item[sl], r.inst[sl] = ent, item, i
@@ -131,7 +130,6 @@ def rasterise(bp: dict) -> Optional[Raster]:
         if ent == _UG:
             r.misc[sl] = Misc.UNDERGROUND_DOWN.value if e.get("type") == "input" else Misc.UNDERGROUND_UP.value
             ugs.append((sl[0].start, sl[1].start, name))
-    r.unknown = frozenset(unknown)
     _mask_repaired_undergrounds(r, ugs)
     r.tiles = np.bincount(r.inst[r.inst > 0], minlength=len(placed) + 1)
     return r if (r.inst > 0).any() else None
@@ -167,7 +165,18 @@ def _mask_repaired_undergrounds(r: Raster, ugs: list[tuple[int, int, str]]) -> N
                 for tx, ty in filter(None, [(x, y), truth[(x, y)]]):
                     r.ent[tx, ty] = r.misc[tx, ty] = 0
                     r.inst[tx, ty] = -1
+                    r.masked.append((tier[(tx, ty)], tx, ty, 1, 1))
                 changed = True
+
+
+def to_world(r: Raster) -> np.ndarray:
+    """The whole of `r` as a (C, W, H) world, masked tiles unbuildable."""
+    world = np.zeros((len(Channel), *r.ent.shape), np.int64)
+    for c, a in zip((Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC), (r.ent, r.dir, r.item, r.misc)):
+        world[c.value] = a
+    world[Channel.FOOTPRINT.value] = r.inst >= 0
+    refresh_power(torch.from_numpy(world))
+    return world
 
 
 # Clockwise quarter turn and east-west mirror of the facing channel.

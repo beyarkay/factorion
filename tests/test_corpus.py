@@ -70,7 +70,7 @@ def test_tiers_collapse_and_unmodelled_entities_mask():
     assert r.ent[1, 0] == str2ent("inserter").value
     assert (r.ent[3:6, 0:3] == str2ent("assembling_machine_1").value).all()
     assert r.inst[2, 0] == -1 and (r.inst[6:9, 0:3] == -1).all()
-    assert r.unknown == {"steel-chest", "assembling-machine-2"}
+    assert {m[0] for m in r.masked} == {"steel-chest", "assembling-machine-2"}
 
 
 def test_mod_entities_reject_the_blueprint():

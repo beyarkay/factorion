@@ -7,7 +7,9 @@ carry their item's Factorio icon, inserters point the way items move
 (long-handed ones mark their two-tile reach), small and medium poles are
 lightning bolts over the tiles they power (the 2x2 poles show their icons),
 chests, furnaces and inert entities are boxes with their own icon, and
-unbuildable tiles are hatched.
+unbuildable tiles are hatched. Entities the engine doesn't model (masked out
+of a human blueprint, `corpus.convert`) are boxes labelled with their
+Factorio name.
 
 Usage:
     uv run python scripts/render_png.py --kind OPPOSITE_SIDES_1IN --seed 3 --out factory.png
@@ -48,7 +50,7 @@ C = dict(
     unbuildable="#4a4a4a", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
     belt_dark="#6b4e0c", splitter="#55595e", asm="#c9c3b6", asm_edge="#5d5a52", inserter="#f2c200",
     inserter_edge="#7a6200", long="#e07b00", pole="#1f6fd1", source="#1e9e4a", sink="#7b3fa0",
-    chest="#c7a26b", furnace="#e3a07a", inert="#b4c0cc",
+    chest="#c7a26b", furnace="#e3a07a", inert="#b4c0cc", masked="#c98b8b", masked_edge="#7a2e2e",
 )
 BOXED = {str2ent(n).value: C[kind] for kind, names in (("chest", CHESTS), ("furnace", FURNACES), ("inert", INERT)) for n in names}
 BELT_W = 0.8
@@ -61,10 +63,11 @@ def _icon(item_id: int):
     return mpimg.imread(path) if path.exists() else None
 
 
-def draw(world_CWH, ax, title="", crop=None):
+def draw(world_CWH, ax, title="", crop=None, masked=()):
     """Draw a (C, W, H) world onto `ax`. `crop` = (x0, x1, y0, y1), exclusive
     ends; everything is drawn and the axes clip it, so an entity straddling the
-    crop shows its visible part."""
+    crop shows its visible part. `masked` = (name, x, y, w, h) boxes of the
+    unmodelled entities."""
     w = torch.as_tensor(world_CWH).to("cpu", torch.int64, copy=True)
     refresh_power(w)
     w = w.numpy()
@@ -206,6 +209,12 @@ def draw(world_CWH, ax, title="", crop=None):
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
+    for name, mx, my, mw, mh in masked:
+        ax.add_patch(Rectangle((mx + 0.06, my + 0.06), mw - 0.12, mh - 0.12, facecolor=C["masked"],
+                               edgecolor=C["masked_edge"], lw=0.8, zorder=2))
+        ax.text(mx + mw / 2, my + mh / 2, name, ha="center", va="center", fontsize=min(4, 2.2 * max(mw, mh)),
+                rotation=90 if mh > mw else 0, color=C["masked_edge"], clip_on=True, zorder=7)
+
     ax.set_title(title, fontsize=8)
 
 
@@ -224,13 +233,16 @@ LEGEND = [
     Patch(facecolor=C["source"], label="source (item icon)"),
     Patch(facecolor=C["sink"], label="sink (item icon)"),
     Patch(facecolor=C["unbuildable"], hatch="///", label="unbuildable"),
+    Patch(facecolor=C["masked"], edgecolor=C["masked_edge"], label="unmodelled entity (masked)"),
 ]
 
 
-def save(world_CWH, path, title="", crop=None):
+def save(world_CWH, path, title="", crop=None, masked=()):
     x0, x1, y0, y1 = crop or (0, world_CWH.shape[1], 0, world_CWH.shape[2])
-    fig, ax = plt.subplots(figsize=(0.4 * (x1 - x0) + 2.8, 0.4 * (y1 - y0) + 0.5))
-    draw(world_CWH, ax, title, crop)
+    # Big human blueprints shrink their tiles to stay a viewable image.
+    inch = min(0.4, 60 / max(x1 - x0, y1 - y0))
+    fig, ax = plt.subplots(figsize=(inch * (x1 - x0) + 2.8, inch * (y1 - y0) + 0.5))
+    draw(world_CWH, ax, title, crop, masked)
     ax.legend(handles=LEGEND, loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=6, frameon=False)
     fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)
