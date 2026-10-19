@@ -21,18 +21,19 @@ from typing import Iterator, Optional
 import numpy as np
 import torch
 
-from factorion import POLE_ENT_IDS, Channel, Direction, Footprint, Misc, refresh_power, str2ent, str2item
+from factorion import UNDIRECTED_ENT_IDS, Channel, Direction, Footprint, Misc, refresh_power, str2ent, str2item
 from denoise import _ASM_RECIPE_ITEM_IDS
 
 # Placement footprint of every base / Space Age / Quality / Elevated Rails
 # entity, dumped from the headless game's prototypes (`corpus/README.md`).
 _SIZES: dict[str, list] = json.loads((Path(__file__).parent / "entity_sizes.json").read_text())
+_LOGISTIC = ("active-provider", "passive-provider", "storage", "requester", "buffer")
 # 1.1 names whose 2.0 prototype was renamed.
 _SIZES |= {
     "curved-rail": _SIZES["legacy-curved-rail"],
     "filter-inserter": [1, 1, "base"],
     "stack-filter-inserter": [1, 1, "base"],
-    **{f"logistic-chest-{k}": [1, 1, "base"] for k in ("active-provider", "passive-provider", "storage", "requester", "buffer")},
+    **{f"logistic-chest-{k}": [1, 1, "base"] for k in _LOGISTIC},
 }
 
 _INSERTERS = ("burner-inserter", "inserter", "fast-inserter", "filter-inserter", "stack-inserter", "stack-filter-inserter", "bulk-inserter")
@@ -47,7 +48,17 @@ _KNOWN: dict[str, int] = {
     **{n: str2ent("inserter").value for n in _INSERTERS},
     "long-handed-inserter": str2ent("long_handed_inserter").value,
     **{f"assembling-machine-{i}": str2ent("assembling_machine_1").value for i in (1, 2, 3)},
-    **{n: str2ent(n.replace("-", "_")).value for n in ("small-electric-pole", "medium-electric-pole", "substation")},
+    **{
+        n: str2ent(n.replace("-", "_")).value
+        for n in (
+            "small-electric-pole", "medium-electric-pole", "big-electric-pole", "substation",
+            "wooden-chest", "iron-chest", "steel-chest", "stone-furnace", "steel-furnace", "electric-furnace",
+            "solar-panel", "accumulator", "roboport", "radar", "small-lamp", "stone-wall",
+        )
+    },
+    # Robots, and so what a logistic chest requests or provides, are off the
+    # map: in the factory it is a steel chest.
+    **{n: str2ent("steel_chest").value for k in _LOGISTIC for n in (f"{k}-chest", f"logistic-chest-{k}")},
 }
 _ASM = str2ent("assembling_machine_1").value
 _UG = str2ent("underground_belt").value
@@ -129,7 +140,7 @@ def rasterise(bp: dict) -> Optional[Raster]:
             r.inst[sl] = -1
             continue
         r.ent[sl], r.item[sl], r.inst[sl] = ent, item, i
-        r.dir[sl] = Direction.NONE.value if ent in POLE_ENT_IDS else _DIR16[d]
+        r.dir[sl] = Direction.NONE.value if ent in UNDIRECTED_ENT_IDS else _DIR16[d]
         if ent == _UG:
             r.misc[sl] = Misc.UNDERGROUND_DOWN.value if e.get("type") == "input" else Misc.UNDERGROUND_UP.value
             ugs.append((sl[0].start, sl[1].start, name))

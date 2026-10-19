@@ -22,7 +22,9 @@ cached.
 - `rasterise` lays a blueprint on its bounding box. Higher belt tiers become
   yellow, every inserter variant becomes `inserter`, and assembling machines
   1–3 become `assembling_machine_1` when the engine knows their recipe.
-  Small and medium poles and substations stay as they are.
+  Every logistic chest becomes a steel chest. Poles, wooden, iron and steel
+  chests, furnaces (which carry no recipe), solar panels, accumulators,
+  roboports, radars, lamps and stone walls stay as they are.
 - Everything else is **masked**: its footprint becomes unbuildable, so the
   denoiser sees a wall and no loss reaches it. That covers the entity, an
   assembler whose recipe the engine doesn't know, and an underground pair that

@@ -63,7 +63,7 @@ def test_tiers_collapse_and_unmodelled_entities_mask():
         _bp(
             ("express-transport-belt", 0.5, 0.5, {"direction": 4}),
             ("fast-inserter", 1.5, 0.5, {"direction": 4}),
-            ("steel-chest", 2.5, 0.5, {}),
+            ("pipe", 2.5, 0.5, {}),
             ("assembling-machine-3", 4.5, 1.5, {"recipe": "iron-gear-wheel"}),
             ("assembling-machine-2", 7.5, 1.5, {"recipe": "rocket-fuel"}),
         )
@@ -72,7 +72,53 @@ def test_tiers_collapse_and_unmodelled_entities_mask():
     assert r.ent[1, 0] == str2ent("inserter").value
     assert (r.ent[3:6, 0:3] == str2ent("assembling_machine_1").value).all()
     assert r.inst[2, 0] == -1 and (r.inst[6:9, 0:3] == -1).all()
-    assert {m[0] for m in r.masked} == {"steel-chest", "assembling-machine-2"}
+    assert {m[0] for m in r.masked} == {"pipe", "assembling-machine-2"}
+
+
+# Every entity that only human blueprints use.
+HUMAN_ONLY = (
+    "wooden_chest", "iron_chest", "steel_chest", "stone_furnace", "steel_furnace", "electric_furnace",
+    "big_electric_pole", "solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall",
+)
+
+
+def test_human_only_entities_round_trip_through_a_blueprint():
+    world = np.zeros((len(Channel), 5 * len(HUMAN_ONLY), 4), np.int64)
+    for i, name in enumerate(HUMAN_ONLY):
+        e = str2ent(name)
+        world[Channel.ENTITIES.value, 5 * i : 5 * i + e.width, : e.height] = e.value
+    r = _raster(world_tensor_to_blueprint_dict(world)["blueprint"])
+    assert not r.masked
+    for got, c in zip((r.ent, r.dir, r.item, r.misc), (Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC)):
+        np.testing.assert_array_equal(got, world[c.value, : r.ent.shape[0]])
+
+
+def test_human_only_entities_are_kept_not_masked():
+    r = _raster(
+        _bp(
+            ("stone-furnace", 1, 1, {}),
+            ("electric-furnace", 3.5, 1.5, {}),
+            ("wooden-chest", 5.5, 0.5, {}),
+            ("passive-provider-chest", 6.5, 0.5, {}),
+            ("big-electric-pole", 8, 1, {}),
+            ("roboport", 11, 2, {}),
+        )
+    )
+    assert not r.masked
+    assert (r.ent[0:2, 0:2] == str2ent("stone_furnace").value).all()
+    assert (r.ent[2:5, 0:3] == str2ent("electric_furnace").value).all()
+    # A furnace picks its recipe from what it is fed.
+    assert not r.item.any()
+    assert r.ent[5, 0] == str2ent("wooden_chest").value
+    assert r.ent[6, 0] == str2ent("steel_chest").value
+    assert (r.ent[7:9, 0:2] == str2ent("big_electric_pole").value).all()
+    assert (r.ent[9:13, 0:4] == str2ent("roboport").value).all()
+    assert not r.dir.any()
+
+
+def test_1_1_logistic_chests_are_steel_chests():
+    r = _raster(_bp(("logistic-chest-requester", 0.5, 0.5, {}), ("inserter", 1.5, 0.5, {"direction": 2}), version=1))
+    assert r.ent[0, 0] == str2ent("steel_chest").value
 
 
 def test_mod_entities_reject_the_blueprint():
