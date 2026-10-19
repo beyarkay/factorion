@@ -136,9 +136,9 @@ class SftArgs(SharedArgs):
     num_samples: int = 20_000_000
     """corrupted training examples to train on. Factories are generated on the
     fly by DataLoader workers, each one used for `noise_repeats` examples."""
-    batch_size: int = 256
+    batch_size: int = 128
     """corrupted examples per optimizer step"""
-    noise_repeats: int = 4
+    noise_repeats: int = 1
     """examples per generated factory, each at its own noise level; amortises
     factory generation, the CPU-side bottleneck"""
     noise_zero_frac: float = 0.05
@@ -160,7 +160,7 @@ class SftArgs(SharedArgs):
     """rotary self-attention blocks over the bottleneck cells"""
     attn_heads: int = 8
     """heads of each attention block (head dim must be a multiple of 4)"""
-    lr: float = 3e-4
+    lr: float = 1.5e-3
     """peak learning rate, held flat for the whole stable phase"""
     warmup_steps: int = 500
     """optimizer steps of linear warmup up to lr — absolute, not a fraction, so

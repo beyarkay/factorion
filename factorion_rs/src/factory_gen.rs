@@ -314,6 +314,66 @@ fn find_belt_paths(
     routes: Routes,
     hug: &HashSet<Cell>,
 ) -> Vec<Vec<UgPlacement>> {
+    ROUTE_SCRATCH.with_borrow_mut(|scratch| {
+        find_belt_paths_in(
+            scratch,
+            start,
+            end,
+            end_dir,
+            size,
+            blocked,
+            underground,
+            routes,
+            hug,
+        )
+    })
+}
+
+/// A search state `(x, y, arrival_dir_value)`; arrival_dir 0 == "free" (the start).
+type RouteState = (i64, i64, i64);
+
+/// `find_belt_paths`' tables, kept between calls: a generator routes hundreds
+/// of times per factory, and allocating them afresh dominated the search.
+#[derive(Default)]
+struct RouteScratch {
+    blocked: Vec<bool>,
+    seen: Vec<bool>,
+    hugging: Vec<bool>,
+    dist: Vec<u64>,
+    preds: Vec<Vec<RouteState>>,
+    pq: Vec<VecDeque<RouteState>>,
+}
+
+thread_local! {
+    static ROUTE_SCRATCH: std::cell::RefCell<RouteScratch> = Default::default();
+}
+
+/// `v` holding `n` copies of `value`, reusing its allocation.
+fn refill<T: Clone>(v: &mut Vec<T>, n: usize, value: T) {
+    v.clear();
+    v.resize(n, value);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_belt_paths_in(
+    scratch: &mut RouteScratch,
+    start: Cell,
+    end: Cell,
+    end_dir: Direction,
+    size: i64,
+    blocked: &HashSet<Cell>,
+    underground: Underground,
+    routes: Routes,
+    hug: &HashSet<Cell>,
+) -> Vec<Vec<UgPlacement>> {
+    let RouteScratch {
+        blocked: blocked_grid,
+        seen,
+        hugging: hugging_grid,
+        dist,
+        preds,
+        pq,
+    } = scratch;
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
     if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
         return vec![];
@@ -334,14 +394,13 @@ fn find_belt_paths(
         Underground::On(start_dir) => (true, start_dir.map_or(0, |d| d as i64)),
     };
 
-    // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
-    type State = (i64, i64, i64);
+    type State = RouteState;
     let start_state: State = (start.0, start.1, start_adir);
 
     // Flat per-cell/per-state tables: hashing dominated the search on big grids.
     let cell = |x: i64, y: i64| (x * size + y) as usize;
     let idx = |(x, y, a): State| cell(x, y) * 5 + a as usize;
-    let mut blocked_grid = vec![false; (size * size) as usize];
+    refill(blocked_grid, (size * size) as usize, false);
     for &c in blocked.iter().filter(|&&c| in_bounds(c)) {
         blocked_grid[cell(c.0, c.1)] = true;
     }
@@ -351,7 +410,7 @@ fn find_belt_paths(
     // fill over cells, blind to arrival direction (so a superset of the
     // search's moves), rules it out in a few steps.
     let open = |c: Cell| in_bounds(c) && !is_blocked(c);
-    let mut seen = vec![false; (size * size) as usize];
+    refill(seen, (size * size) as usize, false);
     seen[cell(end.0, end.1)] = true;
     let mut stack = vec![end];
     loop {
@@ -381,7 +440,7 @@ fn find_belt_paths(
             }
         }
     }
-    let mut hugging_grid = vec![false; (size * size) as usize];
+    refill(hugging_grid, (size * size) as usize, false);
     for &(hx, hy) in hug {
         for (dx, dy) in BFS_DELTAS {
             let c = (hx - dx, hy - dy);
@@ -391,16 +450,20 @@ fn find_belt_paths(
         }
     }
 
-    let mut dist: Vec<u64> = vec![u64::MAX; (size * size * 5) as usize];
+    refill(dist, (size * size * 5) as usize, u64::MAX);
     // Every min-cost incoming edge of a state, as its predecessor state, so all
-    // shortest routes can enumerate.
-    let mut preds: Vec<Vec<State>> = vec![Vec::new(); dist.len()];
+    // shortest routes can enumerate. A list is cleared when this search first
+    // reaches its state, so a previous search's lists are never read.
+    if preds.len() < dist.len() {
+        preds.resize_with(dist.len(), Vec::new);
+    }
     dist[idx(start_state)] = 0;
     // Dial's bucket queue: a ring of FIFO buckets, one per cost modulo its
     // length, pops in (cost, push order) like a heap but in O(1). Every queued
     // cost lies within one maximal edge cost of the one being popped.
     const RING: u64 = 20 * (UNDERGROUND_MAX_OFFSET as u64 + 1) + 1;
-    let mut pq: Vec<VecDeque<State>> = vec![VecDeque::new(); RING as usize];
+    pq.resize_with(RING as usize, VecDeque::new);
+    pq.iter_mut().for_each(VecDeque::clear);
     let mut queued: usize = 1;
     pq[0].push_back(start_state);
     let mut d_so_far: u64 = 0;
@@ -493,7 +556,7 @@ fn find_belt_paths(
             }
             let ns: State = (n.0, n.1, d as i64);
             let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
-            relax(&mut dist, &mut preds, &mut pq, &mut queued, ns, nd, state);
+            relax(dist, preds, pq, &mut queued, ns, nd, state);
         }
 
         // Underground tunnel, continuing straight in the arrival direction.
@@ -531,7 +594,7 @@ fn find_belt_paths(
                 }
                 let ns: State = (surface.0, surface.1, d as i64);
                 let nd = d_so_far + 20 * (span as u64 + 1);
-                relax(&mut dist, &mut preds, &mut pq, &mut queued, ns, nd, state);
+                relax(dist, preds, pq, &mut queued, ns, nd, state);
             }
         }
     }
@@ -609,7 +672,7 @@ fn find_belt_paths(
         walk(
             *gstate,
             start_state,
-            &preds,
+            preds,
             &idx,
             &mut acc,
             tail,
@@ -6775,6 +6838,40 @@ mod tests {
             seen.insert(belt_cells(&paths[0]));
         }
         assert_eq!(seen.len(), 2, "sampling collapsed onto one route");
+    }
+
+    #[test]
+    fn test_routes_ignore_the_previous_search() {
+        // The router keeps its tables between calls; a search on a bigger
+        // grid in between must not leak into the next route.
+        let free = HashSet::new();
+        let block: HashSet<Cell> = [(1, 1)].into_iter().collect();
+        let routes = || {
+            let cap = Routes::First(NonZeroUsize::new(50).unwrap());
+            find_belt_paths(
+                (0, 1),
+                (2, 1),
+                Direction::East,
+                3,
+                &block,
+                Underground::Off,
+                cap,
+                &free,
+            )
+        };
+        let before = routes();
+        let mut rng = Rng::seeded(0);
+        find_belt_paths(
+            (0, 0),
+            (19, 19),
+            Direction::East,
+            20,
+            &free,
+            Underground::On(None),
+            Routes::Sampled(&mut rng),
+            &free,
+        );
+        assert_eq!(routes(), before);
     }
 
     #[test]

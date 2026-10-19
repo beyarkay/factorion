@@ -55,6 +55,7 @@ from factorion import (
     build_factory,
     count_unpowered,
     refresh_power,
+    refresh_power_async,
 )
 
 from training_config import RlArgs, SftArgs, wsd_multiplier
@@ -230,16 +231,22 @@ class FactoryStream(IterableDataset):
     CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, base_seed, box_frac):
+    def __init__(self, size, base_seed, box_frac, args: SftArgs, prior):
         self.size = size
         self.base_seed = base_seed
         self.box_frac = box_frac
+        self.args = args
+        self.prior = prior
 
     def __iter__(self):
+        """(state, its `noise_repeats` corruptions): corrupting here, where
+        the power refresh is off the training step's critical path."""
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        return _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac)
+        for state in _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac):
+            states = state.long().expand(self.args.noise_repeats, -1, -1, -1)
+            yield state, corrupt_states(states, self.args, self.prior).to(torch.uint8)
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
@@ -362,25 +369,42 @@ def noise_prior_from(states: torch.Tensor) -> torch.Tensor:
     return 0.95 * freq / freq.sum() + 0.05 / N_TYPES
 
 
-def denoise_step(model, state, args: SftArgs):
-    """One training batch: corrupt, predict, (unroll), loss. Returns (loss,
-    stats) where stats holds detached per-term values."""
+def corrupt_states(state, args: SftArgs, prior):
+    """`state` with each example's free tiles resampled from `prior` at its own
+    `noise_levels`."""
+    free = free_mask(state)
+    t = noise_levels(state.shape[0], args, state.device)
+    return tokens_to_state(state, free, *corrupt(state_to_tokens(state), free, t, prior))
+
+
+def denoise_step(model, state, noisy, args: SftArgs, scale=1.0):
+    """One training batch: predict `state` from `noisy` (`corrupt_states`),
+    (unroll), and backpropagate `scale` times the loss. Returns (loss, stats),
+    both detached."""
     free = free_mask(state)
     clean = state_to_tokens(state)
-    t = noise_levels(state.shape[0], args, state.device)
-    noisy = corrupt(clean, free, t, model.noise_prior)
-    logits = model(tokens_to_state(state, free, *noisy))
+    weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
+    passes = 2 if args.unroll else 1
+
+    def backward(terms):
+        loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
+        (scale / passes * loss).backward()
+        return {k: v.detach() / passes for k, v in terms.items()}, loss.detach() / passes
+
+    logits = model(noisy)
     terms = model.losses(logits, clean, free)
     if args.unroll:
         # SUNDAE: also denoise the model's own sample of its prediction, the
-        # kind of input every generation step after the first sees.
+        # kind of input every generation step after the first sees. Its power
+        # refresh runs on the CPU while the GPU backpropagates the first pass.
         with torch.no_grad():
-            own = model.pick(logits.detach(), temperature=1.0)
-        terms2 = model.losses(model(tokens_to_state(state, free, *own)), clean, free)
-        terms = {k: (v + terms2[k]) / 2 for k, v in terms.items()}
-    weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
-    loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
-    stats = {k: v.detach() for k, v in terms.items()}
+            own = tokens_to_state(state, free, *model.pick(logits.detach(), temperature=1.0), power=False)
+            powered = refresh_power_async(own)
+    stats, loss = backward(terms)
+    if args.unroll:
+        powered()
+        stats2, loss2 = backward(model.losses(model(own), clean, free))
+        stats, loss = {k: v + stats2[k] for k, v in stats.items()}, loss + loss2
     with torch.no_grad():
         typ_pred = model.pick(logits.detach())[0]
         stats["type_acc"] = ((typ_pred == clean[0]) & free).sum() / free.sum().clamp(min=1)
@@ -522,6 +546,7 @@ def train_sft(args: SftArgs):
         else "cpu"
     )
     assert_device_ok(device)
+    torch.backends.cudnn.benchmark = True
 
     train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
     factories = build_eval_factories(args)
@@ -544,21 +569,30 @@ def train_sft(args: SftArgs):
         prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1, args.box_frac), 256))
         model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
-    model.to(device)
+    # NHWC is cuDNN's native layout; NCHW convs pay a transpose each way.
+    model.to(device, memory_format=torch.channels_last)  # ty: ignore[no-matching-overload]  (torch stubs omit it)
     model.amp = args.amp and device.type == "cuda"
     ema = copy.deepcopy(model).requires_grad_(False)
     ema.eval()
+    ema_params: list[torch.Tensor] = list(ema.parameters())
+    model_params: list[torch.Tensor] = list(model.parameters())
     # The compiled module shares the model's parameters; generation and the
     # val metrics run on the EMA copy, uncompiled (their shapes vary).
     fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
+    if fwd is not model:
+        # Both run on the full logits every training step.
+        for name in ("losses", "pick"):
+            setattr(model, name, torch.compile(getattr(model, name), dynamic=False))
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+    optimizer = optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99), fused=device.type == "cuda"
+    )
     total_steps = max(1, math.ceil(args.num_samples / args.batch_size))
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
-    workers = min(16, os.cpu_count() or 1)
+    workers = min(32, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, train_seed, args.box_frac),
+        FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu()),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",
@@ -595,21 +629,20 @@ def train_sft(args: SftArgs):
     it = iter(loader)
     while samples_seen < args.num_samples:
         t_data = time.time()
-        state_cpu = next(it)
+        state_cpu, noisy_cpu = next(it)
         data_s += time.time() - t_data
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
+        noisy = noisy_cpu.to(device, non_blocking=True).long().flatten(0, 1)
 
         model.train()
-        loss, stats = denoise_step(fwd, state, args)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        loss, stats = denoise_step(fwd, state, noisy, args)
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm or float("inf"))
         optimizer.step()
         scheduler.step()
         decay = min(args.ema_decay, (1 + step) / (10 + step))
         with torch.no_grad():
-            for pe, pm in zip(ema.parameters(), model.parameters()):
-                pe.lerp_(pm, 1 - decay)
+            torch._foreach_lerp_(ema_params, model_params, 1 - decay)
         step += 1
         samples_seen += state.shape[0]
         window_samples += state.shape[0]

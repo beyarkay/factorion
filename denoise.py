@@ -175,9 +175,9 @@ def state_to_tokens(state):
     return typ, L.recipe_lut[s[:, _CH_ITEMS]], s[:, CH_PART]
 
 
-def tokens_to_state(cond, free, typ, recipe, part):
+def tokens_to_state(cond, free, typ, recipe, part, power=True):
     """`cond` with every free tile replaced by its tokens, powered by its own
-    poles."""
+    poles (unless `power` is False: the caller refreshes it)."""
     L = _luts(cond.device)
     edm = L.types[typ]
     tok = torch.stack(
@@ -193,7 +193,8 @@ def tokens_to_state(cond, free, typ, recipe, part):
         dim=1,
     )
     state = torch.where(free.unsqueeze(1), tok, cond.long())
-    refresh_power(state)
+    if power:
+        refresh_power(state)
     return state
 
 
@@ -329,15 +330,20 @@ class DenoiserUNet(nn.Module):
         self.register_buffer("noise_prior", torch.full((N_TYPES,), 1.0 / N_TYPES))
 
     def _embed(self, s):
-        ent = self.ent_embed(s[:, _CH_ENT]).permute(0, 3, 1, 2)
-        item = self.item_embed(s[:, _CH_ITEMS]).permute(0, 3, 1, 2)
+        # One-hot matmuls rather than lookups: an embedding's backward
+        # scatter-adds every tile into a few rows, and the atomics contend.
+        def lookup(emb, idx):
+            return F.one_hot(idx, emb.num_embeddings).to(emb.weight.dtype) @ emb.weight
+
+        ent = lookup(self.ent_embed, s[:, _CH_ENT]).permute(0, 3, 1, 2)
+        item = lookup(self.item_embed, s[:, _CH_ITEMS]).permute(0, 3, 1, 2)
         onehots = [
             F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
             F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
             s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
             s[:, _CH_POWER : _CH_POWER + 1].float(),
         ]
-        part = self.part_embed(s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2)
+        part = lookup(self.part_embed, s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2)
         return torch.cat([ent, item, part, *onehots, (~free_mask(s)).unsqueeze(1).float()], dim=1)
 
     # ── Reading the head logits: one softmax over TYPES, then recipe and
@@ -386,7 +392,7 @@ class DenoiserUNet(nn.Module):
         # Zero padding is a wall tile: the off-grid world is unbuildable.
         s = F.pad(s, (0, ph, 0, pw))
         with torch.autocast(s.device.type, dtype=torch.bfloat16, enabled=self.amp):
-            h = self.stem(self._embed(s))
+            h = self.stem(self._embed(s).contiguous(memory_format=torch.channels_last))
             skips = []
             for i, blocks in enumerate(self.enc):
                 h = blocks(h)

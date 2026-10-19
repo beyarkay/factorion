@@ -97,6 +97,7 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#435](https://github.com/beyarkay/factorion/pull/435) | ❌ | MEMORISE trained on recipe selection only (item head loss): val/thput 0.081 vs 0.496 (p=0.002), FACTORY/MEMORISE ~0 |
 | [#452](https://github.com/beyarkay/factorion/pull/452) | ❌ | Order SFT demos assemblers>inserters>belts>UG: val -0.032, FACTORY_1 +0.14 but MEMORISE worse; can't recover from wrong order |
 | [#467](https://github.com/beyarkay/factorion/pull/467) | ⏳ | Inject random entity errors into SFT trajectories (prob 0.03) with overwrite-fix labels to train repair; stacked on #466 |
+| [#500](https://github.com/beyarkay/factorion/pull/500) | ⏳ | Denoiser SFT at 32x32: lr 3e-4->1.5e-3, bs 256->128, one corruption per factory (noise_repeats 4->1): 2M val/thput@8 0.329->0.624, trial@8 0.072->0.168; ~850->~1300 samples/s on L40S (channels-last, one-hot embeddings, corruption + power off the GPU's critical path, compiled losses, parallel power map, 23% faster lesson generation with identical output) |
 
 ### PPO / RL
 

@@ -31,6 +31,7 @@ from sft import (
     assert_device_ok,
     build_eval_factories,
     build_lesson,
+    corrupt_states,
     cuda_env_info,
     denoise_step,
     generation_metrics,
@@ -100,9 +101,8 @@ def update(model, optimizer, roll: dict, args: RlArgs, gen: SftArgs) -> dict:
         if targets is None:
             continue
         for t in targets.long().split(_CHUNK):
-            loss, _ = denoise_step(model, t, gen)
             w = len(t) / len(targets)
-            (coef * w * loss).backward()
+            loss, _ = denoise_step(model, t, corrupt_states(t, gen, model.noise_prior), gen, coef * w)
             stats[key] = stats.get(key, 0.0) + w * float(loss.detach())
     stats["optim/grad_norm"] = float(torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm))
     optimizer.step()

@@ -14,7 +14,7 @@ import zlib
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import torch
@@ -979,10 +979,27 @@ def build_factory(
 def refresh_power(world: torch.Tensor) -> None:
     """Rewrite the POWER channel of a ``(C, W, H)`` world or ``(B, C, W, H)``
     batch, in place, from its poles."""
+    refresh_power_async(world)()
+
+
+def refresh_power_async(world: torch.Tensor) -> Callable[[], None]:
+    """Start ``refresh_power(world)`` and return the call that finishes it:
+    the copy off the GPU doesn't wait for work queued after it, so a caller
+    can queue some before finishing."""
     batch = world if world.dim() == 4 else world[None]
-    worlds_BWHC = batch.permute(0, 2, 3, 1).to("cpu", torch.int64).contiguous().numpy()
-    powered = torch.from_numpy(factorion_rs.py_power_map(worlds_BWHC))
-    batch[:, Channel.POWER.value] = powered.to(batch.device, batch.dtype)
+    # Every channel fits a byte; copying bytes off the GPU is 8x less to wait on.
+    host = batch.permute(0, 2, 3, 1).to(torch.uint8).contiguous().to("cpu", non_blocking=batch.is_cuda)
+    copied = torch.cuda.Event() if batch.is_cuda else None
+    if copied is not None:
+        copied.record()
+
+    def finish() -> None:
+        if copied is not None:
+            copied.synchronize()
+        powered = torch.from_numpy(factorion_rs.py_power_map(host.numpy().astype(np.int64)))
+        batch[:, Channel.POWER.value] = powered.to(batch.device, batch.dtype)
+
+    return finish
 
 
 def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
