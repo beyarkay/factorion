@@ -322,7 +322,7 @@ _EMPTY_ENT_VAL = str2ent("empty").value
 _SOURCE_ENT_VAL = str2ent("source").value
 _SINK_ENT_VAL = str2ent("sink").value
 _INSERTER_ENT_VALS = torch.tensor([str2ent(n).value for n in ("inserter", "long_handed_inserter")])
-_ASM_ENT_VAL = str2ent("assembling_machine_1").value
+_POWERED_3X3_ENT_VALS = torch.tensor([str2ent(n).value for n in ("assembling_machine_1", "electric_furnace")])
 POLE_ENT_IDS = tuple(
     str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "substation")
 )
@@ -330,7 +330,8 @@ POLE_ENT_IDS = tuple(
 INERT_ENT_IDS = tuple(str2ent(n).value for n in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp"))
 # Entities with no facing, stored with Direction.NONE.
 UNDIRECTED_ENT_IDS = POLE_ENT_IDS + INERT_ENT_IDS + tuple(
-    str2ent(n).value for n in ("wooden_chest", "iron_chest", "steel_chest")
+    str2ent(n).value
+    for n in ("wooden_chest", "iron_chest", "steel_chest", "stone_furnace", "steel_furnace", "electric_furnace")
 )
 _EMPTY_ITEM_VAL = str2item("empty").value
 
@@ -840,11 +841,12 @@ def count_dangling_inserters(world_CWH) -> tuple[int, int]:
 
 
 def count_unpowered(world_CWH) -> int:
-    """Inserters and assemblers no pole powers, which do nothing."""
+    """Inserters, assemblers and electric furnaces no pole powers, which do
+    nothing."""
     ent = world_CWH[Channel.ENTITIES.value]
-    placed = int(torch.isin(ent, _INSERTER_ENT_VALS).sum()) + int((ent == _ASM_ENT_VAL).sum()) // 9
+    placed = int(torch.isin(ent, _INSERTER_ENT_VALS).sum()) + int(torch.isin(ent, _POWERED_3X3_ENT_VALS).sum()) // 9
     nodes, _ = factorion_rs.py_build_graph(world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
-    return placed - sum(n[0] in "ila" for n in nodes)
+    return placed - sum(n[0] in "ilax" for n in nodes)
 
 
 def _remove_entities(

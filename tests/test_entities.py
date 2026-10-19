@@ -3,10 +3,16 @@ footprints, chests, furnaces and the big electric pole."""
 
 import numpy as np
 import pytest
+import torch
 
 from helpers import Channel, LessonKind, Misc, build_factory, entities, str2ent
 import factorion_rs
-from factorion import INERT_ENT_IDS, apply_placement_action
+from factorion import INERT_ENT_IDS, apply_placement_action, count_unpowered
+
+
+def _place(world, x, y, name):
+    action = {"xy": (x, y), "entity": str2ent(name).value, "direction": 0, "item": 0, "misc": Misc.NONE.value}
+    assert apply_placement_action(world, action) is None
 
 
 def _throughput(world_CWH):
@@ -32,3 +38,15 @@ def test_inert_entities_leave_a_lessons_throughput_unchanged(entity):
     # No node of their own, so nothing new is unreachable.
     assert _throughput(world)[1] == _throughput(factory.world_CWH)[1]
     assert (world[Channel.POWER.value] == factory.world_CWH[Channel.POWER.value]).all()
+
+
+def test_only_the_electric_furnace_needs_power():
+    world = torch.zeros((len(Channel), 20, 20), dtype=torch.int64)
+    world[Channel.FOOTPRINT.value] = 1
+    _place(world, 10, 10, "electric_furnace")
+    _place(world, 2, 10, "stone_furnace")
+    _place(world, 5, 10, "steel_furnace")
+    assert count_unpowered(world) == 1
+    _place(world, 13, 10, "medium_electric_pole")
+    _place(world, 16, 10, "medium_electric_pole")
+    assert count_unpowered(world) == 0

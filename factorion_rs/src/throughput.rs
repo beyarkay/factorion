@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
-use crate::types::{get_recipe, Item, Lane};
+use crate::types::{all_items, get_recipe, Item, Lane};
 
 /// Exponent for the factory score's power mean over per-sink deliveries.
 ///
@@ -209,7 +209,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                 };
 
             // Compute output using stack-allocated enum dispatch (no heap allocation)
-            let item = if entity_kind == Item::AssemblingMachine1 {
+            let item = if entity_kind.crafts() {
                 graph.nodes[node_idx].recipe_item
             } else {
                 graph.nodes[node_idx].item
@@ -398,19 +398,26 @@ fn downstream_demand(graph: &FactoryGraph) -> Vec<Demand> {
                 rest: f64::INFINITY,
                 items: HashMap::new(),
             },
-            Item::AssemblingMachine1 => match graph.nodes[node].recipe_item.and_then(get_recipe) {
+            kind if kind.crafts() => match graph.nodes[node].recipe_item.and_then(get_recipe) {
                 Some(recipe) => {
                     let crafts = recipe
                         .produces
                         .iter()
                         .map(|&(item, rate)| total(item) / rate)
                         .fold(kind.flow_rate() / recipe.crafting_time, f64::min);
+                    // A burner takes any one fuel for all of its energy.
+                    let fuel = kind.fuel_per_craft(&recipe).map(|kj| {
+                        all_items()
+                            .into_iter()
+                            .filter_map(move |item| Some((item, crafts * kj / item.fuel_value()?)))
+                    });
                     Demand {
                         rest: 0.0,
                         items: recipe
                             .consumes
                             .iter()
                             .map(|&(item, rate)| (item, rate * crafts))
+                            .chain(fuel.into_iter().flatten())
                             .collect(),
                     }
                 }
@@ -462,9 +469,9 @@ fn water_fill(claims: &[(f64, f64)], mut budget: f64) -> Vec<f64> {
 /// leaves moves on, and in `room` so the next inserter into the same
 /// destination only tops up what is still missing. The inserters picking
 /// from one lane share it evenly, and a hand only picks what its destination
-/// will take. Into an assembler it fills in recipe proportion from both
-/// lanes at once, since the machine refuses an ingredient it already has
-/// enough of. Anywhere else it fills from the near lane first — the lane on
+/// will take. Into a crafting machine it fills in recipe (and fuel)
+/// proportion from both lanes at once, since the machine refuses an
+/// ingredient it already has enough of. Anywhere else it fills from the near lane first — the lane on
 /// the inserter's side, or the belt's left lane when the inserter is in line
 /// with it — and reaches the far lane only for what the near one cannot
 /// give, splitting each lane's share across its items in proportion to
@@ -495,7 +502,7 @@ fn pickup_input(
         };
         pred.id.lane.is_some_and(|lane| lane != near)
     });
-    let into_assembler = graph.nodes[dest].entity_kind == Item::AssemblingMachine1;
+    let into_assembler = graph.nodes[dest].entity_kind.crafts();
     let groups: Vec<&[usize]> = if into_assembler {
         vec![&preds]
     } else {

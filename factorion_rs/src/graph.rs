@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::entities::{entity_tiles, is_curved_belt, EntityEnum, FactoryEntity};
 use crate::power::PowerMap;
-use crate::types::{Direction, Item, Lane, Misc, NodeId};
+use crate::types::{all_recipes, get_recipe, Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
 use strum::IntoEnumIterator;
 
@@ -18,8 +18,9 @@ pub struct GraphNode {
     pub direction: Direction,
     /// A belt turning a corner, which inserters pick from differently.
     pub curved: bool,
-    /// Recipe for assembling machines (determines what they craft).
-    /// `None` for non-assemblers and assemblers with no recipe set.
+    /// Recipe for crafting machines (determines what they craft): an
+    /// assembler's tag, or what a furnace smelts ([`smelt_what_arrives`]).
+    /// `None` for everything else and machines with nothing to craft.
     pub recipe_item: Option<Item>,
     /// Anchor tile of the entity unit this node belongs to. Nodes are no
     /// longer 1:1 with entities (a belt tile owns two lane nodes, a splitter
@@ -197,11 +198,59 @@ pub fn build_graph(world: &World) -> FactoryGraph {
         }
     }
 
+    smelt_what_arrives(&mut nodes, &successors);
+
     FactoryGraph {
         nodes,
         node_index,
         successors,
         predecessors,
+    }
+}
+
+/// Give each furnace the smelting recipe of what can reach it, as the game
+/// picks it from the ingredient that arrives: items spread from the sources
+/// along every edge, crafting machines passing on their products instead.
+/// Each smelting ingredient makes one product; given several, the first
+/// recipe wins.
+fn smelt_what_arrives(nodes: &mut [GraphNode], successors: &[Vec<usize>]) {
+    if !nodes.iter().any(|n| n.entity_kind.is_furnace()) {
+        return;
+    }
+    let smelting: Vec<(Item, Item)> = all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.is_smelting())
+        .map(|(product, r)| (r.consumes.head.0, product))
+        .collect();
+    let mut arrives: Vec<HashSet<Item>> = vec![HashSet::new(); nodes.len()];
+    let mut queue: Vec<usize> = (0..nodes.len())
+        .filter(|&i| nodes[i].entity_kind == Item::Source)
+        .collect();
+    while let Some(i) = queue.pop() {
+        let node = &mut nodes[i];
+        let out: Vec<Item> = match node.entity_kind {
+            Item::Source => node.item.into_iter().collect(),
+            Item::AssemblingMachine1 => node
+                .recipe_item
+                .and_then(get_recipe)
+                .map(|r| r.produces.iter().map(|&(item, _)| item).collect())
+                .unwrap_or_default(),
+            kind if kind.is_furnace() => {
+                node.recipe_item = smelting
+                    .iter()
+                    .find(|(ingredient, _)| arrives[i].contains(ingredient))
+                    .map(|&(_, product)| product);
+                node.recipe_item.into_iter().collect()
+            }
+            _ => arrives[i].iter().copied().collect(),
+        };
+        for &s in &successors[i] {
+            let before = arrives[s].len();
+            arrives[s].extend(&out);
+            if arrives[s].len() > before {
+                queue.push(s);
+            }
+        }
     }
 }
 

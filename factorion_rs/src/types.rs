@@ -505,7 +505,45 @@ impl Item {
                 | Item::WoodenChest
                 | Item::IronChest
                 | Item::SteelChest
+                | Item::StoneFurnace
+                | Item::SteelFurnace
+                | Item::ElectricFurnace
         )
+    }
+
+    /// Whether this entity is a furnace: it carries no recipe and smelts
+    /// whatever it is fed.
+    pub fn is_furnace(self) -> bool {
+        matches!(
+            self,
+            Item::StoneFurnace | Item::SteelFurnace | Item::ElectricFurnace
+        )
+    }
+
+    /// Whether this entity crafts a recipe: an assembler or a furnace.
+    pub fn crafts(self) -> bool {
+        self == Item::AssemblingMachine1 || self.is_furnace()
+    }
+
+    /// The kJ of fuel this burner machine burns per craft of `recipe`: its
+    /// 90 kW over the craft's duration.
+    pub fn fuel_per_craft(self, recipe: &Recipe) -> Option<f64> {
+        match self {
+            Item::StoneFurnace | Item::SteelFurnace => {
+                Some(90.0 * recipe.crafting_time / self.flow_rate())
+            }
+            _ => None,
+        }
+    }
+
+    /// The kJ one of this item yields as fuel.
+    pub fn fuel_value(self) -> Option<f64> {
+        match self {
+            Item::Wood => Some(2_000.0),
+            Item::Coal => Some(4_000.0),
+            Item::SolidFuel => Some(12_000.0),
+            _ => None,
+        }
     }
 
     /// Whether this entity is a chest. Capacity doesn't matter in steady
@@ -529,7 +567,10 @@ impl Item {
     pub fn needs_power(self) -> bool {
         matches!(
             self,
-            Item::Inserter | Item::LongHandedInserter | Item::AssemblingMachine1
+            Item::Inserter
+                | Item::LongHandedInserter
+                | Item::AssemblingMachine1
+                | Item::ElectricFurnace
         )
     }
 
@@ -575,6 +616,9 @@ impl Item {
             Item::Inserter => 0.86,
             Item::LongHandedInserter => 1.2,
             Item::AssemblingMachine1 => 0.5,
+            // A crafting machine's flow rate is its crafting speed.
+            Item::StoneFurnace => 1.0,
+            Item::SteelFurnace | Item::ElectricFurnace => 2.0,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
@@ -624,7 +668,6 @@ impl Item {
             | Item::BurnerMiningDrill
             | Item::ChemicalPlant
             | Item::EfficiencyModule
-            | Item::ElectricFurnace
             | Item::HeatExchanger
             | Item::HeatPipe
             | Item::Lab
@@ -639,8 +682,6 @@ impl Item {
             | Item::SpeedModule
             | Item::SteamEngine
             | Item::SteamTurbine
-            | Item::SteelFurnace
-            | Item::StoneFurnace
             | Item::Landfill
             | Item::FirearmMagazine
             | Item::StoneWall
@@ -672,9 +713,13 @@ impl Item {
     /// Non-placeable items return (1, 1).
     pub fn size(self) -> (usize, usize) {
         match self {
-            Item::AssemblingMachine1 | Item::SolarPanel | Item::Radar => (3, 3),
+            Item::AssemblingMachine1 | Item::SolarPanel | Item::Radar | Item::ElectricFurnace => {
+                (3, 3)
+            }
             Item::Splitter => (2, 1),
-            Item::Substation | Item::Accumulator => (2, 2),
+            Item::Substation | Item::Accumulator | Item::StoneFurnace | Item::SteelFurnace => {
+                (2, 2)
+            }
             Item::Roboport => (4, 4),
             _ => (1, 1),
         }

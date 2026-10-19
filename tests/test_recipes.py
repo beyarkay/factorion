@@ -77,10 +77,11 @@ class TestPyItemsBinding:
         poles = {v for v in ids if rs[v]["name"] in ("small_electric_pole", "medium_electric_pole", "substation")}
         inert = {v for v in ids if rs[v]["name"] in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp")}
         chests = {v for v in ids if rs[v]["name"] in ("wooden_chest", "iron_chest", "steel_chest")}
+        furnaces = {v for v in ids if rs[v]["name"] in ("stone_furnace", "steel_furnace", "electric_furnace")}
         # Placeable: agent-buildable (1..5) + the long-handed inserter + the
-        # poles + the inert entities + the chests + env-spawned source/sink
-        # (last two).
-        placeable = {1, 2, 3, 4, 5, lhi_id, *poles, *inert, *chests, sink_id, source_id}
+        # poles + the inert entities + the chests + the furnaces + env-spawned
+        # source/sink (last two).
+        placeable = {1, 2, 3, 4, 5, lhi_id, *poles, *inert, *chests, *furnaces, sink_id, source_id}
         for value in placeable:
             assert rs[value]["is_placeable"] is True, f"id {value} should be placeable"
         # Everything else (non-placeable items) — recipe ingredients,
