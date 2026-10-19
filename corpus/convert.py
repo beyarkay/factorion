@@ -247,15 +247,15 @@ def cut(
 
 
 def window(
-    r: Raster, size: int, rng: random.Random, min_side: int = 16, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
+    r: Raster, size: int, rng: random.Random, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
 ) -> Optional[np.ndarray]:
-    """A random w × h window of `r` (min_side ≤ w, h ≤ size, clipped to the
-    blueprint), randomly turned and mirrored, placed anywhere in a size × size
+    """A random size × size window of `r` (smaller only where the blueprint
+    is), randomly turned and mirrored, placed anywhere in a size × size
     (C, W, H) world. Everything outside the window, every masked tile and
     every entity the window's edge cuts through is masked. None when the
     window doesn't train (`cut`)."""
     W, H = r.ent.shape
-    w, h = min(W, rng.randint(min_side, size)), min(H, rng.randint(min_side, size))
+    w, h = min(W, size), min(H, size)
     # Centre the window on a random known tile so sparse blueprints still yield.
     xs, ys = np.nonzero(r.inst > 0)
     k = rng.randrange(len(xs))

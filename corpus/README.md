@@ -35,11 +35,11 @@ cached.
   Rails entity's footprint, dumped from the game:
   `/sc local o={} for n,p in pairs(prototypes.entity) do o[n]={p.tile_width,p.tile_height,prototypes.get_history(p.type,n).created} end helpers.write_file("sizes.json",helpers.table_to_json(o))`
   (non-buildable prototypes such as explosions and corpses are filtered out).
-- `window` cuts a random w × h window (6 ≤ w, h ≤ grid size) centred on a
-  known entity, masks whatever its edge cuts through, turns and mirrors it, and
-  places it anywhere in the grid with everything outside it masked. A
-  window trains only if at least 10% of it is known entities and at most 50%
-  is masked.
+- `window` cuts a window as big as the grid (smaller only where the
+  blueprint is) around a known entity, masks whatever its edge cuts through,
+  turns and mirrors it, and places it anywhere in the grid with everything
+  outside it masked. A window trains only if at least 10% of it is known
+  entities, at most 50% is masked, and it holds a belt, inserter or assembler.
 
 ## Commands
 

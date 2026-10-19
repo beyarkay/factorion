@@ -161,7 +161,8 @@ def test_window_masks_the_entities_its_edge_cuts():
 
 def test_windows_need_belts_inserters_or_assemblers():
     """A field of solar panels never trains; the same field with one belt
-    does, in a window at least 16 tiles a side."""
+    does, in a window as big as the blueprint where it is smaller than the
+    grid."""
     field = [("solar-panel", 1.5 + 3 * i, 1.5 + 3 * j, {}) for i in range(8) for j in range(8)]
     rng = random.Random(0)
     assert all(window(_raster(_bp(*field)), 32, rng) is None for _ in range(20))
@@ -170,7 +171,7 @@ def test_windows_need_belts_inserters_or_assemblers():
     assert ws
     for w in ws:
         xs, ys = np.nonzero(w[Channel.FOOTPRINT.value] != Footprint.MASKED.value)
-        assert xs.max() - xs.min() + 1 >= 16 and ys.max() - ys.min() + 1 >= 16
+        assert (xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) in (r.ent.shape, r.ent.shape[::-1])
 
 
 def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
