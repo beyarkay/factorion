@@ -183,6 +183,20 @@ def test_round_trip_inserter_direction_preserved(dir_):
     assert int(decoded[Channel.DIRECTION.value, ys[0], xs[0]]) == dir_.value
 
 
+@pytest.mark.parametrize("dir_", [Direction.EAST, Direction.WEST])
+def test_round_trip_sideways_splitter_keeps_its_tiles(dir_):
+    """An E/W splitter spans two rows; its blueprint centre must sit
+    between them, or it decodes a row off from the belt beside it."""
+    from factorion import new_world
+
+    w = new_world(width=3, height=3)
+    for x, y, ent in ((0, 0, "transport_belt"), (1, 0, "splitter"), (1, 1, "splitter")):
+        w[x, y, Channel.ENTITIES.value] = str2ent(ent).value
+        w[x, y, Channel.DIRECTION.value] = dir_.value
+    world_CWH = np.transpose(w, (2, 0, 1))
+    np.testing.assert_array_equal(_round_trip(world_CWH), world_CWH[:, :2, :2])
+
+
 def test_round_trip_source_marker_carries_item_and_direction():
     from factorion import new_world
 
