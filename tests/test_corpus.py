@@ -138,3 +138,14 @@ def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
     free = free_mask(states)
     assert (L.type_lut[s[:, Channel.ENTITIES.value], s[:, Channel.DIRECTION.value], s[:, Channel.MISC.value]][free] >= 0).all()
     assert (s[:, Channel.ENTITIES.value][free] > 0).float().mean() > 0.1
+
+
+def test_stats_count_a_lessons_entities_and_windows():
+    from corpus.stats import _design
+    from factorion_server.blueprint import world_tensor_to_blueprint_string
+
+    world = _lesson(LessonKind.OPPOSITE_SIDES_1IN, 0).world_CWH.numpy()
+    c = _design(16, {"string": world_tensor_to_blueprint_string(world), "source": "test"})
+    assert c["kept/assembling_machine_1"] == (world[Channel.ENTITIES.value] == str2ent("assembling_machine_1").value).sum() // 9
+    assert c["masked/constant-combinator"] == 2  # the source and sink markers
+    assert c["windows"] >= 1

@@ -197,8 +197,22 @@ def orient(chans: list[np.ndarray], turns: int, mirror: bool) -> list[np.ndarray
     return chans
 
 
+# A window trains only if known entities cover this much of it, and masked
+# ones at most this much.
+MIN_KNOWN, MAX_MASKED = 0.1, 0.5
+
+
+def cut(r: Raster, sl: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
+    """(keep, mask) over the window `sl` of `r`: the tiles of known entities
+    wholly inside it, and every other occupied tile."""
+    inst = r.inst[sl]
+    inner = np.bincount(inst[inst > 0], minlength=len(r.tiles))
+    keep = (inst > 0) & (inner == r.tiles)[np.maximum(inst, 0)]
+    return keep, (inst != 0) & ~keep
+
+
 def window(
-    r: Raster, size: int, rng: random.Random, min_side: int = 6, min_known: float = 0.1, max_masked: float = 0.5
+    r: Raster, size: int, rng: random.Random, min_side: int = 6, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
 ) -> Optional[np.ndarray]:
     """A random w × h window of `r` (min_side ≤ w, h ≤ size, clipped to the
     blueprint), randomly turned and mirrored, placed anywhere in a size × size
@@ -214,10 +228,7 @@ def window(
     x0 = min(max(0, xs[k] - rng.randrange(w)), W - w)
     y0 = min(max(0, ys[k] - rng.randrange(h)), H - h)
     sl = (slice(x0, x0 + w), slice(y0, y0 + h))
-    inst = r.inst[sl]
-    inner = np.bincount(inst[inst > 0], minlength=len(r.tiles))
-    keep = (inst > 0) & (inner == r.tiles)[np.maximum(inst, 0)]
-    mask = (inst != 0) & ~keep
+    keep, mask = cut(r, sl)
     if keep.mean() < min_known or mask.mean() > max_masked:
         return None
     chans = [np.where(keep, a[sl], 0) for a in (r.ent, r.dir, r.item, r.misc)]
