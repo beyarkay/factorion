@@ -50,3 +50,7 @@ uv run python -m corpus.stats corpus_out/designs/*.parquet
 # SFT with a quarter of examples from the corpus
 uv run python sft.py --corpus-frac 0.25
 ```
+
+The scrapers that wrote `raw/` (blueprint sites, forums, Reddit via Arctic
+Shift, pastebins, and the speedrun.com / forum save downloader feeding
+`extract_saves`) live with the data, in the dataset's `scripts/`.
