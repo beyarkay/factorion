@@ -226,29 +226,34 @@ def orient(chans: list[np.ndarray], turns: int, mirror: bool) -> list[np.ndarray
     return chans
 
 
-# A window trains only if known entities cover this much of it, and masked
-# ones at most this much.
+# A window trains only if known entities cover this much of it, masked ones at
+# most this much, and it holds one of these: a field of solar panels or a row
+# of lamps says nothing about moving items.
 MIN_KNOWN, MAX_MASKED = 0.1, 0.5
+_FLOW = [str2ent(n).value for n in ("transport_belt", "underground_belt", "splitter", "inserter", "long_handed_inserter", "assembling_machine_1")]
 
 
-def cut(r: Raster, sl: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
-    """(keep, mask) over the window `sl` of `r`: the tiles of known entities
-    wholly inside it, and every other occupied tile."""
+def cut(
+    r: Raster, sl: tuple[slice, slice], min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
+) -> Optional[np.ndarray]:
+    """The tiles of the known entities wholly inside the window `sl` of `r`,
+    or None when the window doesn't train."""
     inst = r.inst[sl]
     inner = np.bincount(inst[inst > 0], minlength=len(r.tiles))
     keep = (inst > 0) & (inner == r.tiles)[np.maximum(inst, 0)]
-    return keep, (inst != 0) & ~keep
+    if keep.mean() < min_known or ((inst != 0) & ~keep).mean() > max_masked or not np.isin(r.ent[sl][keep], _FLOW).any():
+        return None
+    return keep
 
 
 def window(
-    r: Raster, size: int, rng: random.Random, min_side: int = 6, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
+    r: Raster, size: int, rng: random.Random, min_side: int = 16, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
 ) -> Optional[np.ndarray]:
     """A random w × h window of `r` (min_side ≤ w, h ≤ size, clipped to the
     blueprint), randomly turned and mirrored, placed anywhere in a size × size
     (C, W, H) world. Everything outside the window, every masked tile and
-    every entity the window's edge cuts through is masked. None unless
-    known entities cover at least `min_known` of the window and masked tiles
-    at most `max_masked`."""
+    every entity the window's edge cuts through is masked. None when the
+    window doesn't train (`cut`)."""
     W, H = r.ent.shape
     w, h = min(W, rng.randint(min_side, size)), min(H, rng.randint(min_side, size))
     # Centre the window on a random known tile so sparse blueprints still yield.
@@ -257,8 +262,8 @@ def window(
     x0 = min(max(0, xs[k] - rng.randrange(w)), W - w)
     y0 = min(max(0, ys[k] - rng.randrange(h)), H - h)
     sl = (slice(x0, x0 + w), slice(y0, y0 + h))
-    keep, mask = cut(r, sl)
-    if keep.mean() < min_known or mask.mean() > max_masked:
+    keep = cut(r, sl, min_known, max_masked)
+    if keep is None:
         return None
     chans = [np.where(keep, a[sl], 0) for a in (r.ent, r.dir, r.item, r.misc)]
     chans.append(_footprint(r.inst[sl], keep))

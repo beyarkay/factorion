@@ -159,6 +159,20 @@ def test_window_masks_the_entities_its_edge_cuts():
         assert (fp == Footprint.MASKED.value).any() and not (fp == Footprint.UNBUILDABLE.value).any()
 
 
+def test_windows_need_belts_inserters_or_assemblers():
+    """A field of solar panels never trains; the same field with one belt
+    does, in a window at least 16 tiles a side."""
+    field = [("solar-panel", 1.5 + 3 * i, 1.5 + 3 * j, {}) for i in range(8) for j in range(8)]
+    rng = random.Random(0)
+    assert all(window(_raster(_bp(*field)), 32, rng) is None for _ in range(20))
+    r = _raster(_bp(*field, ("transport-belt", 24.5, 24.5, {})))
+    ws = [w for w in (window(r, 32, rng, max_masked=1) for _ in range(50)) if w is not None]
+    assert ws
+    for w in ws:
+        xs, ys = np.nonzero(w[Channel.FOOTPRINT.value] != Footprint.MASKED.value)
+        assert xs.max() - xs.min() + 1 >= 16 and ys.max() - ys.min() + 1 >= 16
+
+
 def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
     """Lessons published as blueprints go through the whole corpus path —
     scraped records, the built dataset, the SFT stream — and come out as

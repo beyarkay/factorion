@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from corpus.convert import MAX_MASKED, MIN_KNOWN, cut, designs, rasterise
+from corpus.convert import cut, designs, rasterise
 from factorion import items
 
 
@@ -45,8 +45,7 @@ def _design(size: int, row: dict) -> Counter:
     W, H = r.ent.shape
     for x in range(0, W, size):
         for y in range(0, H, size):
-            keep, mask = cut(r, (slice(x, x + size), slice(y, y + size)))
-            if keep.mean() >= MIN_KNOWN and mask.mean() <= MAX_MASKED:
+            if cut(r, (slice(x, x + size), slice(y, y + size))) is not None:
                 c["windows"] += 1
                 c[f"source/{src}/windows"] += 1
     return c
