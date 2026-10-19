@@ -731,6 +731,11 @@ pub struct TotalRaw {
 }
 
 impl Recipe {
+    /// Whether a furnace makes this, picking it by the ingredient it is fed.
+    pub fn is_smelting(&self) -> bool {
+        self.produced_by == FURNACES
+    }
+
     /// Look up the consumption rate for `item`, if present.
     #[allow(dead_code)]
     pub fn consumes_rate(&self, item: Item) -> Option<f64> {
@@ -787,7 +792,8 @@ fn add_raw(items: &mut NonEmpty<(Item, f64)>, item: Item, qty: f64) {
 /// set is a DAG (no item consumes its own output, directly or transitively),
 /// so the recursion always terminates.
 fn raw_expand(item: Item, qty: f64, index: &HashMap<Item, Recipe>) -> (NonEmpty<(Item, f64)>, f64) {
-    let Some(recipe) = index.get(&item) else {
+    // Plates stay raw: entity costs, and so the reward, are priced in them.
+    let Some(recipe) = index.get(&item).filter(|r| !r.is_smelting()) else {
         return (NonEmpty::new((item, qty)), 0.0);
     };
     // How many crafts yield `qty` of `item` (all recipes list positive
@@ -817,6 +823,12 @@ const ASSEMBLING_MACHINES: &[Item] = &[
     Item::AssemblingMachine1,
     Item::AssemblingMachine2,
     Item::AssemblingMachine3,
+];
+
+const FURNACES: &[Item] = &[
+    Item::StoneFurnace,
+    Item::SteelFurnace,
+    Item::ElectricFurnace,
 ];
 
 /// Crafting recipes retained by the training environment. The single source of
@@ -1704,6 +1716,44 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 produced_by: ASSEMBLING_MACHINES,
             },
         ),
+        // Smelting: each ingredient smelts into exactly one product, so a
+        // furnace's recipe is a function of what it is fed.
+        (
+            Item::IronPlate,
+            Recipe {
+                consumes: nonempty![(Item::IronOre, 1.0)],
+                produces: nonempty![(Item::IronPlate, 1.0)],
+                crafting_time: 3.2,
+                produced_by: FURNACES,
+            },
+        ),
+        (
+            Item::CopperPlate,
+            Recipe {
+                consumes: nonempty![(Item::CopperOre, 1.0)],
+                produces: nonempty![(Item::CopperPlate, 1.0)],
+                crafting_time: 3.2,
+                produced_by: FURNACES,
+            },
+        ),
+        (
+            Item::SteelPlate,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 5.0)],
+                produces: nonempty![(Item::SteelPlate, 1.0)],
+                crafting_time: 16.0,
+                produced_by: FURNACES,
+            },
+        ),
+        (
+            Item::StoneBrick,
+            Recipe {
+                consumes: nonempty![(Item::Stone, 2.0)],
+                produces: nonempty![(Item::StoneBrick, 1.0)],
+                crafting_time: 3.2,
+                produced_by: FURNACES,
+            },
+        ),
     ]
 }
 
@@ -1951,8 +2001,12 @@ mod tests {
         assert_eq!(am1.consumes_rate(Item::IronPlate), Some(9.0));
         assert_eq!(am1.produces_rate(Item::AssemblingMachine1), Some(1.0));
 
-        assert!(get_recipe(Item::IronPlate).is_none());
-        assert!(get_recipe(Item::CopperPlate).is_none());
+        let steel = get_recipe(Item::SteelPlate).unwrap();
+        assert_eq!(steel.consumes_rate(Item::IronPlate), Some(5.0));
+        assert_eq!(steel.crafting_time, 16.0);
+        assert!(steel.is_smelting());
+
+        assert!(get_recipe(Item::IronOre).is_none());
         assert!(get_recipe(Item::OilRefinery).is_none());
     }
 
@@ -1977,20 +2031,19 @@ mod tests {
     }
 
     #[test]
-    fn test_every_recipe_produced_by_assemblers() {
-        // The whole (fluid-free) set is crafted in assembling machines.
-        let assemblers = [
-            Item::AssemblingMachine1,
-            Item::AssemblingMachine2,
-            Item::AssemblingMachine3,
-        ];
+    fn test_every_recipe_produced_by_assemblers_or_furnaces() {
+        // The whole (fluid-free) set is crafted in assembling machines, bar
+        // smelting.
         for (item, recipe) in all_recipes() {
-            for machine in recipe.produced_by.iter() {
-                assert!(
-                    assemblers.contains(machine),
-                    "{item:?} produced_by non-assembler {machine:?}"
-                );
-            }
+            assert!(
+                recipe.is_smelting()
+                    || recipe
+                        .produced_by
+                        .iter()
+                        .all(|m| ASSEMBLING_MACHINES.contains(m)),
+                "{item:?} produced_by {:?}",
+                recipe.produced_by
+            );
         }
     }
 
@@ -2028,11 +2081,17 @@ mod tests {
     }
 
     #[test]
-    fn test_total_raw_none_for_raw_items() {
+    fn test_total_raw_stops_at_plates() {
         // Items with no recipe are themselves raw — they have no expansion.
-        assert!(total_raw_of(Item::IronPlate).is_none());
-        assert!(total_raw_of(Item::CopperPlate).is_none());
-        assert!(total_raw_of(Item::SteelPlate).is_none());
+        assert!(total_raw_of(Item::IronOre).is_none());
+        // A smelted item expands one step, to its ore…
+        let tr = total_raw_of(Item::SteelPlate).unwrap();
+        assert_eq!(tr.items.head, (Item::IronPlate, 5.0));
+        assert_eq!(tr.time, 16.0);
+        // …but is raw inside every other recipe.
+        let tr = total_raw_of(Item::MediumElectricPole).unwrap();
+        let raw: HashMap<Item, f64> = tr.items.iter().copied().collect();
+        assert_eq!(raw.get(&Item::SteelPlate), Some(&2.0));
     }
 
     #[test]

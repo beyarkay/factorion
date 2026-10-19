@@ -5467,12 +5467,20 @@ fn walk_recipe_frontier(
 /// sink recipe, its per-craft yield at the machine's crafting speed over the
 /// recipe's crafting time. That is the engine's single-machine ceiling — a
 /// clean chain that saturates one final assembler scores 1.0.
+/// The recipes a trial's tree expands through. Every assembler recipe is,
+/// regardless of tier: the engine's AssemblingMachine crafts any tagged recipe
+/// (it never checks `produced_by`), so AM2/AM3-only recipes like engine_unit
+/// are fair game. Smelting isn't: a trial's ceiling is an assembler's rate.
+fn trial_recipes() -> HashMap<Item, Recipe> {
+    all_recipes()
+        .into_iter()
+        .filter(|(_, r)| !r.is_smelting())
+        .collect()
+}
+
 fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<BuiltFactory> {
     let s = size as i64;
-    // Every recipe is expandable regardless of assembler tier: the engine's
-    // AssemblingMachine crafts any tagged recipe (it never checks
-    // `produced_by`), so AM2/AM3-only recipes like engine_unit are fair game.
-    let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
+    let index = trial_recipes();
     // Deterministic candidate order: filter all_recipes() rather than
     // iterating the index (HashMap order varies run to run).
     let sinks: Vec<Item> = all_recipes()
@@ -6485,7 +6493,7 @@ mod tests {
 
     #[test]
     fn test_recipe_tree_trial_smoke() {
-        let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
+        let index = trial_recipes();
         for (kind, depth) in [
             (LessonKind::TrialRecipeTreeDepth1, 1usize),
             (LessonKind::TrialRecipeTreeDepth2, 2),

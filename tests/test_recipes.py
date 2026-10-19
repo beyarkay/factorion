@@ -227,10 +227,11 @@ class TestPyRecipesBinding:
             "assembling_machine_2",
             "assembling_machine_3",
         }
+        furnaces = {"stone_furnace", "steel_furnace", "electric_furnace"}
         for name, data in rs.items():
             assert data["produced_by"], f"{name} has empty produced_by"
-            assert set(data["produced_by"]) <= assemblers, (
-                f"{name} produced_by non-assembler: {data['produced_by']}"
+            assert set(data["produced_by"]) <= assemblers or set(data["produced_by"]) == furnaces, (
+                f"{name} produced_by {data['produced_by']}"
             )
 
     def test_total_raw_expands_to_raw_items(self):
@@ -256,9 +257,12 @@ class TestPyRecipesBinding:
         for name, data in rs.items():
             assert data["total_raw"], f"{name} has empty total_raw"
             assert data["total_raw_time"] > 0, f"{name} total_raw_time not positive"
-            # Raws bottom out at items that have no recipe of their own.
+            # Raws bottom out at items that have no recipe of their own, or
+            # are smelted.
             for raw in data["total_raw"]:
-                assert raw not in rs, f"{name} total_raw lists craftable {raw}"
+                assert raw not in rs or "stone_furnace" in rs[raw]["produced_by"], (
+                    f"{name} total_raw lists craftable {raw}"
+                )
 
 
 class TestPythonRecipesDict:
