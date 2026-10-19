@@ -26,7 +26,7 @@ cached.
   chests, furnaces (which carry no recipe), solar panels, accumulators,
   roboports, radars, lamps and stone walls stay as they are.
 - Everything else is **masked**: its footprint becomes unbuildable, so the
-  denoiser sees a wall and no loss reaches it. That covers the entity, an
+  denoiser sees an unbuildable tile and no loss reaches it. That covers the entity, an
   assembler whose recipe the engine doesn't know, and an underground pair that
   would pair differently once collapsed to yellow's 5-tile reach.
 - A design holding an entity whose size is unknown (a mod's) is dropped.

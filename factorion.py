@@ -1083,8 +1083,8 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
 
     Placements overwrite: every entity the footprint touches is removed whole
     first, so ``empty`` deletes the entity under ``xy`` and any other entity
-    replaces what it lands on. Walls (which include a lesson's protected
-    entities) and sources/sinks can't be edited. Moving a pole refreshes the
+    replaces what it lands on. Unbuildable tiles (which include a lesson's
+    protected entities) and sources/sinks can't be edited. Moving a pole refreshes the
     POWER channel.
 
     Returns ``None`` when applied, else why the placement was rejected.

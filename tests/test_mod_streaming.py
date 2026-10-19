@@ -117,10 +117,10 @@ def test_request_seeds_existing_entities_with_configuration():
     assert ent[1, 7] == _id("splitter")
     assert ent[1, 8] == _id("splitter")
 
-    # Existing entities are walls the model builds around; the markers aren't.
-    walls = obs[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value
-    assert walls.sum() == 1 + 9 + 1 + 2
-    assert not walls[0, 5] and not walls[10, 5]
+    # Existing entities are unbuildable tiles the model builds around; the markers aren't.
+    unbuildable = obs[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value
+    assert unbuildable.sum() == 1 + 9 + 1 + 2
+    assert not unbuildable[0, 5] and not unbuildable[10, 5]
 
 
 class _AcceptingRcon:

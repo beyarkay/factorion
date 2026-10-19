@@ -5,8 +5,8 @@ once.
 Each tile's state is three tokens: a *type* (entity × direction × underground
 mode, see `TYPES`), a *recipe* (assemblers only) and a *part* — the tile's
 offset inside its multi-tile entity, which is what lets two touching
-assemblers with the same recipe be told apart. Sources, sinks and walls are
-the conditioning: they are never corrupted, never predicted.
+assemblers with the same recipe be told apart. Sources, sinks and unbuildable tiles
+are the conditioning: they are never corrupted, never predicted.
 
 Training corrupts a known-correct factory by resampling each free tile from
 `noise_prior` with probability t ~ U[0, 1] (t = 0: nothing to fix, t = 1:
@@ -286,7 +286,7 @@ class DenoiserUNet(nn.Module):
 
     `levels` resolutions (channels doubling, stride-2 downsamples), `blocks`
     residual blocks per level and side, and `attn_layers` rotary attention
-    blocks over the bottleneck cells. Grids are padded with wall tiles to a
+    blocks over the bottleneck cells. Grids are padded with unbuildable tiles to a
     multiple of the total stride and cropped back, so any size runs.
     """
 
@@ -393,7 +393,7 @@ class DenoiserUNet(nn.Module):
         s = state.long()
         W, H = s.shape[2:]
         pw, ph = -W % self.stride, -H % self.stride
-        # Zero padding is a wall tile: the off-grid world is unbuildable.
+        # Zero padding is an unbuildable tile, as the off-grid world is.
         s = F.pad(s, (0, ph, 0, pw))
         with torch.autocast(s.device.type, dtype=torch.bfloat16, enabled=self.amp):
             h = self.stem(self._embed(s).contiguous(memory_format=torch.channels_last))
@@ -565,7 +565,7 @@ def run_denoise_eval(
 ) -> dict:
     """Best-of-N generation eval on held-out factories.
 
-    Each `(seed, kind, Factory)` is fully blanked to its markers and walls,
+    Each `(seed, kind, Factory)` is fully blanked to its markers and unbuildable tiles,
     `best_of` chains denoise it from pure noise, every chain's factory is
     legalized and simulated, and the factory scores its best chain (ties: the
     cheaper build, then the lower chain index). Returns `"thput@n"` /

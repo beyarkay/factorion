@@ -286,7 +286,7 @@ def _compare_wait_seconds(args) -> int:
         from training_config import RlArgs
 
         per = rl_budget_seconds(args.total_timesteps or RlArgs().total_timesteps)
-    # One pod runs all seeds back-to-back, so the wall-clock scales with seeds;
+    # One pod runs all seeds back-to-back, so the elapsed time scales with seeds;
     # the setup slack (baked into `per`) is paid once, not per seed.
     total = SETUP_SLACK_SECONDS + args.seeds * (per - SETUP_SLACK_SECONDS)
     return min(total + 45 * 60, MAX_WAIT_SECONDS)

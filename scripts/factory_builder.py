@@ -696,7 +696,7 @@ def _denoise_step(grid: list[list[dict]], chain: Optional[dict]) -> dict:
     The server keeps no state: `chain` is the previous response's ``chain``
     (the tokens the next call reads, and how many steps it has taken), or
     None to start a fresh one from noise around the grid's markers and
-    walls. The response's ``grid`` is the step's clean-factory prediction,
+    unbuildable tiles. The response's ``grid`` is the step's clean-factory prediction,
     legalized; ``done`` once the greedy refinement reaches a fixed point or
     the step budget runs out."""
     model = _model()

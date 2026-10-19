@@ -233,7 +233,7 @@ LEGEND = [
     Patch(facecolor=C["pole"], label="electric pole (bolt, or its icon if 2x2)"),
     Patch(facecolor=C["chest"], edgecolor=C["asm_edge"], label="chest (icon)"),
     Patch(facecolor=C["furnace"], edgecolor=C["asm_edge"], label="furnace (smelts what it is fed)"),
-    Patch(facecolor=C["inert"], edgecolor=C["asm_edge"], label="solar, accumulator, roboport, radar, lamp, wall"),
+    Patch(facecolor=C["inert"], edgecolor=C["asm_edge"], label="solar, accumulator, roboport, radar, lamp, stone wall"),
     Patch(facecolor=C["powered"], label="powered tile"),
     Patch(facecolor=C["source"], label="source (item icon)"),
     Patch(facecolor=C["sink"], label="sink (item icon)"),

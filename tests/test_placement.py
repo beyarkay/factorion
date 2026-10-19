@@ -62,7 +62,7 @@ def test_rejected_placements_leave_the_world_unchanged(action, reason):
     assert torch.equal(w, before)
 
 
-def test_walls_cannot_be_built_on_or_deleted():
+def test_unbuildable_tiles_cannot_be_built_on_or_deleted():
     w = _world()
     w[FOOT, 2, 2] = Footprint.UNAVAILABLE.value
     w[ENT, 2, 2], w[DIR, 2, 2] = BELT, EAST

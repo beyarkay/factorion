@@ -4,8 +4,8 @@ The corpus stores raw exchange strings so that every conversion decision lives
 here and re-runs at load time: teaching the engine a new entity only means
 editing `_KNOWN`. A blueprint is rasterised once (`rasterise`), then any number
 of windows are cut from it (`window`). Entities the engine doesn't model are
-*masked*: their tiles become unbuildable, so the denoiser sees them as walls
-and no loss reaches them.
+*masked*: their tiles become unbuildable, so the denoiser sees them as
+unbuildable and no loss reaches them.
 """
 
 import base64

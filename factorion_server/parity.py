@@ -452,7 +452,7 @@ def main():
     ap.add_argument("--size", type=int, default=15)
     ap.add_argument("--batch-size", type=int, default=40,
                     help="Factories built + measured together on one surface "
-                         "per batch (they run in parallel, so wall-time is "
+                         "per batch (they run in parallel, so elapsed time is "
                          "the slowest factory, not the sum).")
     ap.add_argument("--warmup-max", type=int, default=1800,
                     help="Max warmup ticks before forcing the measure phase.")
@@ -472,7 +472,7 @@ def main():
     ap.add_argument("--abs-tol", type=float, default=0.25,
                     help="Absolute tolerance on per-sink items/s.")
     ap.add_argument("--timeout", type=float, default=600.0,
-                    help="Per-run wall-clock timeout (s).")
+                    help="Per-run timeout (s).")
     ap.add_argument("--json-out", type=Path, default=None,
                     help="Dump every spec/result/comparison to this JSON file.")
     ap.add_argument("--dry-run", action="store_true",

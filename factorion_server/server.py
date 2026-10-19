@@ -64,7 +64,7 @@ def _sink_id() -> int:
 
 def request_to_obs(req: dict) -> np.ndarray:
     """The (C, W, H) world of a request: its markers, plus its existing
-    entities as walls the model builds around, as a lesson protects its own."""
+    entities as unbuildable tiles the model builds around, as a lesson protects its own."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
