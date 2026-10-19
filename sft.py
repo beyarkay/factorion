@@ -582,12 +582,11 @@ def train_sft(args: SftArgs):
             attn_heads=args.attn_heads,
             dropout=args.dropout,
         )
-        prior_states = list(
-            itertools.islice(
-                _iter_factories(args.size, train_seed, 0, 1, args.box_frac, corpus_files, args.corpus_frac), 256
-            )
-        )
-        model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
+    # This run's data, not a checkpoint's: a corpus-pretrained model continued on lessons noises them as lessons.
+    prior_states = list(
+        itertools.islice(_iter_factories(args.size, train_seed, 0, 1, args.box_frac, corpus_files, args.corpus_frac), 256)
+    )
+    model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     # NHWC is cuDNN's native layout; NCHW convs pay a transpose each way.
     model.to(device, memory_format=torch.channels_last)  # ty: ignore[no-matching-overload]  (torch stubs omit it)
