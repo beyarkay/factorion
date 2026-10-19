@@ -53,7 +53,7 @@ def _row(rec: dict, bp: dict) -> dict:
     ys = [e["position"]["y"] for e in ents]
     x0, y0 = min(xs), min(ys)
     layout = sorted(
-        json.dumps([e["name"], e["position"]["x"] - x0, e["position"]["y"] - y0, e.get("direction", 0), e.get("recipe"), e.get("type")])
+        repr((e["name"], e["position"]["x"] - x0, e["position"]["y"] - y0, e.get("direction", 0), e.get("recipe"), e.get("type")))
         for e in ents
     )
     counts = Counter(e["name"] for e in ents)
@@ -79,8 +79,11 @@ def _row(rec: dict, bp: dict) -> dict:
 def _records(paths: list[Path]):
     for p in paths:
         with gzip.open(p, "rt") as f:
-            for line in f:
-                yield json.loads(line)
+            try:
+                for line in f:
+                    yield json.loads(line)
+            except (EOFError, json.JSONDecodeError):
+                print(f"{p} is truncated: stopped at the last whole record")  # a scraper still writing it
 
 
 def build(raw: list[Path], out: Path) -> Counter:
