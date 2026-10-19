@@ -209,11 +209,16 @@ def draw(world_CWH, ax, title="", crop=None, masked=()):
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
+    # Points per tile: each label is as big as its box allows, one word a line.
+    tile = 72 / ax.figure.dpi * min(ax.bbox.width / (x1 - x0), ax.bbox.height / (y1 - y0))
     for name, mx, my, mw, mh in masked:
         ax.add_patch(Rectangle((mx + 0.06, my + 0.06), mw - 0.12, mh - 0.12, facecolor=C["masked"],
                                edgecolor=C["masked_edge"], lw=0.8, zorder=2))
-        ax.text(mx + mw / 2, my + mh / 2, name, ha="center", va="center", fontsize=min(4, 2.2 * max(mw, mh)),
-                rotation=90 if mh > mw else 0, color=C["masked_edge"], clip_on=True, zorder=7)
+        words = name.split("-")
+        along, across = (mh, mw) if mh > mw else (mw, mh)
+        size = min(0.85 * tile * along / (0.6 * max(map(len, words))), 0.85 * tile * across / (1.2 * len(words)), 14)
+        ax.text(mx + mw / 2, my + mh / 2, "\n".join(words), ha="center", va="center", fontsize=size,
+                linespacing=1.0, rotation=90 if mh > mw else 0, color=C["masked_edge"], clip_on=True, zorder=7)
 
     ax.set_title(title, fontsize=8)
 
