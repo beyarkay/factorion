@@ -55,9 +55,9 @@ for _, surface in pairs(game.surfaces) do
     local area = {{r[1] * REGION, r[2] * REGION}, {(r[1] + 1) * REGION, (r[2] + 1) * REGION}}
     bp.clear_blueprint()
     local made = bp.create_blueprint{surface = surface, force = "player", include_trains = false, area = area}
-    if bp.is_blueprint_setup() then
+    local k, world = next(made)
+    if k and bp.get_blueprint_entities() then
       -- The blueprint recentres its entities; shift terrain by the same offset.
-      local k, world = next(made)
       local ox, oy
       for _, e in pairs(bp.get_blueprint_entities()) do
         if e.entity_number == k then ox, oy = e.position.x - world.position.x, e.position.y - world.position.y end
