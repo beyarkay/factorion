@@ -251,6 +251,7 @@ def cmd_sft(args, ctx) -> None:
         num_samples=args.num_samples,
         start_from=args.start_from,
         eval_best_of=args.eval_best_of,
+        corpus_frac=args.corpus_frac,
         extra_tags=[f"pr:{ctx['pr']}"],
     )
     infos = launch([job], args.gpu_type)
@@ -623,6 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--num-samples", type=si_int, default=None)
     sp.add_argument("--start-from", default=None)
     sp.add_argument("--eval-best-of", type=int, default=None)
+    sp.add_argument("--corpus-frac", type=float, default=None)
     common(sp)
 
     sp = sub.add_parser("rl", add_help=False)
