@@ -50,3 +50,26 @@ def test_only_the_electric_furnace_needs_power():
     _place(world, 13, 10, "medium_electric_pole")
     _place(world, 16, 10, "medium_electric_pole")
     assert count_unpowered(world) == 0
+
+
+@pytest.mark.parametrize(
+    "poles, powered",
+    [
+        (("big_electric_pole", "big_electric_pole"), True),
+        # 30 tiles is beyond a medium pole's 9-tile wire.
+        (("medium_electric_pole", "big_electric_pole"), False),
+        # Over 32 tiles from every edge, the far pole is live only through the near one.
+        ((None, "big_electric_pole"), False),
+    ],
+)
+def test_a_big_pole_powers_an_assembler_across_a_wide_gap(poles, powered):
+    world = torch.zeros((len(Channel), 100, 100), dtype=torch.int64)
+    world[Channel.FOOTPRINT.value] = 1
+    action = {"xy": (34, 50), "entity": str2ent("assembling_machine_1").value, "direction": 0,
+              "item": str2ent("iron_gear_wheel").value, "misc": Misc.NONE.value}
+    assert apply_placement_action(world, action) is None
+    near, far = poles
+    if near:
+        _place(world, 2, 50, near)
+    _place(world, 32, 50, far)
+    assert count_unpowered(world) == (0 if powered else 1)

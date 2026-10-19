@@ -496,6 +496,7 @@ impl Item {
                 | Item::Splitter
                 | Item::SmallElectricPole
                 | Item::MediumElectricPole
+                | Item::BigElectricPole
                 | Item::Substation
                 | Item::SolarPanel
                 | Item::Accumulator
@@ -584,6 +585,10 @@ impl Item {
             Item::MediumElectricPole => Some(Pole {
                 supply: 3,
                 reach_x2: 18,
+            }),
+            Item::BigElectricPole => Some(Pole {
+                supply: 1,
+                reach_x2: 64,
             }),
             Item::Substation => Some(Pole {
                 supply: 8,
@@ -717,9 +722,11 @@ impl Item {
                 (3, 3)
             }
             Item::Splitter => (2, 1),
-            Item::Substation | Item::Accumulator | Item::StoneFurnace | Item::SteelFurnace => {
-                (2, 2)
-            }
+            Item::Substation
+            | Item::BigElectricPole
+            | Item::Accumulator
+            | Item::StoneFurnace
+            | Item::SteelFurnace => (2, 2),
             Item::Roboport => (4, 4),
             _ => (1, 1),
         }

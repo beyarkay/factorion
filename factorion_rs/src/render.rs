@@ -34,6 +34,7 @@ pub(crate) const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('e', Item::SmallElectricPole, Misc::None),
     ('E', Item::MediumElectricPole, Misc::None),
     ('Z', Item::Substation, Misc::None),
+    ('B', Item::BigElectricPole, Misc::None),
     ('p', Item::SolarPanel, Misc::None),
     ('A', Item::Accumulator, Misc::None),
     ('R', Item::Roboport, Misc::None),

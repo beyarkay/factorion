@@ -324,7 +324,7 @@ _SINK_ENT_VAL = str2ent("sink").value
 _INSERTER_ENT_VALS = torch.tensor([str2ent(n).value for n in ("inserter", "long_handed_inserter")])
 _POWERED_3X3_ENT_VALS = torch.tensor([str2ent(n).value for n in ("assembling_machine_1", "electric_furnace")])
 POLE_ENT_IDS = tuple(
-    str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "substation")
+    str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "big_electric_pole", "substation")
 )
 # Footprints that carry no items (`Item::is_inert`).
 INERT_ENT_IDS = tuple(str2ent(n).value for n in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp"))

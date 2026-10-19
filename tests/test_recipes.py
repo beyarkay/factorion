@@ -74,7 +74,7 @@ class TestPyItemsBinding:
         # reaches two tiles instead of one). Placeability is decided per-item,
         # not by id range, so it sits in the placeable set despite its id.
         lhi_id = next(v for v in ids if rs[v]["name"] == "long_handed_inserter")
-        poles = {v for v in ids if rs[v]["name"] in ("small_electric_pole", "medium_electric_pole", "substation")}
+        poles = {v for v in ids if rs[v]["name"].endswith(("electric_pole", "substation"))}
         inert = {v for v in ids if rs[v]["name"] in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp")}
         chests = {v for v in ids if rs[v]["name"] in ("wooden_chest", "iron_chest", "steel_chest")}
         furnaces = {v for v in ids if rs[v]["name"] in ("stone_furnace", "steel_furnace", "electric_furnace")}
