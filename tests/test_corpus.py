@@ -149,3 +149,11 @@ def test_stats_count_a_lessons_entities_and_windows():
     assert c["kept/assembling_machine_1"] == (world[Channel.ENTITIES.value] == str2ent("assembling_machine_1").value).sum() // 9
     assert c["masked/constant-combinator"] == 2  # the source and sink markers
     assert c["windows"] >= 1
+
+
+def test_unbuildable_terrain_masks_only_empty_tiles():
+    bp = _bp(("transport-belt", 0.5, 0.5, {}), ("transport-belt", 4.5, 2.5, {}))
+    bp["unbuildable"] = [[-3, 1, 5], [0, 0, 9]]
+    r = _raster(bp)
+    assert (r.inst[0:2, 1] == -1).all() and (r.inst[2:, 1] == 0).all()
+    assert r.inst[0, 0] > 0 and (r.inst[1:, 0] == -1).all()

@@ -87,7 +87,9 @@ class Raster:
 
 def rasterise(bp: dict) -> Optional[Raster]:
     """`bp` on its bounding box; None when it holds an entity of unknown size
-    (a mod's), which would leave an unknowable hole, or nothing at all."""
+    (a mod's), which would leave an unknowable hole, or nothing at all. The
+    `[x, y, length]` row runs of `bp["unbuildable"]` (a save's terrain) mask
+    whatever tiles they leave empty."""
     ents = bp.get("entities") or []
     if not ents or any(e["name"] not in _SIZES for e in ents):
         return None
@@ -132,6 +134,10 @@ def rasterise(bp: dict) -> Optional[Raster]:
             r.misc[sl] = Misc.UNDERGROUND_DOWN.value if e.get("type") == "input" else Misc.UNDERGROUND_UP.value
             ugs.append((sl[0].start, sl[1].start, name))
     _mask_repaired_undergrounds(r, ugs)
+    for x, y, n in bp.get("unbuildable", ()):
+        if 0 <= y - min_y < H:
+            row = r.inst[max(0, x - min_x) : max(0, x - min_x + n), y - min_y]
+            row[row == 0] = -1
     r.tiles = np.bincount(r.inst[r.inst > 0], minlength=len(placed) + 1)
     return r if (r.inst > 0).any() else None
 
