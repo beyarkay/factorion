@@ -1,4 +1,4 @@
-"""Human blueprints -> factorion training windows.
+"""Human blueprints -> factorion training windows: the HUMAN_BLUEPRINTS lesson.
 
 The corpus stores raw exchange strings so that every conversion decision lives
 here and re-runs at load time: teaching the engine a new entity only means
@@ -9,6 +9,7 @@ and no loss reaches them.
 """
 
 import base64
+import itertools
 import json
 import math
 import random
@@ -231,3 +232,45 @@ def window(
     return world
 
 
+
+# Designs windowed at once: consecutive windows come from different designs.
+_POOL = 64
+
+
+def download(repo: str) -> list[Path]:
+    """The corpus's design shards, fetched from the Hugging Face dataset `repo`
+    (`corpus/build.py`) into the local cache."""
+    from huggingface_hub import snapshot_download
+
+    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns="designs/*"))
+    return sorted(root.glob("designs/*.parquet"))
+
+
+def stream(files: list[Path], size: int, rng: random.Random) -> Iterator[np.ndarray]:
+    """Windows of the corpus's unmodded designs, forever. Each design gives
+    about one window per quarter grid of its area, interleaved with
+    `_POOL` - 1 others."""
+    import pyarrow.parquet as pq
+
+    def rasters() -> Iterator[Raster]:
+        while True:
+            for f in rng.sample(files, len(files)):
+                strings = pq.read_table(f, columns=["string"], filters=[("modded", "==", False)]).column("string").to_pylist()
+                rng.shuffle(strings)
+                for s in strings:
+                    r = rasterise(next(designs(s)))
+                    if r is not None:
+                        yield r
+
+    source = rasters()
+    pool = list(itertools.islice(source, _POOL))
+    left = [1 + r.inst.size * 4 // size**2 for r in pool]
+    while True:
+        i = rng.randrange(len(pool))
+        w = window(pool[i], size, rng)
+        left[i] -= 1
+        if left[i] == 0:
+            pool[i] = next(source)
+            left[i] = 1 + pool[i].inst.size * 4 // size**2
+        if w is not None:
+            yield w

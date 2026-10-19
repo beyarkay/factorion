@@ -31,6 +31,7 @@ import tqdm
 import tyro
 from torch.utils.data import DataLoader, IterableDataset
 
+import corpus.convert as corpus
 from denoise import (
     _SINK_ENT_ID,
     _SOURCE_ENT_ID,
@@ -184,8 +185,9 @@ def build_lesson(kind: LessonKind, seed: int, size: int, box_frac: float) -> Opt
     return build_factory(size=size, kind=kind, seed=seed)
 
 
-def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0):
-    """Yield the uint8 state of fresh lesson factories (`build_lesson`) forever.
+def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0, corpus_files=(), corpus_frac=0.0):
+    """Yield the uint8 state of fresh lesson factories (`build_lesson`) forever,
+    `corpus_frac` of them HUMAN_BLUEPRINTS windows of `corpus_files`.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     concurrent workers never share a factory. Kinds are drawn uniformly.
@@ -201,8 +203,13 @@ def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0):
     consecutive_fails = {k.name: 0 for k in kinds}
     rng = random.Random(base_seed + worker_id)
 
+    human = corpus.stream(list(corpus_files), size, random.Random(rng.random())) if corpus_frac else None
+
     seed = base_seed + worker_id
     while True:
+        if human is not None and rng.random() < corpus_frac:
+            yield torch.from_numpy(world_to_state(next(human)))
+            continue
         kind = rng.choice(available)
         seed += num_workers
         factory = build_lesson(kind, seed, size, box_frac)
@@ -231,12 +238,13 @@ class FactoryStream(IterableDataset):
     CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, base_seed, box_frac, args: SftArgs, prior):
+    def __init__(self, size, base_seed, box_frac, args: SftArgs, prior, corpus_files=()):
         self.size = size
         self.base_seed = base_seed
         self.box_frac = box_frac
         self.args = args
         self.prior = prior
+        self.corpus_files = corpus_files
 
     def __iter__(self):
         """(state, its `noise_repeats` corruptions): corrupting here, where
@@ -244,7 +252,9 @@ class FactoryStream(IterableDataset):
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        for state in _iter_factories(self.size, self.base_seed, worker_id, num_workers, self.box_frac):
+        for state in _iter_factories(
+            self.size, self.base_seed, worker_id, num_workers, self.box_frac, self.corpus_files, self.args.corpus_frac
+        ):
             states = state.long().expand(self.args.noise_repeats, -1, -1, -1)
             yield state, corrupt_states(states, self.args, self.prior).to(torch.uint8)
 
@@ -554,6 +564,7 @@ def train_sft(args: SftArgs):
         [torch.from_numpy(world_to_state(f.world_CWH)) for _, k, f in factories if not LESSON_IS_TRIAL[k]]
     )
 
+    corpus_files = corpus.download(args.corpus_repo) if args.corpus_frac else []
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
         model = load_denoiser(resolve_checkpoint(args.start_from, args.wandb_project_name, args.wandb_entity)[0])
@@ -566,7 +577,11 @@ def train_sft(args: SftArgs):
             attn_heads=args.attn_heads,
             dropout=args.dropout,
         )
-        prior_states = list(itertools.islice(_iter_factories(args.size, train_seed, 0, 1, args.box_frac), 256))
+        prior_states = list(
+            itertools.islice(
+                _iter_factories(args.size, train_seed, 0, 1, args.box_frac, corpus_files, args.corpus_frac), 256
+            )
+        )
         model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     # NHWC is cuDNN's native layout; NCHW convs pay a transpose each way.
@@ -592,7 +607,7 @@ def train_sft(args: SftArgs):
 
     workers = min(32, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu()),
+        FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu(), corpus_files),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",

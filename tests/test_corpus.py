@@ -1,9 +1,11 @@
 """The human-blueprint corpus converter (`corpus.convert`)."""
 
+import itertools
 import random
 
 import numpy as np
 import pytest
+import torch
 
 from corpus.convert import orient, rasterise, window
 from denoise import score_world
@@ -107,3 +109,32 @@ def test_window_masks_the_entities_its_edge_cuts():
         assert asm.sum() % 9 == 0
         assert not (asm & (w[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value)).any()
 
+
+def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
+    """Lessons published as blueprints go through the whole corpus path —
+    scraped records, the built dataset, the SFT stream — and come out as
+    in-vocabulary training states."""
+    import gzip
+    import json
+
+    from corpus.build import build
+    from denoise import _luts, free_mask
+    from factorion_server.blueprint import world_tensor_to_blueprint_string
+    from sft import _iter_factories
+
+    raw = tmp_path / "lessons.jsonl.gz"
+    with gzip.open(raw, "wt") as f:
+        for i, kind in enumerate(KINDS):
+            factory = build_factory(size=20, kind=kind, seed=2)
+            if factory is not None:
+                string = world_tensor_to_blueprint_string(factory.world_CWH.numpy())
+                f.write(json.dumps({"source": "test", "id": i, "string": string}) + "\n")
+    stats = build([raw], tmp_path / "out")
+    assert stats["kept/test"] > 0
+    files = sorted((tmp_path / "out" / "designs").glob("*.parquet"))
+    states = torch.stack(list(itertools.islice(_iter_factories(16, 0, 0, 1, corpus_files=files, corpus_frac=1.0), 64)))
+    L = _luts(states.device)
+    s = states.long()
+    free = free_mask(states)
+    assert (L.type_lut[s[:, Channel.ENTITIES.value], s[:, Channel.DIRECTION.value], s[:, Channel.MISC.value]][free] >= 0).all()
+    assert (s[:, Channel.ENTITIES.value][free] > 0).float().mean() > 0.1
