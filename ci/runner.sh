@@ -33,6 +33,11 @@ PY
 fi
 
 echo ">>> GPU: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2> /dev/null || echo unknown)"
+# The image is built by hand, so it lags any dependency this commit added.
+echo ">>> Installing dependencies the image lacks..."
+uv export --frozen --no-emit-project --no-hashes | UV_HTTP_TIMEOUT=300 uv pip install --system --break-system-packages \
+    --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match -r -
+
 echo ">>> Building factorion_rs..."
 (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
 
