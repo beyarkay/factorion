@@ -503,7 +503,7 @@ def score_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float)
 
 
 @torch.no_grad()
-def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
+def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None, trace=None, start=None):
     """Denoise pure noise into factories, one chain per row of `cond`.
 
     `steps` ancestral steps sample the clean-factory prediction and re-corrupt
@@ -511,14 +511,21 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
     then iterate the prediction until it reproduces its own input (the chain
     has *converged*: the model calls the factory finished). Returns the
     tokens, the confidence of each tile's type, and per-chain converged flag
-    and refine steps taken."""
+    and refine steps taken. `trace`, if given, collects every step's
+    clean-factory prediction as (tokens, confidence). `start`, if given, is
+    (tokens, mask): masked tiles begin from those tokens instead of noise."""
     free = free_mask(cond)
     prior = model.noise_prior
     toks = noise_tokens(prior, free.shape, generator)
+    if start is not None:
+        start_toks, mask = start
+        toks = tuple(torch.where(mask, s, t) for s, t in zip(start_toks, toks))
     B = cond.shape[0]
     for k in range(steps):
         logits = model(tokens_to_state(cond, free, *toks))
         toks = model.pick(logits, temperature, generator)
+        if trace is not None:
+            trace.append((toks, model.conf(logits, toks)))
         t_next = 1.0 - (k + 1) / steps
         if t_next > 0:
             toks = corrupt(toks, free, torch.full((B,), t_next, device=cond.device), prior, generator)
@@ -535,6 +542,8 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
         # A converged chain keeps its fixed point even if a later batched
         # forward differs in the last bit.
         toks = tuple(torch.where(converged.view(-1, 1, 1), t, n) for t, n in zip(toks, new))
+        if trace is not None:
+            trace.append((toks, model.conf(logits, toks)))
         logits = model(tokens_to_state(cond, free, *toks))
     return toks, model.conf(logits, toks), converged, n_refine
 

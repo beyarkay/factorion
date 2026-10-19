@@ -18,7 +18,7 @@ empty string (nothing pending) or the next queued request JSON.
    │              │  reply: request JSON  (or "" when empty)         │        │
    │              │                                                  │        │
    │              │ ◄─────────────────────────────────────────────── │        │
-   └──────────────┘  each step: place_prediction(req_id, entity)     └────────┘
+   └──────────────┘  each step: place_predictions(req_id, changes)   └────────┘
                      final: finish_prediction(req_id, summary)
 ```
 
@@ -113,8 +113,7 @@ checkpoint** takes a bare W&B run id (default: the release's checkpoint),
 `entity/project/id`, or a local `.pt` path on the server's machine. On a new
 game or a change to the setting, the mod asks the server to load it; the server
 downloads the run's checkpoint from a GitHub release that carries it, or else
-the run's latest W&B model artifact, and reports its grid size (`--grid-size`,
-default 32) back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
+the run's latest W&B model artifact, and reports its grid size back. The region tool then stamps a region of that size. Loaded models stay cached, so switching back is instant.
 
 For a manual or headless setup, start the server directly:
 
@@ -133,9 +132,9 @@ uv run python -m factorion_server \
      ordinary belts. Click each endpoint to choose its item, and hover it and
      press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
-   - The server generates eight factories around your markers, keeps the
-     highest-throughput one, and places its entities into the marked region
-     one by one, building around any entities already there. Chat then
+   - The server generates factories around your markers, keeps the
+     highest-throughput one, and places its denoising steps into the marked
+     region one by one, starting from any entities already there. Chat then
      reports how many it placed and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
@@ -246,7 +245,7 @@ To check on the first live run (in rough order):
 Server-callable remote methods exposed by the mod:
 
 - `ping()` — round-trip check
-- `place_prediction(request_id, placement_json)` /
+- `place_predictions(request_id, placements_json)` /
   `finish_prediction(request_id, summary_json)` — streamed model placement
 - `parity_start(spec_json)` / `parity_poll()` / `parity_abort()` — the
   engine-parity runner (see above; driven by `server/parity.py`)
