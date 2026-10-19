@@ -5,9 +5,8 @@ here and re-runs at load time: teaching the engine a new entity only means
 editing `_KNOWN`. A blueprint is rasterised once (`rasterise`), then any number
 of windows are cut from it (`window`). Entities the engine doesn't model are
 *masked*: their tiles, like everything past a window's edge, become
-`Footprint.UNKNOWN`, so no loss reaches them and the denoiser can tell what a
-human hid from what the game forbids (a save's water, lava, space, cliffs:
-`Footprint.UNAVAILABLE`).
+`Footprint.MASKED`, so no loss reaches them, while what the game forbids (a
+save's water, lava, space, cliffs) is `Footprint.UNBUILDABLE`.
 """
 
 import base64
@@ -194,9 +193,9 @@ def _mask_repaired_undergrounds(r: Raster, ugs: list[tuple[int, int, str]]) -> N
 
 
 def _footprint(inst: np.ndarray, keep: np.ndarray) -> np.ndarray:
-    """Buildable where kept or empty, unbuildable on terrain, else unknown."""
+    """Buildable where kept or empty, unbuildable on terrain, else masked."""
     return np.select(
-        [keep | (inst == 0), inst == _TERRAIN], [Footprint.AVAILABLE.value, Footprint.UNAVAILABLE.value], Footprint.UNKNOWN.value
+        [keep | (inst == 0), inst == _TERRAIN], [Footprint.BUILDABLE.value, Footprint.UNBUILDABLE.value], Footprint.MASKED.value
     )
 
 
@@ -247,7 +246,7 @@ def window(
     """A random w × h window of `r` (min_side ≤ w, h ≤ size, clipped to the
     blueprint), randomly turned and mirrored, placed anywhere in a size × size
     (C, W, H) world. Everything outside the window, every masked tile and
-    every entity the window's edge cuts through is unknown. None unless
+    every entity the window's edge cuts through is masked. None unless
     known entities cover at least `min_known` of the window and masked tiles
     at most `max_masked`."""
     W, H = r.ent.shape
@@ -266,7 +265,7 @@ def window(
     chans = orient(chans, rng.randrange(4), rng.random() < 0.5)
     w, h = chans[0].shape
     world = np.zeros((len(Channel), size, size), np.int64)
-    world[Channel.FOOTPRINT.value] = Footprint.UNKNOWN.value
+    world[Channel.FOOTPRINT.value] = Footprint.MASKED.value
     ox, oy = rng.randint(0, size - w), rng.randint(0, size - h)
     for c, a in zip((Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC, Channel.FOOTPRINT), chans):
         world[c.value, ox : ox + w, oy : oy + h] = a

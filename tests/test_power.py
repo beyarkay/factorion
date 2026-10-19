@@ -83,10 +83,10 @@ def test_the_denoiser_places_undirected_entities_facing_nowhere():
     assert {d for e, d, _ in TYPES if e in UNDIRECTED_ENT_IDS} == {Direction.NONE.value}
 
 
-def test_unknown_tiles_on_the_edge_power_a_pole_as_unbuildable_ones_do():
+def test_masked_tiles_on_the_edge_power_a_pole_as_unbuildable_ones_do():
     """What lies past a human blueprint's window is off the map to the factory,
     so a pole can draw power from it just as from unbuildable tiles."""
-    for footprint in (Footprint.UNAVAILABLE, Footprint.UNKNOWN):
+    for footprint in (Footprint.UNBUILDABLE, Footprint.MASKED):
         world = _empty_world(30)
         world[Channel.FOOTPRINT.value, :20] = footprint.value
         assert _place(world, 22, 5, MEDIUM_POLE) is None

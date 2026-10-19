@@ -788,14 +788,14 @@ def _count_full_opacity_icons(html, icon_b64):
 def _ent_b64(name):
     # Build a tiny world with just this entity to extract its rendered b64.
     w = torch.zeros(3, 3, len(Channel), dtype=torch.int64)
-    w[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    w[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
     w[1, 1, Channel.ENTITIES.value] = str2ent(name).value
     html = world2html(w).text
     # Extract any data:image src from the rendered cell at (1, 1).
     matches = re.findall(r"src='(data:image/png;base64,[^']+)'", html)
     # The entity icon for the (1,1) cell is the unique non-empty icon.
     empty_w = torch.zeros(3, 3, len(Channel), dtype=torch.int64)
-    empty_w[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    empty_w[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
     empty_html = world2html(empty_w).text
     empty_srcs = set(re.findall(r"src='(data:image/png;base64,[^']+)'", empty_html))
     for src in matches:
@@ -812,7 +812,7 @@ class TestWorld2HtmlMultiTile:
     def test_splitter_renders_one_full_icon(self, direction):
         size = 8
         world = torch.zeros(size, size, len(Channel), dtype=torch.int64)
-        world[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        world[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
         # Place a splitter; entity_id at BOTH occupied cells, matching what
         # the lessons (and the env) write.
         from helpers import Footprint as _Fp  # noqa
@@ -871,7 +871,7 @@ def _ug_layout_info(world):
     W, H = fp.shape
     for x in range(W):
         for y in range(H):
-            if fp[x, y].item() == Footprint.UNAVAILABLE.value:
+            if fp[x, y].item() == Footprint.UNBUILDABLE.value:
                 barrier_tiles.add((x, y))
 
     return {
@@ -986,7 +986,7 @@ class TestMoveViaUgBeltGeometry:
 
     @pytest.mark.parametrize("seed", range(40))
     def test_barrier_spans_full_perpendicular(self, seed):
-        """The barrier (UNAVAILABLE tiles) spans the entire perpendicular
+        """The barrier (UNBUILDABLE tiles) spans the entire perpendicular
         dimension of the grid."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
@@ -1014,7 +1014,7 @@ class TestMoveViaUgBeltGeometry:
 
     @pytest.mark.parametrize("seed", range(40))
     def test_only_barrier_is_unavailable(self, seed):
-        """No tile outside the barrier is FOOTPRINT.UNAVAILABLE — open space
+        """No tile outside the barrier is FOOTPRINT.UNBUILDABLE — open space
         on either side of the barrier is freely buildable."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
@@ -1027,8 +1027,8 @@ class TestMoveViaUgBeltGeometry:
         for x in range(W):
             for y in range(H):
                 if (x, y) not in barrier:
-                    assert fp[x, y].item() == Footprint.AVAILABLE.value, (
-                        f"seed={seed}: ({x},{y}) UNAVAILABLE but not in barrier"
+                    assert fp[x, y].item() == Footprint.BUILDABLE.value, (
+                        f"seed={seed}: ({x},{y}) UNBUILDABLE but not in barrier"
                     )
 
     @pytest.mark.parametrize("seed", range(40))
@@ -1135,8 +1135,8 @@ class TestMoveViaUgBeltMissingEntities:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_barrier_remains_unavailable_after_blanking(self, seed):
-        """Even at maximum blanking, the barrier is still the only UNAVAILABLE
-        region (open tiles do not flip to UNAVAILABLE just because they
+        """Even at maximum blanking, the barrier is still the only UNBUILDABLE
+        region (open tiles do not flip to UNBUILDABLE just because they
         were blanked)."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
         assert factory is not None
@@ -1146,14 +1146,14 @@ class TestMoveViaUgBeltMissingEntities:
         info = _ug_layout_info(factory.world_CWH)
         world, _ = blank_entities(factory, num_missing_entities=float("inf"))
         # The barrier spans full perpendicular; any non-barrier tile must be
-        # AVAILABLE (already covered by other tests for num_missing=0;
+        # BUILDABLE (already covered by other tests for num_missing=0;
         # here we just re-assert it survives blanking).
         fp = world[Channel.FOOTPRINT.value]
         W, H = fp.shape
         for x in range(W):
             for y in range(H):
                 if (x, y) not in info["barrier_tiles"]:
-                    assert fp[x, y].item() == Footprint.AVAILABLE.value
+                    assert fp[x, y].item() == Footprint.BUILDABLE.value
 
     @pytest.mark.parametrize("seed", range(20))
     def test_independent_ug_removal_possible(self, seed):

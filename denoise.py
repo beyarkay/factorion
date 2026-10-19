@@ -52,7 +52,7 @@ from factorion import (
 )
 
 _CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC, _CH_FOOTPRINT, _CH_POWER = (c.value for c in Channel)
-_FOOTPRINT_AVAILABLE = Footprint.AVAILABLE.value
+_FOOTPRINT_BUILDABLE = Footprint.BUILDABLE.value
 _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
@@ -167,7 +167,7 @@ def world_to_state(world_CWH) -> np.ndarray:
 def free_mask(state):
     """Tiles the model owns: buildable and not a source/sink."""
     ent = state[:, _CH_ENT]
-    return (state[:, _CH_FOOTPRINT] == _FOOTPRINT_AVAILABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
+    return (state[:, _CH_FOOTPRINT] == _FOOTPRINT_BUILDABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
 
 
 def state_to_tokens(state):
@@ -451,7 +451,7 @@ def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np
     world = cond_CWH.copy()
     ent = world[_CH_ENT]
     W, H = ent.shape
-    free = (world[_CH_FOOTPRINT] == _FOOTPRINT_AVAILABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
+    free = (world[_CH_FOOTPRINT] == _FOOTPRINT_BUILDABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
     claimed = np.zeros((W, H), dtype=bool)
     votes: dict[tuple, list] = {}
     for x, y in zip(*np.nonzero(free & _IS_MULTI_NP[typ])):

@@ -153,12 +153,12 @@ def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
     world = torch.zeros((factory.world_CWH.shape[0], size, size), dtype=factory.world_CWH.dtype)
     inside = torch.zeros((size, size), dtype=torch.bool)
     inside[ox + x0 : ox + x1 + 1, oy + y0 : oy + y1 + 1] = True
-    world[Channel.FOOTPRINT.value][inside] = Footprint.AVAILABLE.value
+    world[Channel.FOOTPRINT.value][inside] = Footprint.BUILDABLE.value
     # The square may hang off the grid, but only by tiles outside the box.
     lo_x, lo_y = max(0, -ox), max(0, -oy)
     hi_x, hi_y = min(s, size - ox), min(s, size - oy)
     world[:, ox + lo_x : ox + hi_x, oy + lo_y : oy + hi_y] = factory.world_CWH[:, lo_x:hi_x, lo_y:hi_y]
-    world[Channel.FOOTPRINT.value][~inside] = Footprint.UNAVAILABLE.value
+    world[Channel.FOOTPRINT.value][~inside] = Footprint.UNBUILDABLE.value
     blocked = torch.zeros_like(inside)
     for _ in range(rng.randint(0, _MAX_OBSTACLES)):
         k = rng.randrange(4)
@@ -169,7 +169,7 @@ def boxed_factory(kind: LessonKind, seed: int, size: int) -> Optional[Factory]:
     # A marker's neighbours stay free: a trial needs room beside each marker.
     markers = ((ent == _SOURCE_ENT_ID) | (ent == _SINK_ENT_ID)).float()[None, None]
     near_marker = nn.functional.max_pool2d(markers, 3, stride=1, padding=1)[0, 0].bool()
-    world[Channel.FOOTPRINT.value][blocked & (ent == 0) & ~near_marker] = Footprint.UNAVAILABLE.value
+    world[Channel.FOOTPRINT.value][blocked & (ent == 0) & ~near_marker] = Footprint.UNBUILDABLE.value
     refresh_power(world)
     if count_unpowered(world):
         return None

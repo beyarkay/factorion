@@ -118,7 +118,7 @@ def test_request_seeds_existing_entities_with_configuration():
     assert ent[1, 8] == _id("splitter")
 
     # Existing entities are unbuildable tiles the model builds around; the markers aren't.
-    unbuildable = obs[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value
+    unbuildable = obs[Channel.FOOTPRINT.value] == Footprint.UNBUILDABLE.value
     assert unbuildable.sum() == 1 + 9 + 1 + 2
     assert not unbuildable[0, 5] and not unbuildable[10, 5]
 

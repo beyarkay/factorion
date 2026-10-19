@@ -2060,7 +2060,7 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
 
         let total_entities = 2 + path1.len() + path2.len();
 
-        // Mark only the barrier as UNAVAILABLE; every other tile is buildable.
+        // Mark only the barrier as UNBUILDABLE; every other tile is buildable.
         for &(wx, wy) in &barrier_tiles {
             world.set(wx as usize, wy as usize, Channel::Footprint, 0);
         }

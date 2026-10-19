@@ -114,7 +114,7 @@ def request_to_obs(req: dict) -> np.ndarray:
 
     ent = obs[Channel.ENTITIES.value]
     existing_mask = (ent != str2ent("empty").value) & (ent != src_id) & (ent != snk_id)
-    obs[Channel.FOOTPRINT.value][existing_mask] = Footprint.UNAVAILABLE.value
+    obs[Channel.FOOTPRINT.value][existing_mask] = Footprint.UNBUILDABLE.value
     return obs
 
 

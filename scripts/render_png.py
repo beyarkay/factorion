@@ -47,10 +47,10 @@ FURNACES = ("stone_furnace", "steel_furnace", "electric_furnace")
 INERT = ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
 BELTISH = {ID["transport_belt"], ID["underground_belt"], ID["splitter"]}
 C = dict(
-    unbuildable="#4a4a4a", unknown="#c9b6ec", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
+    unbuildable="#4a4a4a", masked="#d4d4d4", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
     belt_dark="#6b4e0c", splitter="#55595e", asm="#c9c3b6", asm_edge="#5d5a52", inserter="#f2c200",
     inserter_edge="#7a6200", long="#e07b00", pole="#1f6fd1", source="#1e9e4a", sink="#7b3fa0",
-    chest="#c7a26b", furnace="#e3a07a", inert="#b4c0cc", masked="#c98b8b", masked_edge="#7a2e2e",
+    chest="#c7a26b", furnace="#e3a07a", inert="#b4c0cc", unmodelled="#c98b8b", unmodelled_edge="#7a2e2e",
 )
 BOXED = {str2ent(n).value: C[kind] for kind, names in (("chest", CHESTS), ("furnace", FURNACES), ("inert", INERT)) for n in names}
 BELT_W = 0.8
@@ -84,12 +84,16 @@ def draw(world_CWH, ax, title="", crop=None, masked=()):
         if img is not None:
             ax.imshow(img, extent=(cx - size / 2, cx + size / 2, cy + size / 2, cy - size / 2), zorder=6)
 
+    # Points per tile, to size the text drawn on tiles.
+    tile = 72 / ax.figure.dpi * min(ax.bbox.width / (x1 - x0), ax.bbox.height / (y1 - y0))
     for x in range(x0, x1):
         for y in range(y0, y1):
             f = Footprint(int(fp[x, y]))
-            colour = {Footprint.UNAVAILABLE: C["unbuildable"], Footprint.UNKNOWN: C["unknown"]}.get(f, C["powered"] if pw[x, y] else C["empty"])
+            colour = {Footprint.UNBUILDABLE: C["unbuildable"], Footprint.MASKED: C["masked"]}.get(f, C["powered"] if pw[x, y] else C["empty"])
             ax.add_patch(Rectangle((x, y), 1, 1, facecolor=colour, edgecolor=C["grid"], lw=0.4,
-                                   hatch={Footprint.UNAVAILABLE: "///", Footprint.UNKNOWN: ".."}.get(f), zorder=0))
+                                   hatch="///" if f == Footprint.UNBUILDABLE else None, zorder=0))
+            if f == Footprint.MASKED:
+                ax.text(x + 0.5, y + 0.5, "?", ha="center", va="center", fontsize=0.35 * tile, color="#8a8a8a", zorder=0.5)
 
     def seg(x, y, dx, dy, fade=False):
         # Half-tile strip from the tile centre towards (dx, dy); `fade` thins
@@ -210,16 +214,15 @@ def draw(world_CWH, ax, title="", crop=None, masked=()):
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
-    # Points per tile: each label is as big as its box allows, one word a line.
-    tile = 72 / ax.figure.dpi * min(ax.bbox.width / (x1 - x0), ax.bbox.height / (y1 - y0))
+    # Each label is as big as its box allows, one word a line.
     for name, mx, my, mw, mh in masked:
-        ax.add_patch(Rectangle((mx + 0.06, my + 0.06), mw - 0.12, mh - 0.12, facecolor=C["masked"],
-                               edgecolor=C["masked_edge"], lw=0.8, zorder=2))
+        ax.add_patch(Rectangle((mx + 0.06, my + 0.06), mw - 0.12, mh - 0.12, facecolor=C["unmodelled"],
+                               edgecolor=C["unmodelled_edge"], lw=0.8, zorder=2))
         words = name.split("-")
         along, across = (mh, mw) if mh > mw else (mw, mh)
         size = min(0.85 * tile * along / (0.6 * max(map(len, words))), 0.85 * tile * across / (1.2 * len(words)), 14)
         ax.text(mx + mw / 2, my + mh / 2, "\n".join(words), ha="center", va="center", fontsize=size,
-                linespacing=1.0, rotation=90 if mh > mw else 0, color=C["masked_edge"], clip_on=True, zorder=7)
+                linespacing=1.0, rotation=90 if mh > mw else 0, color=C["unmodelled_edge"], clip_on=True, zorder=7)
 
     ax.set_title(title, fontsize=8)
 
@@ -238,9 +241,9 @@ LEGEND = [
     Patch(facecolor=C["powered"], label="powered tile"),
     Patch(facecolor=C["source"], label="source (item icon)"),
     Patch(facecolor=C["sink"], label="sink (item icon)"),
-    Patch(facecolor=C["unbuildable"], hatch="///", label="unbuildable (do not build)"),
-    Patch(facecolor=C["unknown"], hatch="..", label="unknown (masked entity, or past the window)"),
-    Patch(facecolor=C["masked"], edgecolor=C["masked_edge"], label="unmodelled entity (masked)"),
+    Patch(facecolor=C["unbuildable"], hatch="///", label="unbuildable (immutable)"),
+    Patch(facecolor=C["masked"], label="masked ? (no loss: unknown entity, or past the window)"),
+    Patch(facecolor=C["unmodelled"], edgecolor=C["unmodelled_edge"], label="unmodelled entity (its tiles are masked)"),
 ]
 
 
