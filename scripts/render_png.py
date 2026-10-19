@@ -4,9 +4,10 @@
 Belts join where one feeds the next, undergrounds fade into a dotted tunnel,
 splitters cross every input to every output, assemblers, sources and sinks
 carry their item's Factorio icon, inserters point the way items move
-(long-handed ones mark their two-tile reach), poles are lightning bolts over
-the tiles they power, chests, furnaces and inert entities are boxes with
-their own icon, and unbuildable tiles are hatched.
+(long-handed ones mark their two-tile reach), small and medium poles are
+lightning bolts over the tiles they power (the 2x2 poles show their icons),
+chests, furnaces and inert entities are boxes with their own icon, and
+unbuildable tiles are hatched.
 
 Usage:
     uv run python scripts/render_png.py --kind OPPOSITE_SIDES_1IN --seed 3 --out factory.png
@@ -189,9 +190,10 @@ def draw(world_CWH, ax, title="", crop=None):
         if parts[x, y] == 0:
             ax.add_patch(Rectangle((x + 0.06, y + 0.06), 2.88, 2.88, facecolor=C["asm"], edgecolor=C["asm_edge"], lw=1.5, zorder=4))
             icon(itm[x, y], x + 1.5, y + 1.5, 1.9)
+    # The two 2x2 poles look alike as bolts, so they show their own icons.
     for x, y in zip(*np.nonzero(np.isin(ent, [ID["substation"], ID["big_electric_pole"]]))):
         if parts[x, y] == 0:
-            ax.add_patch(Polygon(BOLT * 2 + (x, y), closed=True, facecolor=C["pole"], edgecolor="#0b2f63", lw=0.8, zorder=6))
+            icon(ent[x, y], x + 1, y + 1, 1.8)
     for x, y in zip(*np.nonzero(np.isin(ent, list(BOXED)))):
         if parts[x, y] == 0:
             side = items[int(ent[x, y])].width
@@ -214,7 +216,7 @@ LEGEND = [
     Patch(facecolor=C["asm"], edgecolor=C["asm_edge"], label="assembler (recipe icon)"),
     Patch(facecolor=C["inserter"], edgecolor=C["inserter_edge"], label="inserter (arrow = item flow)"),
     Patch(facecolor=C["long"], edgecolor=C["inserter_edge"], label="long-handed (dotted = 2-tile reach)"),
-    Patch(facecolor=C["pole"], label="electric pole (bolt)"),
+    Patch(facecolor=C["pole"], label="electric pole (bolt, or its icon if 2x2)"),
     Patch(facecolor=C["chest"], edgecolor=C["asm_edge"], label="chest (icon)"),
     Patch(facecolor=C["furnace"], edgecolor=C["asm_edge"], label="furnace (smelts what it is fed)"),
     Patch(facecolor=C["inert"], edgecolor=C["asm_edge"], label="solar, accumulator, roboport, radar, lamp, wall"),
