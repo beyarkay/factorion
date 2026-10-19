@@ -103,11 +103,13 @@ def extract(save: Path, mods: set[str], factorio: Path, port: int = 27215) -> li
         (Path(tmp) / "mod-list.json").write_text(json.dumps({"mods": listed}))
         settings = Path(tmp) / "settings.json"
         settings.write_text(json.dumps({"name": "extract", "description": "", "visibility": {"public": False, "lan": False}, "auto_pause": False}))
-        out = factorio / "script-output" / f"extract-{save.stem}.jsonl"
-        out.unlink(missing_ok=True)
+        # A write-data dir of its own, so servers can run side by side.
+        config = Path(tmp) / "config.ini"
+        config.write_text(f"[path]\nread-data={factorio / 'data'}\nwrite-data={tmp}\n")
+        out = Path(tmp) / "script-output" / "regions.jsonl"
         log = open(Path(tmp) / "server.log", "w+")
         server = subprocess.Popen(
-            [str(factorio / "bin/x64/factorio"), "--start-server", str(save), "--mod-directory", tmp,
+            [str(factorio / "bin/x64/factorio"), "--config", str(config), "--start-server", str(save), "--mod-directory", tmp,
              "--server-settings", str(settings), "--rcon-bind", f"127.0.0.1:{port}", "--rcon-password", "pw",
              "--port", str(port + 1)],
             stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -116,7 +118,7 @@ def extract(save: Path, mods: set[str], factorio: Path, port: int = 27215) -> li
             deadline = time.time() + 600
             while "Starting RCON interface" not in Path(log.name).read_text():
                 if server.poll() is not None or time.time() > deadline:
-                    raise RuntimeError(f"{save.name} did not load:\n{Path(log.name).read_text()[-2000:]}")
+                    raise RuntimeError(f"{save.name} did not load:\n{Path(log.name).read_text()[-800:]}")
                 time.sleep(1)
             with RconClient("127.0.0.1", port, "pw", timeout=1800) as rcon:
                 rcon.exec("/sc rcon.print(1)")  # the first command only acknowledges disabling achievements
@@ -127,7 +129,6 @@ def extract(save: Path, mods: set[str], factorio: Path, port: int = 27215) -> li
         finally:
             server.terminate()
             server.wait()
-            out.unlink(missing_ok=True)
 
 
 def main() -> None:
