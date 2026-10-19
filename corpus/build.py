@@ -16,7 +16,7 @@ import json
 import shutil
 import zlib
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import Pool
 from pathlib import Path
 
 import pyarrow as pa
@@ -28,7 +28,7 @@ _SHARD_ROWS = 20_000
 
 
 def _encode(bp: dict) -> str:
-    return "0" + base64.b64encode(zlib.compress(json.dumps({"blueprint": bp}, separators=(",", ":")).encode(), 9)).decode()
+    return "0" + base64.b64encode(zlib.compress(json.dumps({"blueprint": bp}, separators=(",", ":")).encode())).decode()
 
 
 def _rows(rec: dict) -> list[dict]:
@@ -39,37 +39,41 @@ def _rows(rec: dict) -> list[dict]:
         return []
     out = []
     for bp in bps:
-        ents = bp.get("entities") or []
-        if not ents:
-            continue
-        xs = [e["position"]["x"] for e in ents]
-        ys = [e["position"]["y"] for e in ents]
-        x0, y0 = min(xs), min(ys)
-        layout = sorted(
-            (e["name"], e["position"]["x"] - x0, e["position"]["y"] - y0, e.get("direction", 0), e.get("recipe", ""), e.get("type", ""))
-            for e in ents
-        )
-        counts = Counter(e["name"] for e in ents)
-        v = bp.get("version", 0)
-        out.append(
-            {
-                "string": _encode(bp),
-                "source": rec["source"],
-                "source_id": str(rec.get("id", "")),
-                "url": rec.get("url") or "",
-                "title": rec.get("title") or "",
-                "label": bp.get("label") or "",
-                "version": f"{v >> 48}.{(v >> 32) & 0xFFFF}.{(v >> 16) & 0xFFFF}",
-                "n_entities": len(ents),
-                "width": int(max(xs) - x0) + 1,
-                "height": int(max(ys) - y0) + 1,
-                "entity_counts": json.dumps(dict(counts.most_common())),
-                "modded": any(n not in _SIZES for n in counts),
-                "space_age": v >> 48 >= 2 and any(_SIZES.get(n, [0, 0, ""])[2] == "space-age" for n in counts),
-                "layout_hash": hashlib.blake2b(json.dumps(layout).encode(), digest_size=16).hexdigest(),
-            }
-        )
+        try:
+            if bp.get("entities"):
+                out.append(_row(rec, bp))
+        except (KeyError, TypeError, ValueError):
+            pass  # a malformed blueprint
     return out
+
+
+def _row(rec: dict, bp: dict) -> dict:
+    ents = bp["entities"]
+    xs = [e["position"]["x"] for e in ents]
+    ys = [e["position"]["y"] for e in ents]
+    x0, y0 = min(xs), min(ys)
+    layout = sorted(
+        json.dumps([e["name"], e["position"]["x"] - x0, e["position"]["y"] - y0, e.get("direction", 0), e.get("recipe"), e.get("type")])
+        for e in ents
+    )
+    counts = Counter(e["name"] for e in ents)
+    v = bp.get("version", 0)
+    return {
+        "string": _encode(bp),
+        "source": rec["source"],
+        "source_id": str(rec.get("id", "")),
+        "url": rec.get("url") or "",
+        "title": rec.get("title") or "",
+        "label": bp.get("label") or "",
+        "version": f"{v >> 48}.{(v >> 32) & 0xFFFF}.{(v >> 16) & 0xFFFF}",
+        "n_entities": len(ents),
+        "width": int(max(xs) - x0) + 1,
+        "height": int(max(ys) - y0) + 1,
+        "entity_counts": json.dumps(dict(counts.most_common())),
+        "modded": any(n not in _SIZES for n in counts),
+        "space_age": v >> 48 >= 2 and any(_SIZES.get(n, [0, 0, ""])[2] == "space-age" for n in counts),
+        "layout_hash": hashlib.blake2b(json.dumps(layout).encode(), digest_size=16).hexdigest(),
+    }
 
 
 def _records(paths: list[Path]):
@@ -95,8 +99,8 @@ def build(raw: list[Path], out: Path) -> Counter:
         pq.write_table(pa.Table.from_pylist(shard), out / "designs" / f"part-{n_shards:05d}.parquet")
         shard, n_shards = [], n_shards + 1
 
-    with ProcessPoolExecutor() as ex:
-        for rows in ex.map(_rows, _records(raw), chunksize=64):
+    with Pool() as pool:
+        for rows in pool.imap(_rows, _records(raw), chunksize=16):
             stats["records"] += 1
             for row in rows:
                 stats["designs"] += 1
