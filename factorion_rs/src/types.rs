@@ -503,6 +503,7 @@ impl Item {
                 | Item::Roboport
                 | Item::Radar
                 | Item::SmallLamp
+                | Item::StoneWall
                 | Item::WoodenChest
                 | Item::IronChest
                 | Item::SteelChest
@@ -558,7 +559,12 @@ impl Item {
     pub fn is_inert(self) -> bool {
         matches!(
             self,
-            Item::SolarPanel | Item::Accumulator | Item::Roboport | Item::Radar | Item::SmallLamp
+            Item::SolarPanel
+                | Item::Accumulator
+                | Item::Roboport
+                | Item::Radar
+                | Item::SmallLamp
+                | Item::StoneWall
         )
     }
 

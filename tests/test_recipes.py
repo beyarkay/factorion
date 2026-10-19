@@ -75,7 +75,9 @@ class TestPyItemsBinding:
         # not by id range, so it sits in the placeable set despite its id.
         lhi_id = next(v for v in ids if rs[v]["name"] == "long_handed_inserter")
         poles = {v for v in ids if rs[v]["name"].endswith(("electric_pole", "substation"))}
-        inert = {v for v in ids if rs[v]["name"] in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp")}
+        inert = {
+            v for v in ids if rs[v]["name"] in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
+        }
         chests = {v for v in ids if rs[v]["name"] in ("wooden_chest", "iron_chest", "steel_chest")}
         furnaces = {v for v in ids if rs[v]["name"] in ("stone_furnace", "steel_furnace", "electric_furnace")}
         # Placeable: agent-buildable (1..5) + the long-handed inserter + the

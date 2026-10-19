@@ -41,7 +41,7 @@ ID = {n: str2ent(n).value for n in (
 )}
 CHESTS = ("wooden_chest", "iron_chest", "steel_chest")
 FURNACES = ("stone_furnace", "steel_furnace", "electric_furnace")
-INERT = ("solar_panel", "accumulator", "roboport", "radar", "small_lamp")
+INERT = ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
 BELTISH = {ID["transport_belt"], ID["underground_belt"], ID["splitter"]}
 C = dict(
     unbuildable="#4a4a4a", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
@@ -217,7 +217,7 @@ LEGEND = [
     Patch(facecolor=C["pole"], label="electric pole (bolt)"),
     Patch(facecolor=C["chest"], edgecolor=C["asm_edge"], label="chest (icon)"),
     Patch(facecolor=C["furnace"], edgecolor=C["asm_edge"], label="furnace (smelts what it is fed)"),
-    Patch(facecolor=C["inert"], edgecolor=C["asm_edge"], label="solar, accumulator, roboport, radar, lamp"),
+    Patch(facecolor=C["inert"], edgecolor=C["asm_edge"], label="solar, accumulator, roboport, radar, lamp, wall"),
     Patch(facecolor=C["powered"], label="powered tile"),
     Patch(facecolor=C["source"], label="source (item icon)"),
     Patch(facecolor=C["sink"], label="sink (item icon)"),

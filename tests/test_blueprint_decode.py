@@ -225,7 +225,7 @@ def test_round_trip_assembler_3x3_recipe_preserved():
     "name",
     [
         "wooden_chest", "iron_chest", "steel_chest", "stone_furnace", "steel_furnace", "electric_furnace",
-        "big_electric_pole", "solar_panel", "accumulator", "roboport", "radar", "small_lamp",
+        "big_electric_pole", "solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall",
     ],
 )
 def test_round_trip_human_only_entity(name):

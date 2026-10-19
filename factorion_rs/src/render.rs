@@ -40,6 +40,7 @@ pub(crate) const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('R', Item::Roboport, Misc::None),
     ('r', Item::Radar, Misc::None),
     ('L', Item::SmallLamp, Misc::None),
+    ('W', Item::StoneWall, Misc::None),
     ('w', Item::WoodenChest, Misc::None),
     ('c', Item::IronChest, Misc::None),
     ('C', Item::SteelChest, Misc::None),

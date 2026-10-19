@@ -327,7 +327,9 @@ POLE_ENT_IDS = tuple(
     str2ent(n).value for n in ("small_electric_pole", "medium_electric_pole", "big_electric_pole", "substation")
 )
 # Footprints that carry no items (`Item::is_inert`).
-INERT_ENT_IDS = tuple(str2ent(n).value for n in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp"))
+INERT_ENT_IDS = tuple(
+    str2ent(n).value for n in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
+)
 # Entities with no facing, stored with Direction.NONE.
 UNDIRECTED_ENT_IDS = POLE_ENT_IDS + INERT_ENT_IDS + tuple(
     str2ent(n).value
