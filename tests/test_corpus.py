@@ -196,17 +196,13 @@ def test_windows_need_belts_inserters_or_assemblers():
         assert (w[Channel.FOOTPRINT.value][belt] == Footprint.BUILDABLE.value).all()
 
 
-def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
-    """Lessons published as blueprints go through the whole corpus path —
-    scraped records, the built dataset, the SFT stream — and come out as
-    in-vocabulary training states."""
+def _lesson_corpus(tmp_path) -> list:
+    """The design shards of a corpus built from one lesson of each kind."""
     import gzip
     import json
 
     from corpus.build import build
-    from denoise import DenoiserUNet, _luts, free_mask
     from factorion_server.blueprint import world_tensor_to_blueprint_string
-    from sft import _iter_factories
 
     raw = tmp_path / "lessons.jsonl.gz"
     with gzip.open(raw, "wt") as f:
@@ -215,9 +211,18 @@ def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
             if factory is not None:
                 string = world_tensor_to_blueprint_string(factory.world_CWH.numpy())
                 f.write(json.dumps({"source": "test", "id": i, "string": string}) + "\n")
-    stats = build([raw], tmp_path / "out")
-    assert stats["kept/test"] > 0
-    files = sorted((tmp_path / "out" / "designs").glob("*.parquet"))
+    assert build([raw], tmp_path / "out")["kept/test"] > 0
+    return sorted((tmp_path / "out" / "designs").glob("*.parquet"))
+
+
+def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
+    """Lessons published as blueprints go through the whole corpus path —
+    scraped records, the built dataset, the SFT stream — and come out as
+    in-vocabulary training states."""
+    from denoise import DenoiserUNet, _luts, free_mask
+    from sft import _iter_factories
+
+    files = _lesson_corpus(tmp_path)
     states = torch.stack(list(itertools.islice(_iter_factories(16, 0, 0, 1, corpus_files=files, corpus_frac=1.0), 64)))
     L = _luts(states.device)
     s = states.long()
@@ -227,6 +232,21 @@ def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
     assert (s[:, Channel.FOOTPRINT.value] == Footprint.MASKED.value).any()
     model = DenoiserUNet(width=16, levels=1, blocks=1, attn_layers=1, attn_heads=1)
     assert model(states).shape[-2:] == states.shape[-2:]
+
+
+def test_workers_split_the_training_designs_and_never_see_held_out_ones(tmp_path, monkeypatch):
+    import corpus.convert as convert
+
+    files = _lesson_corpus(tmp_path)
+    monkeypatch.setattr(convert, "held_out", lambda h: int(h[:8], 16) % 3 == 0)
+    monkeypatch.setattr(convert, "window", lambda r, *_: r.ent.tobytes())
+
+    def seen(**kw) -> set:
+        return set(itertools.islice(convert.stream(files, 16, random.Random(0), **kw), 2000))
+
+    a, b, val = seen(worker=0, workers=2), seen(worker=1, workers=2), seen(val=True)
+    assert a and b and val and not (a & b) and not ((a | b) & val)
+    assert seen() == a | b
 
 
 def test_stats_count_a_lessons_entities_and_windows():

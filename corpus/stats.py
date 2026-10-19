@@ -3,9 +3,8 @@ current converter. Re-run it after teaching the engine an entity.
 
     uv run python -m corpus.stats corpus_out/designs/*.parquet [--size 32]
 
-`windows` counts the size × size tiles of every design's bounding box (no
-overlap, no augmentation) that pass `window`'s filter: a floor on the
-distinct training windows, which overlap, turn and mirror freely.
+`windows` counts `convert.views`: the windows of one epoch, and a floor on
+the distinct ones, which overlap, turn and mirror freely.
 """
 
 import argparse
@@ -17,7 +16,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from corpus.convert import cut, designs, rasterise
+from corpus.convert import designs, rasterise, views
 from factorion import items
 
 
@@ -42,12 +41,7 @@ def _design(size: int, row: dict) -> Counter:
     for recipe, tiles in Counter(r.item[r.inst > 0].tolist()).items():
         if recipe:
             c[f"recipe/{items[recipe].name}"] += tiles // 9
-    W, H = r.ent.shape
-    for x in range(0, W, size):
-        for y in range(0, H, size):
-            if cut(r, (slice(x, x + size), slice(y, y + size))) is not None:
-                c["windows"] += 1
-                c[f"source/{src}/windows"] += 1
+    c["windows"] = c[f"source/{src}/windows"] = views(r, size)
     return c
 
 

@@ -351,32 +351,58 @@ def download(repo: str) -> list[Path]:
     return sorted(root.glob("designs/*.parquet"))
 
 
-def stream(files: list[Path], size: int, rng: random.Random) -> Iterator[np.ndarray]:
-    """Windows of the corpus's unmodded designs, forever. Each design gives
-    about one window per quarter grid of its area, interleaved with
-    `_POOL` - 1 others."""
+def views(r: Raster, size: int) -> int:
+    """The size × size tiles of `r`'s bounding box (no overlap) that train:
+    its windows per epoch."""
+    W, H = r.ent.shape
+    return sum(cut(r, (slice(x, x + size), slice(y, y + size))) is not None for x in range(0, W, size) for y in range(0, H, size))
+
+
+def held_out(layout_hash: str) -> bool:
+    """The 1% of designs kept out of training, by layout so the split is the
+    same on every machine."""
+    return int(layout_hash[:8], 16) % 100 == 0
+
+
+def stream(
+    files: list[Path], size: int, rng: random.Random, worker: int = 0, workers: int = 1, val: bool = False
+) -> Iterator[np.ndarray]:
+    """Windows of the corpus's unmodded designs (the held-out ones if `val`),
+    in epochs: each design gives `views` windows per epoch, interleaved with
+    `_POOL` - 1 others. Worker `worker` of `workers` takes its own share of
+    the designs, so the workers together see each design once an epoch."""
     import pyarrow.parquet as pq
 
-    def rasters() -> Iterator[tuple[Raster, bool]]:
+    def rasters() -> Iterator[tuple[Raster, bool, int]]:
         while True:
             for f in rng.sample(files, len(files)):
-                rows = pq.read_table(f, columns=["string", "source"], filters=[("modded", "==", False)]).to_pylist()
+                pf = pq.ParquetFile(f)
+                meta = pf.read(columns=["source", "layout_hash", "modded"]).to_pylist()
+                mine = [
+                    not m["modded"] and held_out(m["layout_hash"]) == val and int(m["layout_hash"][8:16], 16) % workers == worker
+                    for m in meta
+                ]
+                # Only this worker's strings: a shard's are hundreds of MB, and every worker reads every shard.
+                strings = (s for b in pf.iter_batches(1024, columns=["string"]) for s in b.column(0).to_pylist())
+                rows = [(s, m["source"]) for s, m, ok in zip(strings, meta, mine) if ok]
                 rng.shuffle(rows)
-                for row in rows:
-                    r = rasterise(next(designs(row["string"])))
-                    if r is not None:
-                        yield r, row["source"].startswith("save:")
+                for string, src in rows:
+                    r = rasterise(next(designs(string)))
+                    if r is not None and (n := views(r, size)):
+                        yield r, src.startswith("save:"), n
 
     source = rasters()
     pool = list(itertools.islice(source, _POOL))
-    left = [1 + r.inst.size * 4 // size**2 for r, _ in pool]
+    # A view `views` counts can fail as a random window: give up on a design after 4x its quota of tries.
+    left = [[n, 4 * n] for *_, n in pool]
     while True:
         i = rng.randrange(len(pool))
-        r, region = pool[i]
+        r, region, _ = pool[i]
         w = window(r, size, rng, region)
-        left[i] -= 1
-        if left[i] == 0:
-            pool[i] = next(source)
-            left[i] = 1 + pool[i][0].inst.size * 4 // size**2
+        left[i][1] -= 1
         if w is not None:
+            left[i][0] -= 1
             yield w
+        if min(left[i]) == 0:
+            pool[i] = next(source)
+            left[i] = [pool[i][2], 4 * pool[i][2]]

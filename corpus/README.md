@@ -50,6 +50,12 @@ cached.
   The whole grid is then turned and mirrored. A view trains only if at least
   10% of it is known entities, at most 50% is masked, and it holds a belt,
   inserter or assembler.
+- `stream` runs in epochs: each design gives `views` windows an epoch (the
+  grid-sized tiles of it that would train, about 650k over the corpus at
+  32 × 32), each DataLoader worker takes its own share of the designs, and
+  the 1% `held_out` by layout hash never train. SFT scores those as
+  `val/corpus/...` and, when `corpus_frac` is 1 (thput then means nothing
+  yet), selects checkpoints on `val/corpus/type_acc`.
 
 ## Commands
 

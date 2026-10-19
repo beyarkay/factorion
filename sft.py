@@ -203,7 +203,7 @@ def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0, corpu
     consecutive_fails = {k.name: 0 for k in kinds}
     rng = random.Random(base_seed + worker_id)
 
-    human = corpus.stream(list(corpus_files), size, random.Random(rng.random())) if corpus_frac else None
+    human = corpus.stream(list(corpus_files), size, random.Random(rng.random()), worker_id, num_workers) if corpus_frac else None
 
     seed = base_seed + worker_id
     while True:
@@ -422,9 +422,10 @@ def denoise_step(model, state, noisy, args: SftArgs, scale=1.0):
 
 
 @torch.no_grad()
-def val_denoise_metrics(model, val_states, args: SftArgs, device) -> dict:
+def val_denoise_metrics(model, val_states, args: SftArgs, device, prefix: str = "val") -> dict:
     """Denoising accuracy of the clean-factory prediction at fixed noise
-    levels on held-out factories (same noise draw every eval)."""
+    levels on held-out factories (same noise draw every eval), keyed under
+    `prefix`."""
     model.eval()
     gen = torch.Generator(device=device).manual_seed(args.seed)
     out: dict = {}
@@ -453,15 +454,15 @@ def val_denoise_metrics(model, val_states, args: SftArgs, device) -> dict:
             n = float(free.sum())
             loss_sum += n * float(sum(v for k, v in model.losses(logits, clean, free).items() if k != "cost"))
             n_tiles += n
-        tag = f"val/t{t:.2f}"
+        tag = f"{prefix}/t{t:.2f}"
         out[f"{tag}/loss"] = loss_sum / max(n_tiles, 1)
         out[f"{tag}/exact"] = exact / len(val_states)
         for name in hits:
             out[f"{tag}/{name}_acc"] = hits[name] / max(counts[name], 1)
     for key in ("loss", *(f"{h}_acc" for h in heads)):
-        out[f"val/{key}"] = float(np.mean([out[f"val/t{t:.2f}/{key}"] for t in _VAL_NOISE_LEVELS]))
+        out[f"{prefix}/{key}"] = float(np.mean([out[f"{prefix}/t{t:.2f}/{key}"] for t in _VAL_NOISE_LEVELS]))
     # A clean factory left untouched: the stopping criterion of generation.
-    out["val/identity"] = out["val/t0.00/exact"]
+    out[f"{prefix}/identity"] = out[f"{prefix}/t0.00/exact"]
     return out
 
 
@@ -565,6 +566,10 @@ def train_sft(args: SftArgs):
     )
 
     corpus_files = corpus.download(args.corpus_repo) if args.corpus_frac else []
+    corpus_val = None
+    if corpus_files:
+        held_out = corpus.stream(corpus_files, args.size, random.Random(args.seed), val=True)
+        corpus_val = torch.stack([torch.from_numpy(world_to_state(w)) for w in itertools.islice(held_out, 512)])
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
         model = load_denoiser(resolve_checkpoint(args.start_from, args.wandb_project_name, args.wandb_entity)[0])
@@ -635,7 +640,8 @@ def train_sft(args: SftArgs):
         eval_every = 250_000 if args.num_samples <= 2_000_000 else 1_000_000
     next_eval = eval_every
     best_thput, uploaded, pending = -1.0, None, False
-    key = f"val/thput@{args.eval_best_of}"
+    # Without lessons nothing has learnt to connect markers yet, so thput is ~0 noise.
+    key = "val/corpus/type_acc" if args.corpus_frac == 1 else f"val/thput@{args.eval_best_of}"
     samples_seen = step = 0
     acc: dict[str, torch.Tensor] = {}
     n_acc = 0
@@ -675,6 +681,8 @@ def train_sft(args: SftArgs):
         acc, n_acc = {}, 0
         t_eval = time.time()
         metrics |= val_denoise_metrics(ema, val_states, args, device)
+        if corpus_val is not None:
+            metrics |= val_denoise_metrics(ema, corpus_val, args, device, "val/corpus")
         t_gen = time.time()
         metrics |= generation_metrics(ema, factories, args, device)
         metrics |= {
