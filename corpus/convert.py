@@ -3,10 +3,11 @@
 The corpus stores raw exchange strings so that every conversion decision lives
 here and re-runs at load time: teaching the engine a new entity only means
 editing `_KNOWN`. A blueprint is rasterised once (`rasterise`), then any number
-of windows are cut from it (`window`). Entities the engine doesn't model are
-*masked*: their tiles, like everything past a window's edge, become
-`Footprint.MASKED`, so no loss reaches them, while what the game forbids (a
-save's water, lava, space, cliffs) is `Footprint.UNBUILDABLE`.
+of windows are cut from it (`window`): a build region whose human layout is
+the target, inside a view of the rest of the factory as unbuildable context
+to connect to. Entities the engine doesn't model are *masked*: their tiles
+become `Footprint.MASKED`, so no loss reaches them, while what the game forbids
+(a save's water, lava, space, cliffs) is `Footprint.UNBUILDABLE`.
 """
 
 import base64
@@ -226,18 +227,20 @@ def orient(chans: list[np.ndarray], turns: int, mirror: bool) -> list[np.ndarray
     return chans
 
 
-# A window trains only if known entities cover this much of it, masked ones at
+# A view trains only if known entities cover this much of it, masked ones at
 # most this much, and it holds one of these: a field of solar panels or a row
 # of lamps says nothing about moving items.
 MIN_KNOWN, MAX_MASKED = 0.1, 0.5
 _FLOW = [str2ent(n).value for n in ("transport_belt", "underground_belt", "splitter", "inserter", "long_handed_inserter", "assembling_machine_1")]
+# Shortest side of a build region, where the view allows.
+_MIN_REGION = 8
 
 
 def cut(
     r: Raster, sl: tuple[slice, slice], min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
 ) -> Optional[np.ndarray]:
-    """The tiles of the known entities wholly inside the window `sl` of `r`,
-    or None when the window doesn't train."""
+    """The tiles of the known entities wholly inside the view `sl` of `r`, or
+    None when the view doesn't train."""
     inst = r.inst[sl]
     inner = np.bincount(inst[inst > 0], minlength=len(r.tiles))
     keep = (inst > 0) & (inner == r.tiles)[np.maximum(inst, 0)]
@@ -246,37 +249,93 @@ def cut(
     return keep
 
 
-def window(
-    r: Raster, size: int, rng: random.Random, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
-) -> Optional[np.ndarray]:
-    """A random size × size window of `r` (smaller only where the blueprint
-    is), randomly turned and mirrored, placed anywhere in a size × size
-    (C, W, H) world. Everything outside the window, every masked tile and
-    every entity the window's edge cuts through is masked. None when the
-    window doesn't train (`cut`)."""
+@dataclass
+class Frame:
+    """`window`'s random choices: the view of the blueprint the grid shows
+    (x, y, w, h), the build region inside it (bx, by, bw, bh, from the view's
+    corner), where the view sits in the grid (ox, oy), then the turn and
+    mirror of the whole grid."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    bx: int
+    by: int
+    bw: int
+    bh: int
+    ox: int
+    oy: int
+    turns: int
+    mirror: bool
+
+
+def frame(r: Raster, size: int, rng: random.Random) -> Optional[Frame]:
+    """A random `Frame` whose build region holds a belt, inserter or
+    assembler; None when `r` has none."""
     W, H = r.ent.shape
     w, h = min(W, size), min(H, size)
-    # Centre the window on a random known tile so sparse blueprints still yield.
-    xs, ys = np.nonzero(r.inst > 0)
-    k = rng.randrange(len(xs))
-    x0 = min(max(0, xs[k] - rng.randrange(w)), W - w)
-    y0 = min(max(0, ys[k] - rng.randrange(h)), H - h)
-    sl = (slice(x0, x0 + w), slice(y0, y0 + h))
+    fx, fy = np.nonzero((r.inst > 0) & np.isin(r.ent, _FLOW))
+    if not len(fx):
+        return None
+    k = rng.randrange(len(fx))
+    x = min(max(0, fx[k] - rng.randrange(w)), W - w)
+    y = min(max(0, fy[k] - rng.randrange(h)), H - h)
+    px, py = fx[k] - x, fy[k] - y
+    bw, bh = rng.randint(min(_MIN_REGION, w), w), rng.randint(min(_MIN_REGION, h), h)
+    bx = rng.randint(max(0, px - bw + 1), min(px, w - bw))
+    by = rng.randint(max(0, py - bh + 1), min(py, h - bh))
+    ox, oy = rng.randint(0, size - w), rng.randint(0, size - h)
+    return Frame(int(x), int(y), w, h, int(bx), int(by), bw, bh, ox, oy, rng.randrange(4), rng.random() < 0.5)
+
+
+def place(
+    r: Raster, f: Frame, size: int, region: bool = False, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
+) -> Optional[np.ndarray]:
+    """The size × size (C, W, H) world of `f`: the build region is buildable,
+    with the human's layout as its target; the rest of the view is the
+    unbuildable context it connects to, its known entities kept. Unmodelled
+    entities and those the view's edge cuts are masked. Past the blueprint's
+    edge is unbuildable, but for a one-tile masked band, so the design's own
+    inputs and outputs lead somewhere unknown; past a save `region`'s edge
+    is more world, so masked. None when the view doesn't train (`cut`)."""
+    sl = (slice(f.x, f.x + f.w), slice(f.y, f.y + f.h))
     keep = cut(r, sl, min_known, max_masked)
     if keep is None:
         return None
-    chans = [np.where(keep, a[sl], 0) for a in (r.ent, r.dir, r.item, r.misc)]
-    chans.append(_footprint(r.inst[sl], keep))
-    chans = orient(chans, rng.randrange(4), rng.random() < 0.5)
-    w, h = chans[0].shape
+    inst = r.inst[sl]
+    inside = np.zeros_like(keep)
+    inside[f.bx : f.bx + f.bw, f.by : f.by + f.bh] = True
+    # An entity straddling the build region's edge is context: never half a machine to build.
+    inner = np.bincount(inst[keep & inside], minlength=len(r.tiles))
+    build = keep & (inner == r.tiles)[np.maximum(inst, 0)]
+    footprint = np.select(
+        [build | (inside & (inst == 0)), keep | (inst == 0) | (inst == _TERRAIN)],
+        [Footprint.BUILDABLE.value, Footprint.UNBUILDABLE.value],
+        Footprint.MASKED.value,
+    )
+    W, H = r.ent.shape
+    gx, gy = np.arange(size)[:, None] - f.ox, np.arange(size)[None, :] - f.oy
+    past = ((gx < 0) & (f.x == 0)) | ((gx >= f.w) & (f.x + f.w == W)) | ((gy < 0) & (f.y == 0)) | ((gy >= f.h) & (f.y + f.h == H))
+    band = (gx >= -1) & (gx <= f.w) & (gy >= -1) & (gy <= f.h)
     world = np.zeros((len(Channel), size, size), np.int64)
-    world[Channel.FOOTPRINT.value] = Footprint.MASKED.value
-    ox, oy = rng.randint(0, size - w), rng.randint(0, size - h)
-    for c, a in zip((Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC, Channel.FOOTPRINT), chans):
-        world[c.value, ox : ox + w, oy : oy + h] = a
+    world[Channel.FOOTPRINT.value] = np.where(past & ~band & (not region), Footprint.UNBUILDABLE.value, Footprint.MASKED.value)
+    view = (slice(f.ox, f.ox + f.w), slice(f.oy, f.oy + f.h))
+    for c, a in zip((Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC), (r.ent, r.dir, r.item, r.misc)):
+        world[c.value][view] = np.where(keep, a[sl], 0)
+    world[Channel.FOOTPRINT.value][view] = footprint
+    world = np.ascontiguousarray(np.stack(orient(list(world), f.turns, f.mirror)))
     refresh_power(torch.from_numpy(world))
     return world
 
+
+def window(
+    r: Raster, size: int, rng: random.Random, region: bool = False, min_known: float = MIN_KNOWN, max_masked: float = MAX_MASKED
+) -> Optional[np.ndarray]:
+    """A random training world of `r` (`frame`, `place`); `region` for a save
+    region rather than a blueprint."""
+    f = frame(r, size, rng)
+    return None if f is None else place(r, f, size, region, min_known, max_masked)
 
 
 # Designs windowed at once: consecutive windows come from different designs.
@@ -298,25 +357,26 @@ def stream(files: list[Path], size: int, rng: random.Random) -> Iterator[np.ndar
     `_POOL` - 1 others."""
     import pyarrow.parquet as pq
 
-    def rasters() -> Iterator[Raster]:
+    def rasters() -> Iterator[tuple[Raster, bool]]:
         while True:
             for f in rng.sample(files, len(files)):
-                strings = pq.read_table(f, columns=["string"], filters=[("modded", "==", False)]).column("string").to_pylist()
-                rng.shuffle(strings)
-                for s in strings:
-                    r = rasterise(next(designs(s)))
+                rows = pq.read_table(f, columns=["string", "source"], filters=[("modded", "==", False)]).to_pylist()
+                rng.shuffle(rows)
+                for row in rows:
+                    r = rasterise(next(designs(row["string"])))
                     if r is not None:
-                        yield r
+                        yield r, row["source"].startswith("save:")
 
     source = rasters()
     pool = list(itertools.islice(source, _POOL))
-    left = [1 + r.inst.size * 4 // size**2 for r in pool]
+    left = [1 + r.inst.size * 4 // size**2 for r, _ in pool]
     while True:
         i = rng.randrange(len(pool))
-        w = window(pool[i], size, rng)
+        r, region = pool[i]
+        w = window(r, size, rng, region)
         left[i] -= 1
         if left[i] == 0:
             pool[i] = next(source)
-            left[i] = 1 + pool[i].inst.size * 4 // size**2
+            left[i] = 1 + pool[i][0].inst.size * 4 // size**2
         if w is not None:
             yield w

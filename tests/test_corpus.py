@@ -143,35 +143,57 @@ def test_undergrounds_mask_unless_yellow_reach_pairs_them_alike(tier, gap, kept)
     assert ((r.inst[[1, 2 + gap], 0] > 0) == kept).all()
 
 
-def test_window_masks_the_entities_its_edge_cuts():
-    """A window of a row of assemblers only ever keeps whole machines, on
-    buildable tiles; the ones its edge cuts and the grid around it are
-    masked, never unbuildable."""
-    r = _raster(_bp(*(("assembling-machine-1", 1.5 + 3 * i, 1.5, {"recipe": "iron-gear-wheel"}) for i in range(10))))
+def test_build_region_is_buildable_and_the_rest_of_the_view_context():
+    """In a view of a long row of assemblers, the build region is a buildable
+    rectangle; the other whole machines are unbuildable context; machines the
+    view's edge cuts are masked."""
+    r = _raster(_bp(*(("assembling-machine-1", 1.5 + 3 * i, 1.5, {"recipe": "iron-gear-wheel"}) for i in range(20))))
     rng = random.Random(0)
     for _ in range(50):
-        w = window(r, 16, rng, min_known=0, max_masked=1)
+        w = window(r, 32, rng, max_masked=1)
         assert w is not None
+        fp = w[Channel.FOOTPRINT.value]
         asm = w[Channel.ENTITIES.value] == str2ent("assembling_machine_1").value
         assert asm.sum() % 9 == 0
-        fp = w[Channel.FOOTPRINT.value]
-        assert (fp[asm] == Footprint.BUILDABLE.value).all()
-        assert (fp == Footprint.MASKED.value).any() and not (fp == Footprint.UNBUILDABLE.value).any()
+        assert np.isin(fp[asm], [Footprint.BUILDABLE.value, Footprint.UNBUILDABLE.value]).all()
+        xs, ys = np.nonzero(fp == Footprint.BUILDABLE.value)
+        assert len(xs) == (xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1)
+        assert (fp == Footprint.MASKED.value).any()
+
+
+@pytest.mark.parametrize("region", [False, True])
+def test_past_a_blueprint_is_unbuildable_but_for_a_masked_band(region):
+    """Around a design smaller than the grid lies a one-tile masked band, so
+    its inputs and outputs lead somewhere unknown, then unbuildable tiles; a
+    save region's world goes on, so all of it is masked."""
+    r = _raster(_bp(
+        ("assembling-machine-1", 1.5, 1.5, {"recipe": "iron-gear-wheel"}),
+        ("inserter", 3.5, 1.5, {"direction": 12}),
+        ("transport-belt", 4.5, 1.5, {"direction": 0}),
+    ))
+    w = window(r, 32, random.Random(0), region=region)
+    assert w is not None
+    fp = w[Channel.FOOTPRINT.value]
+    xs, ys = np.nonzero(w[Channel.ENTITIES.value])
+    gx, gy = np.arange(32)[:, None], np.arange(32)[None, :]
+    gap = np.maximum(np.maximum(xs.min() - gx, gx - xs.max()), np.maximum(ys.min() - gy, gy - ys.max()))
+    assert (fp[gap == 1] == Footprint.MASKED.value).all()
+    beyond = Footprint.MASKED.value if region else Footprint.UNBUILDABLE.value
+    assert (fp[gap >= 2] == beyond).all()
 
 
 def test_windows_need_belts_inserters_or_assemblers():
     """A field of solar panels never trains; the same field with one belt
-    does, in a window as big as the blueprint where it is smaller than the
-    grid."""
+    does, and the belt is in the build region."""
     field = [("solar-panel", 1.5 + 3 * i, 1.5 + 3 * j, {}) for i in range(8) for j in range(8)]
     rng = random.Random(0)
     assert all(window(_raster(_bp(*field)), 32, rng) is None for _ in range(20))
     r = _raster(_bp(*field, ("transport-belt", 24.5, 24.5, {})))
-    ws = [w for w in (window(r, 32, rng, max_masked=1) for _ in range(50)) if w is not None]
+    ws = [w for w in (window(r, 32, rng, max_masked=1) for _ in range(20)) if w is not None]
     assert ws
     for w in ws:
-        xs, ys = np.nonzero(w[Channel.FOOTPRINT.value] != Footprint.MASKED.value)
-        assert (xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) in (r.ent.shape, r.ent.shape[::-1])
+        belt = w[Channel.ENTITIES.value] == str2ent("transport_belt").value
+        assert (w[Channel.FOOTPRINT.value][belt] == Footprint.BUILDABLE.value).all()
 
 
 def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):

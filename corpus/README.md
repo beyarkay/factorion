@@ -35,11 +35,21 @@ cached.
   Rails entity's footprint, dumped from the game:
   `/sc local o={} for n,p in pairs(prototypes.entity) do o[n]={p.tile_width,p.tile_height,prototypes.get_history(p.type,n).created} end helpers.write_file("sizes.json",helpers.table_to_json(o))`
   (non-buildable prototypes such as explosions and corpses are filtered out).
-- `window` cuts a window as big as the grid (smaller only where the
-  blueprint is) around a known entity, masks whatever its edge cuts through,
-  turns and mirrors it, and places it anywhere in the grid with everything
-  outside it masked. A window trains only if at least 10% of it is known
-  entities, at most 50% is masked, and it holds a belt, inserter or assembler.
+- `window` shows a view of the design as big as the grid (smaller only where
+  the design is), and picks a random build region in it (8 tiles a side up
+  to the whole view) around a belt, inserter or assembler:
+  - the build region is `BUILDABLE`; the human's layout there is the target;
+  - the rest of the view is `UNBUILDABLE` context that keeps its known
+    entities, so the build has to connect to the factory around it (an
+    entity straddling the region's edge is context);
+  - unmodelled entities, and entities the view's edge cuts, are `MASKED`;
+  - past a blueprint's edge is `UNBUILDABLE`, but for a one-tile `MASKED`
+    band so its own inputs and outputs lead somewhere unknown; past a save
+    region's edge is more world, so `MASKED`.
+
+  The whole grid is then turned and mirrored. A view trains only if at least
+  10% of it is known entities, at most 50% is masked, and it holds a belt,
+  inserter or assembler.
 
 ## Commands
 
