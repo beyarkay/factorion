@@ -70,6 +70,11 @@ class TestSftCommand:
         cmd = sft_command(SftJob(sha=SHA, num_samples=123))
         assert cmd[cmd.index("--num-samples") + 1] == "123"
 
+    def test_start_from_and_eval_best_of_pass_through(self):
+        cmd = sft_command(SftJob(sha=SHA, start_from="abc123", eval_best_of=64))
+        assert cmd[cmd.index("--start-from") + 1] == "abc123" and "from:abc123" in cmd
+        assert cmd[cmd.index("--eval-best-of") + 1] == "64"
+
     def test_tags_identify_the_run(self):
         cmd = sft_command(SftJob(sha=SHA, extra_tags=["pr:42"]))
         assert "ci" in cmd and "kind:sft" in cmd and f"sha:{SHA[:7]}" in cmd
@@ -334,6 +339,7 @@ class TestWatchdog:
 class TestBudgets:
     def test_budgets_scale_with_work(self):
         assert sft_budget_seconds(10_000_000) > sft_budget_seconds(1_000_000)
+        assert sft_budget_seconds(1_000_000, eval_best_of=64) > sft_budget_seconds(1_000_000)
         assert rl_budget_seconds(1_000_000) > rl_budget_seconds(100_000)
 
     def test_one_seed_compare_budget_equals_single_run(self):

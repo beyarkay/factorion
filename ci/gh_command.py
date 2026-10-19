@@ -247,13 +247,17 @@ def cmd_sft(args, ctx) -> None:
         ctx, args.num_samples, CLAUDE_MAX_NUM_SAMPLES, SftArgs.num_samples
     )
     job = SftJob(
-        sha=ctx["sha"], num_samples=args.num_samples, extra_tags=[f"pr:{ctx['pr']}"]
+        sha=ctx["sha"],
+        num_samples=args.num_samples,
+        start_from=args.start_from,
+        eval_best_of=args.eval_best_of,
+        extra_tags=[f"pr:{ctx['pr']}"],
     )
     infos = launch([job], args.gpu_type)
     _post(
         ctx,
         _launched_comment(
-            f"SFT run launched at {_commit_link(ctx['sha'])}",
+            f"SFT run launched at {_commit_link(ctx['sha'])}" + (f" (from `{args.start_from}`)" if args.start_from else ""),
             infos,
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
@@ -617,6 +621,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("sft", add_help=False)
     sp.add_argument("--num-samples", type=si_int, default=None)
+    sp.add_argument("--start-from", default=None)
+    sp.add_argument("--eval-best-of", type=int, default=None)
     common(sp)
 
     sp = sub.add_parser("rl", add_help=False)
