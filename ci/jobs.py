@@ -53,7 +53,11 @@ def sft_command(job: SftJob) -> list[str]:
     cmd = [sys.executable, "sft.py", "--track"]
     if job.num_samples is not None:
         cmd += ["--num-samples", str(job.num_samples)]
-    return cmd + _run_overrides(job) + _tags(job)
+    if job.eval_best_of is not None:
+        cmd += ["--eval-best-of", str(job.eval_best_of)]
+    if job.start_from is None:
+        return cmd + _run_overrides(job) + _tags(job)
+    return cmd + ["--start-from", job.start_from] + _run_overrides(job) + _tags(job, f"from:{job.start_from}")
 
 
 def rl_command(job: RlJob) -> list[str]:

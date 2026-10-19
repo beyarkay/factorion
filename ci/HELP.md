@@ -11,6 +11,7 @@ comes from `training_config.py`. Full grammar: `ci/README.md`.
 
 # single runs
 /ci sft --num-samples 5M
+/ci sft --start-from abc123 --eval-best-of 64   # continue an SFT checkpoint, best-of-64 eval
 /ci rl --start-from abc123 --total-timesteps 40M
 
 # comparisons — N seeds/side; add `assert` lines for a pass/fail status
