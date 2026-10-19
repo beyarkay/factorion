@@ -1,8 +1,8 @@
 """CLI command functions. `python -m ci` maps each onto a subcommand.
 
 Deliberately tiny override surface: a commitish plus the few job-specific
-knobs (SFT num_samples, RL start_from/total_timesteps, compare seeds, sweep
-pod counts). Every other hyperparameter comes from training_config.py.
+knobs (SFT num_samples/start_from/eval_best_of, RL start_from/total_timesteps,
+compare seeds, sweep pod counts). Every other hyperparameter comes from training_config.py.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ from factory_diff import PER_KIND_DEFAULT
 def sft(
     ref: str,
     num_samples: Optional[int] = None,
+    start_from: Optional[str] = None,
+    eval_best_of: Optional[int] = None,
     gpu_type: Optional[str] = None,
     dry_run: bool = False,
     no_wait: bool = False,
@@ -39,11 +41,13 @@ def sft(
     Args:
         ref: Commitish to train (branch / tag / SHA); must be pushed to origin.
         num_samples: Samples per epoch; default = SftArgs().num_samples.
+        start_from: W&B run id of an SFT checkpoint to continue training; default = a fresh model.
+        eval_best_of: Chains per held-out factory in the generation eval; default = SftArgs().eval_best_of.
         gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating a pod.
         no_wait: Return right after pod creation instead of waiting for boot.
     """
-    job = SftJob(sha=resolve_ref(ref), num_samples=num_samples)
+    job = SftJob(sha=resolve_ref(ref), num_samples=num_samples, start_from=start_from, eval_best_of=eval_best_of)
     launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 

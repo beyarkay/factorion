@@ -4,7 +4,8 @@ This module is the single source of truth for *infrastructure* knobs (docker
 image, GPU lineup, pod naming, time budgets). Training hyperparameters are NOT
 here — they live in `training_config.py` and flow into jobs untouched: a job
 spec only carries the handful of fields the CLI is allowed to override
-(commitish, SFT num_samples, RL start_from/total_timesteps, compare seeds).
+(commitish, SFT num_samples/start_from/eval_best_of, RL start_from/total_timesteps,
+compare seeds).
 Anything a spec leaves as None is simply not passed on the training command
 line, so the `training_config.py` default applies.
 
@@ -141,10 +142,13 @@ SWEEP_BUDGET_SECONDS = 24 * 3600  # sweeps run until run_cap (from the yaml)
 AGENTS_PER_POD_DEFAULT = 1
 
 
-def sft_budget_seconds(num_samples: int) -> int:
+def sft_budget_seconds(num_samples: int, eval_best_of: int = 8) -> int:
     # 15x15 SFT trains at ~1.9 s per 1000 samples (eyrcyuq9); a pod that
-    # outlives its run costs nothing, one killed short loses the run.
-    return int(num_samples / 1000 * 3.0) + SETUP_SLACK_SECONDS
+    # outlives its run costs nothing, one killed short loses the run. A
+    # best-of-8 generation eval takes ~70 s (w2a3bpd7), scaling with its
+    # chains, and runs at most every 250k samples.
+    evals = num_samples // 250_000 + 2
+    return int(num_samples / 1000 * 3.0 + evals * 140 * eval_best_of / 8) + SETUP_SLACK_SECONDS
 
 
 def rl_budget_seconds(total_timesteps: int) -> int:
@@ -174,6 +178,8 @@ class SftJob:
 
     sha: str
     num_samples: Optional[int] = None  # None = SftArgs default
+    start_from: Optional[str] = None  # W&B run id to continue from; None = fresh model
+    eval_best_of: Optional[int] = None  # None = SftArgs default
     seed: Optional[int] = None  # None = SftArgs default
     group: Optional[str] = None  # W&B group
     extra_tags: list[str] = field(default_factory=list)
@@ -183,7 +189,7 @@ class SftJob:
     def budget_seconds(self) -> int:
         defaults = SftArgs()
         n = self.num_samples if self.num_samples is not None else defaults.num_samples
-        return sft_budget_seconds(n)
+        return sft_budget_seconds(n, self.eval_best_of or defaults.eval_best_of)
 
 
 @dataclass
