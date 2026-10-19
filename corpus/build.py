@@ -89,9 +89,11 @@ def _records(paths: list[Path]):
 
 
 def build(raw: list[Path], out: Path) -> Counter:
-    """Write `out/raw` and `out/designs` from the scraped records in `raw`."""
+    """Write `out/raw`, `out/designs` and the dataset card from the scraped
+    records in `raw`."""
     (out / "raw").mkdir(parents=True, exist_ok=True)
     (out / "designs").mkdir(exist_ok=True)
+    shutil.copy(Path(__file__).parent / "dataset_card.md", out / "README.md")
     for p in raw:
         shutil.copy(p, out / "raw" / p.name)
     seen: set[str] = set()
