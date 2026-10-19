@@ -5638,7 +5638,7 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
             .flat_map(|x| (0..h as i64).map(move |y| (x, y)))
             .filter(|&(x, y)| {
                 world.entity_at(x as usize, y as usize).is_none()
-                    && world.get(x as usize, y as usize, Channel::Footprint) != 0
+                    && world.get(x as usize, y as usize, Channel::Footprint) == 1
             })
             .collect();
         let gain = |&(x, y): &Cell| {

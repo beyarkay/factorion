@@ -9,7 +9,7 @@ import torch
 from helpers import Channel, Direction, LessonKind, Misc, blank_entities, build_factory, str2ent
 import factorion_rs
 from denoise import TYPES
-from factorion import POLE_ENT_IDS, UNDIRECTED_ENT_IDS, apply_placement_action, count_unpowered
+from factorion import POLE_ENT_IDS, UNDIRECTED_ENT_IDS, Footprint, apply_placement_action, count_unpowered
 
 POWER = Channel.POWER.value
 MEDIUM_POLE = str2ent("medium_electric_pole").value
@@ -81,3 +81,13 @@ def test_a_pole_has_no_facing():
 
 def test_the_denoiser_places_undirected_entities_facing_nowhere():
     assert {d for e, d, _ in TYPES if e in UNDIRECTED_ENT_IDS} == {Direction.NONE.value}
+
+
+def test_unknown_tiles_on_the_edge_power_a_pole_as_unbuildable_ones_do():
+    """What lies past a human blueprint's window is off the map to the factory,
+    so a pole can draw power from it just as from unbuildable tiles."""
+    for footprint in (Footprint.UNAVAILABLE, Footprint.UNKNOWN):
+        world = _empty_world(30)
+        world[Channel.FOOTPRINT.value, :20] = footprint.value
+        assert _place(world, 22, 5, MEDIUM_POLE) is None
+        assert world[POWER, 22, 5] == 1

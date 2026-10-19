@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from corpus.convert import orient, rasterise, window
+from corpus.convert import orient, rasterise, to_world, window
 from denoise import score_world
 from factorion import LESSON_IS_TRIAL, Channel, Footprint, LessonKind, build_factory, str2ent
 from factorion_server.blueprint import world_tensor_to_blueprint_dict
@@ -144,8 +144,9 @@ def test_undergrounds_mask_unless_yellow_reach_pairs_them_alike(tier, gap, kept)
 
 
 def test_window_masks_the_entities_its_edge_cuts():
-    """A window of a row of assemblers only ever keeps whole machines; the
-    rest of the window and the grid around it are unbuildable."""
+    """A window of a row of assemblers only ever keeps whole machines, on
+    buildable tiles; the ones its edge cuts and the grid around it are
+    unknown, never unbuildable."""
     r = _raster(_bp(*(("assembling-machine-1", 1.5 + 3 * i, 1.5, {"recipe": "iron-gear-wheel"}) for i in range(10))))
     rng = random.Random(0)
     for _ in range(50):
@@ -153,7 +154,9 @@ def test_window_masks_the_entities_its_edge_cuts():
         assert w is not None
         asm = w[Channel.ENTITIES.value] == str2ent("assembling_machine_1").value
         assert asm.sum() % 9 == 0
-        assert not (asm & (w[Channel.FOOTPRINT.value] == Footprint.UNAVAILABLE.value)).any()
+        fp = w[Channel.FOOTPRINT.value]
+        assert (fp[asm] == Footprint.AVAILABLE.value).all()
+        assert (fp == Footprint.UNKNOWN.value).any() and not (fp == Footprint.UNAVAILABLE.value).any()
 
 
 def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
@@ -164,7 +167,7 @@ def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
     import json
 
     from corpus.build import build
-    from denoise import _luts, free_mask
+    from denoise import DenoiserUNet, _luts, free_mask
     from factorion_server.blueprint import world_tensor_to_blueprint_string
     from sft import _iter_factories
 
@@ -184,6 +187,9 @@ def test_sft_stream_mixes_in_human_blueprint_windows(tmp_path):
     free = free_mask(states)
     assert (L.type_lut[s[:, Channel.ENTITIES.value], s[:, Channel.DIRECTION.value], s[:, Channel.MISC.value]][free] >= 0).all()
     assert (s[:, Channel.ENTITIES.value][free] > 0).float().mean() > 0.1
+    assert (s[:, Channel.FOOTPRINT.value] == Footprint.UNKNOWN.value).any()
+    model = DenoiserUNet(width=16, levels=1, blocks=1, attn_layers=1, attn_heads=1)
+    assert model(states).shape[-2:] == states.shape[-2:]
 
 
 def test_stats_count_a_lessons_entities_and_windows():
@@ -197,9 +203,12 @@ def test_stats_count_a_lessons_entities_and_windows():
     assert c["windows"] >= 1
 
 
-def test_unbuildable_terrain_masks_only_empty_tiles():
-    bp = _bp(("transport-belt", 0.5, 0.5, {}), ("transport-belt", 4.5, 2.5, {}))
+def test_terrain_is_unbuildable_and_masked_entities_unknown():
+    """A save's terrain covers only empty tiles and reads as unbuildable; an
+    entity the engine doesn't model reads as unknown."""
+    bp = _bp(("transport-belt", 0.5, 0.5, {}), ("transport-belt", 4.5, 2.5, {}), ("beacon", 2.5, 3.5, {}))
     bp["unbuildable"] = [[-3, 1, 5], [0, 0, 9]]
-    r = _raster(bp)
-    assert (r.inst[0:2, 1] == -1).all() and (r.inst[2:, 1] == 0).all()
-    assert r.inst[0, 0] > 0 and (r.inst[1:, 0] == -1).all()
+    fp = to_world(_raster(bp))[Channel.FOOTPRINT.value]
+    assert (fp[0:2, 1] == Footprint.UNAVAILABLE.value).all() and (fp[2:, 1] == Footprint.AVAILABLE.value).all()
+    assert fp[0, 0] == Footprint.AVAILABLE.value and (fp[1:, 0] == Footprint.UNAVAILABLE.value).all()
+    assert (fp[1:4, 2:5] == Footprint.UNKNOWN.value).all()

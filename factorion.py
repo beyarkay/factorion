@@ -97,6 +97,10 @@ class Channel(Enum):
 class Footprint(Enum):
     UNAVAILABLE = 0
     AVAILABLE = 1
+    # Something is there that the factory can't see: past a human blueprint's
+    # window, or an entity the engine doesn't model (`corpus.convert`). Not
+    # buildable, but unlike UNAVAILABLE it may hold what a belt runs into.
+    UNKNOWN = 2
 
 
 class Misc(Enum):
@@ -1119,7 +1123,7 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
     ent = world[Channel.ENTITIES.value]
     if any(not (0 <= tx < size_x and 0 <= ty < size_y) for tx, ty in tiles):
         return "too_wide"
-    if any(world[Channel.FOOTPRINT.value, tx, ty] == Footprint.UNAVAILABLE.value for tx, ty in tiles):
+    if any(world[Channel.FOOTPRINT.value, tx, ty] != Footprint.AVAILABLE.value for tx, ty in tiles):
         return "placed_on_masked_tile"
     if any(ent[tx, ty] in (_SOURCE_ENT_VAL, _SINK_ENT_VAL) for tx, ty in tiles):
         return "replaced_source_or_sink"

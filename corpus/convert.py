@@ -4,8 +4,10 @@ The corpus stores raw exchange strings so that every conversion decision lives
 here and re-runs at load time: teaching the engine a new entity only means
 editing `_KNOWN`. A blueprint is rasterised once (`rasterise`), then any number
 of windows are cut from it (`window`). Entities the engine doesn't model are
-*masked*: their tiles become unbuildable, so the denoiser sees them as
-unbuildable and no loss reaches them.
+*masked*: their tiles, like everything past a window's edge, become
+`Footprint.UNKNOWN`, so no loss reaches them and the denoiser can tell what a
+human hid from what the game forbids (a save's water, lava, space, cliffs:
+`Footprint.UNAVAILABLE`).
 """
 
 import base64
@@ -81,11 +83,15 @@ def designs(string: str) -> Iterator[dict]:
             yield o["blueprint"]
 
 
+# `Raster.inst` of a masked entity's tiles, and of terrain no belt can go on.
+_MASKED, _TERRAIN = -1, -2
+
+
 @dataclass
 class Raster:
     """A blueprint's bounding box as engine channels plus `inst`, each tile's
-    entity instance (0 = empty, -1 = masked), so a window can mask the known
-    entities its edge cuts through."""
+    entity instance (0 = empty, else `_MASKED` / `_TERRAIN`), so a window can
+    mask the known entities its edge cuts through."""
 
     ent: np.ndarray
     dir: np.ndarray
@@ -137,7 +143,7 @@ def rasterise(bp: dict) -> Optional[Raster]:
             d = (d + 8) % 16  # blueprint faces the drop tile, the engine the pickup
         if ent is None or d not in _DIR16:
             r.masked.append((name, sl[0].start, sl[1].start, w, h))
-            r.inst[sl] = -1
+            r.inst[sl] = _MASKED
             continue
         r.ent[sl], r.item[sl], r.inst[sl] = ent, item, i
         r.dir[sl] = Direction.NONE.value if ent in UNDIRECTED_ENT_IDS else _DIR16[d]
@@ -148,7 +154,7 @@ def rasterise(bp: dict) -> Optional[Raster]:
     for x, y, n in bp.get("unbuildable", ()):
         if 0 <= y - min_y < H:
             row = r.inst[max(0, x - min_x) : max(0, x - min_x + n), y - min_y]
-            row[row == 0] = -1
+            row[row == 0] = _TERRAIN
     r.tiles = np.bincount(r.inst[r.inst > 0], minlength=len(placed) + 1)
     return r if (r.inst > 0).any() else None
 
@@ -182,17 +188,24 @@ def _mask_repaired_undergrounds(r: Raster, ugs: list[tuple[int, int, str]]) -> N
             if r.inst[x, y] > 0 and _pair(r, x, y, _ENGINE_UG_REACH, lambda tx, ty: r.inst[tx, ty] > 0) != truth[(x, y)]:
                 for tx, ty in filter(None, [(x, y), truth[(x, y)]]):
                     r.ent[tx, ty] = r.misc[tx, ty] = 0
-                    r.inst[tx, ty] = -1
+                    r.inst[tx, ty] = _MASKED
                     r.masked.append((tier[(tx, ty)], tx, ty, 1, 1))
                 changed = True
 
 
+def _footprint(inst: np.ndarray, keep: np.ndarray) -> np.ndarray:
+    """Buildable where kept or empty, unbuildable on terrain, else unknown."""
+    return np.select(
+        [keep | (inst == 0), inst == _TERRAIN], [Footprint.AVAILABLE.value, Footprint.UNAVAILABLE.value], Footprint.UNKNOWN.value
+    )
+
+
 def to_world(r: Raster) -> np.ndarray:
-    """The whole of `r` as a (C, W, H) world, masked tiles unbuildable."""
+    """The whole of `r` as a (C, W, H) world."""
     world = np.zeros((len(Channel), *r.ent.shape), np.int64)
     for c, a in zip((Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC), (r.ent, r.dir, r.item, r.misc)):
         world[c.value] = a
-    world[Channel.FOOTPRINT.value] = r.inst >= 0
+    world[Channel.FOOTPRINT.value] = _footprint(r.inst, r.inst > 0)
     refresh_power(torch.from_numpy(world))
     return world
 
@@ -234,7 +247,7 @@ def window(
     """A random w × h window of `r` (min_side ≤ w, h ≤ size, clipped to the
     blueprint), randomly turned and mirrored, placed anywhere in a size × size
     (C, W, H) world. Everything outside the window, every masked tile and
-    every entity the window's edge cuts through is unbuildable. None unless
+    every entity the window's edge cuts through is unknown. None unless
     known entities cover at least `min_known` of the window and masked tiles
     at most `max_masked`."""
     W, H = r.ent.shape
@@ -249,10 +262,11 @@ def window(
     if keep.mean() < min_known or mask.mean() > max_masked:
         return None
     chans = [np.where(keep, a[sl], 0) for a in (r.ent, r.dir, r.item, r.misc)]
-    chans.append(np.where(mask, Footprint.UNAVAILABLE.value, Footprint.AVAILABLE.value))
+    chans.append(_footprint(r.inst[sl], keep))
     chans = orient(chans, rng.randrange(4), rng.random() < 0.5)
     w, h = chans[0].shape
     world = np.zeros((len(Channel), size, size), np.int64)
+    world[Channel.FOOTPRINT.value] = Footprint.UNKNOWN.value
     ox, oy = rng.randint(0, size - w), rng.randint(0, size - h)
     for c, a in zip((Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC, Channel.FOOTPRINT), chans):
         world[c.value, ox : ox + w, oy : oy + h] = a

@@ -25,8 +25,9 @@ cached.
   Every logistic chest becomes a steel chest. Poles, wooden, iron and steel
   chests, furnaces (which carry no recipe), solar panels, accumulators,
   roboports, radars, lamps and stone walls stay as they are.
-- Everything else is **masked**: its footprint becomes unbuildable, so the
-  denoiser sees an unbuildable tile and no loss reaches it. That covers the entity, an
+- Everything else is **masked**: its footprint becomes `Footprint.UNKNOWN`,
+  so no loss reaches it, and the denoiser can tell a tile a human hid from
+  one the game forbids (`UNAVAILABLE`: a save's water, lava, space, cliffs). That covers the entity, an
   assembler whose recipe the engine doesn't know, and an underground pair that
   would pair differently once collapsed to yellow's 5-tile reach.
 - A design holding an entity whose size is unknown (a mod's) is dropped.
@@ -36,7 +37,7 @@ cached.
   (non-buildable prototypes such as explosions and corpses are filtered out).
 - `window` cuts a random w × h window (6 ≤ w, h ≤ grid size) centred on a
   known entity, masks whatever its edge cuts through, turns and mirrors it, and
-  places it anywhere in the grid with everything outside it unbuildable. A
+  places it anywhere in the grid with everything outside it unknown. A
   window trains only if at least 10% of it is known entities and at most 50%
   is masked.
 
