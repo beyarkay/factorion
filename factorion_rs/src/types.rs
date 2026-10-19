@@ -265,9 +265,12 @@ pub enum Item {
     PersonalRoboportEquipment = 84,
     FlamethrowerTurret = 85,
     AssemblingMachine3 = 86,
+    Roboport = 87,
+    SmallLamp = 88,
+    Coal = 89,
     // The source/sink markers, placed by lesson generators only.
-    Sink = 87,   // named "bulk_inserter"
-    Source = 88, // named "stack_inserter"
+    Sink = 90,   // named "bulk_inserter"
+    Source = 91, // named "stack_inserter"
 }
 
 impl Item {
@@ -361,8 +364,11 @@ impl Item {
             84 => Some(Item::PersonalRoboportEquipment),
             85 => Some(Item::FlamethrowerTurret),
             86 => Some(Item::AssemblingMachine3),
-            87 => Some(Item::Sink),
-            88 => Some(Item::Source),
+            87 => Some(Item::Roboport),
+            88 => Some(Item::SmallLamp),
+            89 => Some(Item::Coal),
+            90 => Some(Item::Sink),
+            91 => Some(Item::Source),
             _ => None,
         }
     }
@@ -468,6 +474,9 @@ impl Item {
             Item::PersonalRoboportEquipment => "personal_roboport_equipment",
             Item::FlamethrowerTurret => "flamethrower_turret",
             Item::AssemblingMachine3 => "assembling_machine_3",
+            Item::Roboport => "roboport",
+            Item::SmallLamp => "small_lamp",
+            Item::Coal => "coal",
         }
     }
 
@@ -629,7 +638,10 @@ impl Item {
             | Item::DischargeDefenseRemote
             | Item::PersonalRoboportEquipment
             | Item::FlamethrowerTurret
-            | Item::AssemblingMachine3 => 0.0,
+            | Item::AssemblingMachine3
+            | Item::Roboport
+            | Item::SmallLamp
+            | Item::Coal => 0.0,
         }
     }
 
@@ -1663,6 +1675,32 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::FlamethrowerTurret, 1.0)],
                 crafting_time: 20.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Roboport,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 45.0),
+                    (Item::IronGearWheel, 45.0),
+                    (Item::SteelPlate, 45.0)
+                ],
+                produces: nonempty![(Item::Roboport, 1.0)],
+                crafting_time: 5.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SmallLamp,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperCable, 3.0),
+                    (Item::ElectronicCircuit, 1.0),
+                    (Item::IronPlate, 1.0)
+                ],
+                produces: nonempty![(Item::SmallLamp, 1.0)],
+                crafting_time: 0.5,
                 produced_by: ASSEMBLING_MACHINES,
             },
         ),
