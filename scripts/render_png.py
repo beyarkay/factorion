@@ -47,7 +47,7 @@ FURNACES = ("stone_furnace", "steel_furnace", "electric_furnace")
 INERT = ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
 BELTISH = {ID["transport_belt"], ID["underground_belt"], ID["splitter"]}
 C = dict(
-    unbuildable="#4a4a4a", unknown="#a9a9b3", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
+    unbuildable="#4a4a4a", unknown="#c9b6ec", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
     belt_dark="#6b4e0c", splitter="#55595e", asm="#c9c3b6", asm_edge="#5d5a52", inserter="#f2c200",
     inserter_edge="#7a6200", long="#e07b00", pole="#1f6fd1", source="#1e9e4a", sink="#7b3fa0",
     chest="#c7a26b", furnace="#e3a07a", inert="#b4c0cc", masked="#c98b8b", masked_edge="#7a2e2e",
@@ -238,8 +238,8 @@ LEGEND = [
     Patch(facecolor=C["powered"], label="powered tile"),
     Patch(facecolor=C["source"], label="source (item icon)"),
     Patch(facecolor=C["sink"], label="sink (item icon)"),
-    Patch(facecolor=C["unbuildable"], hatch="///", label="unbuildable"),
-    Patch(facecolor=C["unknown"], hatch="..", label="unknown (hidden in the human blueprint)"),
+    Patch(facecolor=C["unbuildable"], hatch="///", label="unbuildable (do not build)"),
+    Patch(facecolor=C["unknown"], hatch="..", label="unknown (masked entity, or past the window)"),
     Patch(facecolor=C["masked"], edgecolor=C["masked_edge"], label="unmodelled entity (masked)"),
 ]
 
