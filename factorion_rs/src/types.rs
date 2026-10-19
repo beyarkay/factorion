@@ -502,7 +502,16 @@ impl Item {
                 | Item::Roboport
                 | Item::Radar
                 | Item::SmallLamp
+                | Item::WoodenChest
+                | Item::IronChest
+                | Item::SteelChest
         )
+    }
+
+    /// Whether this entity is a chest. Capacity doesn't matter in steady
+    /// state, so every chest behaves the same.
+    pub fn is_chest(self) -> bool {
+        matches!(self, Item::WoodenChest | Item::IronChest | Item::SteelChest)
     }
 
     /// Whether this entity is only a footprint: it carries no items, and the
@@ -569,6 +578,8 @@ impl Item {
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
+            // Only the inserters in and out of a chest limit it.
+            Item::WoodenChest | Item::IronChest | Item::SteelChest => f64::INFINITY,
             // Per constituent belt: a splitter is two belts side by side,
             // each a full 15 i/s tile (4 lane pools × 7.5 = 30 total).
             Item::Splitter => 15.0,
@@ -594,8 +605,6 @@ impl Item {
             | Item::Sulfur
             | Item::Battery
             | Item::Explosives
-            | Item::WoodenChest
-            | Item::IronChest
             | Item::StorageTank
             | Item::FastTransportBelt
             | Item::FastUndergroundBelt
@@ -635,7 +644,6 @@ impl Item {
             | Item::Landfill
             | Item::FirearmMagazine
             | Item::StoneWall
-            | Item::SteelChest
             | Item::HazardConcrete
             | Item::AutomationSciencePack
             | Item::Radar

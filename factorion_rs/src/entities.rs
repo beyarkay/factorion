@@ -216,6 +216,7 @@ pub enum EntityEnum {
     Sink(Sink),
     Source(Source),
     Splitter(Splitter),
+    Chest(Chest),
 }
 
 impl EntityEnum {
@@ -234,6 +235,7 @@ impl EntityEnum {
             Item::Sink => Self::Sink(Sink),
             Item::Source => Self::Source(Source { item }),
             Item::Splitter => Self::Splitter(Splitter),
+            k if k.is_chest() => Self::Chest(Chest { kind: k }),
             _ => return None,
         })
     }
@@ -250,6 +252,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.kind(),
             Self::Source(e) => e.kind(),
             Self::Splitter(e) => e.kind(),
+            Self::Chest(e) => e.kind(),
         }
     }
 
@@ -263,6 +266,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.connections(pos, dir, world),
             Self::Source(e) => e.connections(pos, dir, world),
             Self::Splitter(e) => e.connections(pos, dir, world),
+            Self::Chest(e) => e.connections(pos, dir, world),
         }
     }
 
@@ -276,6 +280,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.transform_flow(input),
             Self::Source(e) => e.transform_flow(input),
             Self::Splitter(e) => e.transform_flow(input),
+            Self::Chest(e) => e.transform_flow(input),
         }
     }
 }
@@ -596,6 +601,30 @@ impl FactoryEntity for Sink {
     }
 }
 
+// ── Chest ───────────────────────────────────────────────────────────────────
+//
+// Only inserters move items in and out of a chest, so its edges all come from
+// `inserter_connections`. In steady state it passes on what it is given; one
+// nothing takes from fills up and accepts nothing, like a belt to nowhere.
+
+pub struct Chest {
+    kind: Item,
+}
+
+impl FactoryEntity for Chest {
+    fn kind(&self) -> Item {
+        self.kind
+    }
+
+    fn connections(&self, _pos: (usize, usize), _dir: Direction, _world: &World) -> Vec<Edge> {
+        Vec::new()
+    }
+
+    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        input.clone()
+    }
+}
+
 /// Belt-style connections, shared by transport belts and the source/sink
 /// markers — a source/sink connects exactly like a belt, except it never links
 /// to another source/sink.
@@ -694,7 +723,7 @@ fn inserter_connections(
 
     // Pick up from `reach` tiles behind (opposite of facing direction). A real
     // inserter can only pick up from an entity that carries or produces items:
-    // a source, belt, underground belt, or assembler. Notably NOT another
+    // a source, belt, underground belt, assembler or chest. Notably NOT another
     // inserter (see #122) or a sink. (Splitters are excluded too, mirroring the
     // drop side — not quite true to Factorio, may revisit.) Picking from a
     // belt draws from both of its lanes.
@@ -711,7 +740,7 @@ fn inserter_connections(
                     | Item::TransportBelt
                     | Item::UndergroundBelt
                     | Item::AssemblingMachine1
-            );
+            ) || src_entity.is_chest();
             if src_is_pickable {
                 edges.extend(calc_lane_aware_edges(
                     src_entity,
@@ -744,7 +773,7 @@ fn inserter_connections(
                     | Item::AssemblingMachine1
                     | Item::Source
                     | Item::Sink
-            );
+            ) || dst_entity.is_chest();
             if dst_is_insertable {
                 if dst_entity.is_lane_aware() {
                     let dst_dir = world.direction_at(dx_u, dy_u);

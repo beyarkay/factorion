@@ -329,7 +329,9 @@ POLE_ENT_IDS = tuple(
 # Footprints that carry no items (`Item::is_inert`).
 INERT_ENT_IDS = tuple(str2ent(n).value for n in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp"))
 # Entities with no facing, stored with Direction.NONE.
-UNDIRECTED_ENT_IDS = POLE_ENT_IDS + INERT_ENT_IDS
+UNDIRECTED_ENT_IDS = POLE_ENT_IDS + INERT_ENT_IDS + tuple(
+    str2ent(n).value for n in ("wooden_chest", "iron_chest", "steel_chest")
+)
 _EMPTY_ITEM_VAL = str2item("empty").value
 
 

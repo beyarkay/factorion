@@ -1,0 +1,56 @@
+description: |
+  A chest between two inserters passes everything on: the hands, not the
+  chest, cap the sink at 0.86 i/s.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+graph: |
+  S@0,0 -> i@1,0
+  i@1,0 -> c@2,0
+  c@2,0 -> i@3,0
+  i@3,0 -> K@4,0
+factory: |
+  S> i> c. i> K>
+  .. .. E. .. ..
+---
+description: |
+  Every chest is the same chest in steady state.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+factory: |
+  S> i> w. i> C. i> K>
+  .. .. .. E. .. .. ..
+---
+description: |
+  Nothing takes from the chest, so it fills and its inserter stops: the
+  belt keeps all 15 i/s for the sink.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  S> b> b> K>
+  .. iv .. ..
+  .. c. E. ..
+---
+description: |
+  A chest feeds both of the inserters taking from it.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 2, y: 4, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.43 }
+- { item: iron_plate, per_second: 0.43 }
+factory: |
+  .. .. K^ ..
+  .. .. i^ ..
+  S> i> c. E.
+  .. .. iv ..
+  .. .. Kv ..

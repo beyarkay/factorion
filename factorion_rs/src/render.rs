@@ -39,6 +39,9 @@ pub(crate) const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('R', Item::Roboport, Misc::None),
     ('r', Item::Radar, Misc::None),
     ('L', Item::SmallLamp, Misc::None),
+    ('w', Item::WoodenChest, Misc::None),
+    ('c', Item::IronChest, Misc::None),
+    ('C', Item::SteelChest, Misc::None),
 ];
 
 /// Direction markers. Deliberately disjoint from every [`ENTITY_CHARS`] entry.
