@@ -497,6 +497,20 @@ impl Item {
                 | Item::SmallElectricPole
                 | Item::MediumElectricPole
                 | Item::Substation
+                | Item::SolarPanel
+                | Item::Accumulator
+                | Item::Roboport
+                | Item::Radar
+                | Item::SmallLamp
+        )
+    }
+
+    /// Whether this entity is only a footprint: it carries no items, and the
+    /// engine models no power supply or capacity it would add or use.
+    pub fn is_inert(self) -> bool {
+        matches!(
+            self,
+            Item::SolarPanel | Item::Accumulator | Item::Roboport | Item::Radar | Item::SmallLamp
         )
     }
 
@@ -650,9 +664,10 @@ impl Item {
     /// Non-placeable items return (1, 1).
     pub fn size(self) -> (usize, usize) {
         match self {
-            Item::AssemblingMachine1 => (3, 3),
+            Item::AssemblingMachine1 | Item::SolarPanel | Item::Radar => (3, 3),
             Item::Splitter => (2, 1),
-            Item::Substation => (2, 2),
+            Item::Substation | Item::Accumulator => (2, 2),
+            Item::Roboport => (4, 4),
             _ => (1, 1),
         }
     }

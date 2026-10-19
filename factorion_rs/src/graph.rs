@@ -83,8 +83,8 @@ impl FactoryGraph {
 /// Nodes are not 1:1 with entities: lane-aware entities (belts, underground
 /// belts, and EACH tile of a splitter) get one node per lane; everything
 /// else gets a single node at its anchor tile (multi-tile assemblers still
-/// collapse their secondary tiles onto the anchor). Poles carry no items, so
-/// they get no node.
+/// collapse their secondary tiles onto the anchor). Poles and inert entities
+/// carry no items, so they get no node.
 pub fn build_graph(world: &World) -> FactoryGraph {
     let power = PowerMap::of(world);
     let mut nodes: Vec<GraphNode> = Vec::new();
@@ -104,7 +104,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             // Empty cell, or a stray non-placeable item in the entities
             // channel (data error). Either way, no graph node.
             let entity_kind = match world.entity_at(x, y) {
-                Some(k) if k.is_placeable() && k.pole().is_none() => k,
+                Some(k) if k.is_placeable() && k.pole().is_none() && !k.is_inert() => k,
                 _ => continue,
             };
 

@@ -33,8 +33,9 @@ import torch.nn.functional as F
 
 import factorion_rs
 from factorion import (
+    INERT_ENT_IDS,
     LESSON_IS_TRIAL,
-    POLE_ENT_IDS,
+    UNDIRECTED_ENT_IDS,
     Channel,
     Direction,
     Factory,
@@ -81,12 +82,12 @@ TYPES: tuple[tuple[int, int, int], ...] = (
         (e, d, m)
         for e in (p.value for p in _BUILDABLE)
         # Generators store a facing on assemblers; NONE is what a placement
-        # action writes. Both are legal worlds. Poles have no facing.
+        # action writes. Both are legal worlds.
         for d in (
             range(len(Direction))
             if e == _ASM_MACHINE_ENT_ID
             else (Direction.NONE.value,)
-            if e in POLE_ENT_IDS
+            if e in UNDIRECTED_ENT_IDS
             else range(1, len(Direction))
         )
         for m in ((Misc.UNDERGROUND_DOWN.value, Misc.UNDERGROUND_UP.value) if e == _UG_BELT_ENT_ID else (Misc.NONE.value,))
@@ -94,9 +95,10 @@ TYPES: tuple[tuple[int, int, int], ...] = (
 )
 RECIPES: tuple[int, ...] = (0, *_ASM_RECIPE_ITEM_IDS)
 N_TYPES, N_RECIPES = len(TYPES), len(RECIPES)
-# part = dx * 3 + dy, the tile's offset from its entity's min corner (the
-# anchor `py_entity_tiles` and the engine's `unit_anchors` both use).
-N_PARTS = 9
+# part = dx * PART_SIDE + dy, the tile's offset from its entity's min corner
+# (the anchor `py_entity_tiles` and the engine's `unit_anchors` both use).
+PART_SIDE = max(max(p.width, p.height) for p in _BUILDABLE)
+N_PARTS = PART_SIDE**2
 
 _TYPES_NP = np.array(TYPES, dtype=np.int64)
 _RECIPES_NP = np.array(RECIPES, dtype=np.int64)
@@ -118,10 +120,12 @@ _PART_TABLE_NP = np.zeros((N_TYPES, N_PARTS), dtype=np.int64)
 _PART_VALID_NP = np.zeros((N_TYPES, N_PARTS), dtype=bool)
 for _i, _o in enumerate(_OFFSETS):
     for _k, (_dx, _dy) in enumerate(_o):
-        _PART_TABLE_NP[_i, _k] = _dx * 3 + _dy
-        _PART_VALID_NP[_i, _dx * 3 + _dy] = True
-# Per-tile share of an entity's cost, for the differentiable cost loss.
-_ENT_TILE_COST_NP = (_ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS / (_ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS).max()).astype(np.float32)
+        _PART_TABLE_NP[_i, _k] = _dx * PART_SIDE + _dy
+        _PART_VALID_NP[_i, _dx * PART_SIDE + _dy] = True
+# Per-tile share of an entity's cost, for the differentiable cost loss. Inert
+# entities don't set its scale, which `lw_cost` is tuned to.
+_ENT_TILE_COST_NP = _ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS
+_ENT_TILE_COST_NP = (_ENT_TILE_COST_NP / np.delete(_ENT_TILE_COST_NP, INERT_ENT_IDS).max()).astype(np.float32)
 _TYPE_TILE_COST_NP = _ENT_TILE_COST_NP[_TYPES_NP[:, 0]]
 
 @functools.cache
@@ -150,7 +154,7 @@ def part_map(world_CWH) -> np.ndarray:
         for tx, ty in factorion_rs.py_entity_tiles(int(x), int(y), int(dirs[x, y]), p.width, p.height) or []:
             if 0 <= tx < ent.shape[0] and 0 <= ty < ent.shape[1]:
                 claimed[tx, ty] = True
-                out[tx, ty] = (tx - x) * 3 + (ty - y)
+                out[tx, ty] = (tx - x) * PART_SIDE + (ty - y)
     return out
 
 
@@ -453,7 +457,7 @@ def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np
     for x, y in zip(*np.nonzero(free & _IS_MULTI_NP[typ])):
         ty, p = int(typ[x, y]), int(part[x, y])
         e = int(_TYPES_NP[ty, 0])
-        ax, ay = int(x) - p // 3, int(y) - p % 3
+        ax, ay = int(x) - p // PART_SIDE, int(y) - p % PART_SIDE
         # Splitters' facing decides their footprint, an assembler's doesn't.
         key = (ax, ay, e, -1 if e == _ASM_MACHINE_ENT_ID else ty)
         c = float(conf[x, y])
