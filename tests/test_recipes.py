@@ -220,11 +220,6 @@ class TestPyRecipesBinding:
             "assembling_machine_2",
             "assembling_machine_3",
         ]
-        # engine_unit is advanced-crafting — assembling machine 1 can't make it.
-        assert rs["engine_unit"]["produced_by"] == [
-            "assembling_machine_2",
-            "assembling_machine_3",
-        ]
 
     def test_every_recipe_produced_by_assemblers(self):
         rs = factorion_rs.py_recipes()

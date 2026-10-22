@@ -897,9 +897,8 @@ fn raw_expand(item: Item, qty: f64, index: &HashMap<Item, Recipe>) -> (NonEmpty<
     (items, time)
 }
 
-/// The assembling machines that craft a standard recipe. The one
-/// `advanced-crafting` recipe (engine_unit) can't use tier 1, so it lists
-/// tiers 2/3 inline at its call site.
+/// The assembling machines: in Factorio 2.0 every tier crafts every
+/// fluid-free recipe (`crafting`, `basic-crafting`, `advanced-crafting`).
 const ASSEMBLING_MACHINES: &[Item] = &[
     Item::AssemblingMachine1,
     Item::AssemblingMachine2,
@@ -1037,7 +1036,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::EngineUnit, 1.0)],
                 crafting_time: 10.0,
-                produced_by: &[Item::AssemblingMachine2, Item::AssemblingMachine3],
+                produced_by: ASSEMBLING_MACHINES,
             },
         ),
         // Storage
@@ -2089,26 +2088,6 @@ mod tests {
 
         assert!(get_recipe(Item::IronOre).is_none());
         assert!(get_recipe(Item::OilRefinery).is_none());
-    }
-
-    #[test]
-    fn test_produced_by_crafting_vs_advanced() {
-        // A standard `crafting` recipe lists all three assembler tiers.
-        let ec = get_recipe(Item::ElectronicCircuit).unwrap();
-        assert_eq!(
-            ec.produced_by.to_vec(),
-            vec![
-                Item::AssemblingMachine1,
-                Item::AssemblingMachine2,
-                Item::AssemblingMachine3
-            ]
-        );
-        // The one `advanced-crafting` recipe excludes assembling machine 1.
-        let eu = get_recipe(Item::EngineUnit).unwrap();
-        assert_eq!(
-            eu.produced_by.to_vec(),
-            vec![Item::AssemblingMachine2, Item::AssemblingMachine3]
-        );
     }
 
     #[test]

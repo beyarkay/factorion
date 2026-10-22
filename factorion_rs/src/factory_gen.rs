@@ -5467,10 +5467,8 @@ fn walk_recipe_frontier(
 /// sink recipe, its per-craft yield at the machine's crafting speed over the
 /// recipe's crafting time. That is the engine's single-machine ceiling — a
 /// clean chain that saturates one final assembler scores 1.0.
-/// The recipes a trial's tree expands through. Every assembler recipe is,
-/// regardless of tier: the engine's AssemblingMachine crafts any tagged recipe
-/// (it never checks `produced_by`), so AM2/AM3-only recipes like engine_unit
-/// are fair game. Smelting isn't: a trial's ceiling is an assembler's rate.
+/// The recipes a trial's tree expands through: every assembler recipe.
+/// Smelting isn't: a trial's ceiling is an assembler's rate.
 fn trial_recipes() -> HashMap<Item, Recipe> {
     all_recipes()
         .into_iter()
@@ -5877,8 +5875,7 @@ mod tests {
     #[test]
     fn test_assembler_recipes_are_am1_craftable() {
         // Every lesson that places an assembling machine 1 must tag it with a
-        // recipe tier 1 can craft — the `produced_by` filter must exclude
-        // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
+        // recipe tier 1 can craft.
         let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
             LessonKind::OppositeSides1In,
             LessonKind::SameSide1In,
