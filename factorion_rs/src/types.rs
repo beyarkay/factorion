@@ -268,9 +268,99 @@ pub enum Item {
     Roboport = 87,
     SmallLamp = 88,
     Coal = 89,
+    ActiveProviderChest = 90,
+    ArithmeticCombinator = 91,
+    ArtilleryShell = 92,
+    ArtilleryWagon = 93,
+    AtomicBomb = 94,
+    BatteryEquipment = 95,
+    BatteryMk2Equipment = 96,
+    BeltImmunityEquipment = 97,
+    BufferChest = 98,
+    CannonShell = 99,
+    Car = 100,
+    CargoLandingPad = 101,
+    CargoWagon = 102,
+    ChemicalSciencePack = 103,
+    CliffExplosives = 104,
+    ClusterGrenade = 105,
+    ConstantCombinator = 106,
+    ConstructionRobot = 107,
+    DeciderCombinator = 108,
+    DefenderCapsule = 109,
+    DestroyerCapsule = 110,
+    DischargeDefenseEquipment = 111,
+    DisplayPanel = 112,
+    DistractorCapsule = 113,
+    EfficiencyModule2 = 114,
+    EfficiencyModule3 = 115,
+    ElectricEngineUnit = 116,
+    ElectricMiningDrill = 117,
+    EnergyShieldEquipment = 118,
+    EnergyShieldMk2Equipment = 119,
+    ExoskeletonEquipment = 120,
+    ExplosiveCannonShell = 121,
+    ExplosiveRocket = 122,
+    ExplosiveUraniumCannonShell = 123,
+    FissionReactorEquipment = 124,
+    Flamethrower = 125,
+    FlyingRobotFrame = 126,
+    Gate = 127,
+    Grenade = 128,
+    GunTurret = 129,
+    HeavyArmor = 130,
+    LandMine = 131,
+    LaserTurret = 132,
+    Locomotive = 133,
+    LogisticRobot = 134,
+    LogisticSciencePack = 135,
+    LowDensityStructure = 136,
+    MilitarySciencePack = 137,
+    ModularArmor = 138,
+    NightVisionEquipment = 139,
+    PassiveProviderChest = 140,
+    PersonalLaserDefenseEquipment = 141,
+    PersonalRoboportMk2Equipment = 142,
+    PiercingRoundsMagazine = 143,
+    PiercingShotgunShell = 144,
+    PoisonCapsule = 145,
+    PowerArmor = 146,
+    PowerArmorMk2 = 147,
+    PowerSwitch = 148,
+    ProcessingUnit = 149,
+    ProductionSciencePack = 150,
+    ProductivityModule2 = 151,
+    ProductivityModule3 = 152,
+    Rail = 153,
+    RailChainSignal = 154,
+    RailSignal = 155,
+    RawFish = 156,
+    RefinedConcrete = 157,
+    RefinedHazardConcrete = 158,
+    RequesterChest = 159,
+    Rocket = 160,
+    RocketFuel = 161,
+    RocketLauncher = 162,
+    RocketSilo = 163,
+    Satellite = 164,
+    SelectorCombinator = 165,
+    ShotgunShell = 166,
+    SlowdownCapsule = 167,
+    SolarPanelEquipment = 168,
+    SpeedModule2 = 169,
+    SpeedModule3 = 170,
+    Spidertron = 171,
+    StorageChest = 172,
+    SubmachineGun = 173,
+    Uranium235 = 174,
+    Uranium238 = 175,
+    UraniumCannonShell = 176,
+    UraniumFuelCell = 177,
+    UraniumRoundsMagazine = 178,
+    UtilitySciencePack = 179,
     // The source/sink markers, placed by lesson generators only.
-    Sink = 90,   // named "bulk_inserter"
-    Source = 91, // named "stack_inserter"
+    Sink = 180,   // named "bulk_inserter"
+    Source = 181, // named "stack_inserter"
 }
 
 impl Item {
@@ -367,8 +457,98 @@ impl Item {
             87 => Some(Item::Roboport),
             88 => Some(Item::SmallLamp),
             89 => Some(Item::Coal),
-            90 => Some(Item::Sink),
-            91 => Some(Item::Source),
+            90 => Some(Item::ActiveProviderChest),
+            91 => Some(Item::ArithmeticCombinator),
+            92 => Some(Item::ArtilleryShell),
+            93 => Some(Item::ArtilleryWagon),
+            94 => Some(Item::AtomicBomb),
+            95 => Some(Item::BatteryEquipment),
+            96 => Some(Item::BatteryMk2Equipment),
+            97 => Some(Item::BeltImmunityEquipment),
+            98 => Some(Item::BufferChest),
+            99 => Some(Item::CannonShell),
+            100 => Some(Item::Car),
+            101 => Some(Item::CargoLandingPad),
+            102 => Some(Item::CargoWagon),
+            103 => Some(Item::ChemicalSciencePack),
+            104 => Some(Item::CliffExplosives),
+            105 => Some(Item::ClusterGrenade),
+            106 => Some(Item::ConstantCombinator),
+            107 => Some(Item::ConstructionRobot),
+            108 => Some(Item::DeciderCombinator),
+            109 => Some(Item::DefenderCapsule),
+            110 => Some(Item::DestroyerCapsule),
+            111 => Some(Item::DischargeDefenseEquipment),
+            112 => Some(Item::DisplayPanel),
+            113 => Some(Item::DistractorCapsule),
+            114 => Some(Item::EfficiencyModule2),
+            115 => Some(Item::EfficiencyModule3),
+            116 => Some(Item::ElectricEngineUnit),
+            117 => Some(Item::ElectricMiningDrill),
+            118 => Some(Item::EnergyShieldEquipment),
+            119 => Some(Item::EnergyShieldMk2Equipment),
+            120 => Some(Item::ExoskeletonEquipment),
+            121 => Some(Item::ExplosiveCannonShell),
+            122 => Some(Item::ExplosiveRocket),
+            123 => Some(Item::ExplosiveUraniumCannonShell),
+            124 => Some(Item::FissionReactorEquipment),
+            125 => Some(Item::Flamethrower),
+            126 => Some(Item::FlyingRobotFrame),
+            127 => Some(Item::Gate),
+            128 => Some(Item::Grenade),
+            129 => Some(Item::GunTurret),
+            130 => Some(Item::HeavyArmor),
+            131 => Some(Item::LandMine),
+            132 => Some(Item::LaserTurret),
+            133 => Some(Item::Locomotive),
+            134 => Some(Item::LogisticRobot),
+            135 => Some(Item::LogisticSciencePack),
+            136 => Some(Item::LowDensityStructure),
+            137 => Some(Item::MilitarySciencePack),
+            138 => Some(Item::ModularArmor),
+            139 => Some(Item::NightVisionEquipment),
+            140 => Some(Item::PassiveProviderChest),
+            141 => Some(Item::PersonalLaserDefenseEquipment),
+            142 => Some(Item::PersonalRoboportMk2Equipment),
+            143 => Some(Item::PiercingRoundsMagazine),
+            144 => Some(Item::PiercingShotgunShell),
+            145 => Some(Item::PoisonCapsule),
+            146 => Some(Item::PowerArmor),
+            147 => Some(Item::PowerArmorMk2),
+            148 => Some(Item::PowerSwitch),
+            149 => Some(Item::ProcessingUnit),
+            150 => Some(Item::ProductionSciencePack),
+            151 => Some(Item::ProductivityModule2),
+            152 => Some(Item::ProductivityModule3),
+            153 => Some(Item::Rail),
+            154 => Some(Item::RailChainSignal),
+            155 => Some(Item::RailSignal),
+            156 => Some(Item::RawFish),
+            157 => Some(Item::RefinedConcrete),
+            158 => Some(Item::RefinedHazardConcrete),
+            159 => Some(Item::RequesterChest),
+            160 => Some(Item::Rocket),
+            161 => Some(Item::RocketFuel),
+            162 => Some(Item::RocketLauncher),
+            163 => Some(Item::RocketSilo),
+            164 => Some(Item::Satellite),
+            165 => Some(Item::SelectorCombinator),
+            166 => Some(Item::ShotgunShell),
+            167 => Some(Item::SlowdownCapsule),
+            168 => Some(Item::SolarPanelEquipment),
+            169 => Some(Item::SpeedModule2),
+            170 => Some(Item::SpeedModule3),
+            171 => Some(Item::Spidertron),
+            172 => Some(Item::StorageChest),
+            173 => Some(Item::SubmachineGun),
+            174 => Some(Item::Uranium235),
+            175 => Some(Item::Uranium238),
+            176 => Some(Item::UraniumCannonShell),
+            177 => Some(Item::UraniumFuelCell),
+            178 => Some(Item::UraniumRoundsMagazine),
+            179 => Some(Item::UtilitySciencePack),
+            180 => Some(Item::Sink),
+            181 => Some(Item::Source),
             _ => None,
         }
     }
@@ -477,6 +657,96 @@ impl Item {
             Item::Roboport => "roboport",
             Item::SmallLamp => "small_lamp",
             Item::Coal => "coal",
+            Item::ActiveProviderChest => "active_provider_chest",
+            Item::ArithmeticCombinator => "arithmetic_combinator",
+            Item::ArtilleryShell => "artillery_shell",
+            Item::ArtilleryWagon => "artillery_wagon",
+            Item::AtomicBomb => "atomic_bomb",
+            Item::BatteryEquipment => "battery_equipment",
+            Item::BatteryMk2Equipment => "battery_mk2_equipment",
+            Item::BeltImmunityEquipment => "belt_immunity_equipment",
+            Item::BufferChest => "buffer_chest",
+            Item::CannonShell => "cannon_shell",
+            Item::Car => "car",
+            Item::CargoLandingPad => "cargo_landing_pad",
+            Item::CargoWagon => "cargo_wagon",
+            Item::ChemicalSciencePack => "chemical_science_pack",
+            Item::CliffExplosives => "cliff_explosives",
+            Item::ClusterGrenade => "cluster_grenade",
+            Item::ConstantCombinator => "constant_combinator",
+            Item::ConstructionRobot => "construction_robot",
+            Item::DeciderCombinator => "decider_combinator",
+            Item::DefenderCapsule => "defender_capsule",
+            Item::DestroyerCapsule => "destroyer_capsule",
+            Item::DischargeDefenseEquipment => "discharge_defense_equipment",
+            Item::DisplayPanel => "display_panel",
+            Item::DistractorCapsule => "distractor_capsule",
+            Item::EfficiencyModule2 => "efficiency_module_2",
+            Item::EfficiencyModule3 => "efficiency_module_3",
+            Item::ElectricEngineUnit => "electric_engine_unit",
+            Item::ElectricMiningDrill => "electric_mining_drill",
+            Item::EnergyShieldEquipment => "energy_shield_equipment",
+            Item::EnergyShieldMk2Equipment => "energy_shield_mk2_equipment",
+            Item::ExoskeletonEquipment => "exoskeleton_equipment",
+            Item::ExplosiveCannonShell => "explosive_cannon_shell",
+            Item::ExplosiveRocket => "explosive_rocket",
+            Item::ExplosiveUraniumCannonShell => "explosive_uranium_cannon_shell",
+            Item::FissionReactorEquipment => "fission_reactor_equipment",
+            Item::Flamethrower => "flamethrower",
+            Item::FlyingRobotFrame => "flying_robot_frame",
+            Item::Gate => "gate",
+            Item::Grenade => "grenade",
+            Item::GunTurret => "gun_turret",
+            Item::HeavyArmor => "heavy_armor",
+            Item::LandMine => "land_mine",
+            Item::LaserTurret => "laser_turret",
+            Item::Locomotive => "locomotive",
+            Item::LogisticRobot => "logistic_robot",
+            Item::LogisticSciencePack => "logistic_science_pack",
+            Item::LowDensityStructure => "low_density_structure",
+            Item::MilitarySciencePack => "military_science_pack",
+            Item::ModularArmor => "modular_armor",
+            Item::NightVisionEquipment => "night_vision_equipment",
+            Item::PassiveProviderChest => "passive_provider_chest",
+            Item::PersonalLaserDefenseEquipment => "personal_laser_defense_equipment",
+            Item::PersonalRoboportMk2Equipment => "personal_roboport_mk2_equipment",
+            Item::PiercingRoundsMagazine => "piercing_rounds_magazine",
+            Item::PiercingShotgunShell => "piercing_shotgun_shell",
+            Item::PoisonCapsule => "poison_capsule",
+            Item::PowerArmor => "power_armor",
+            Item::PowerArmorMk2 => "power_armor_mk2",
+            Item::PowerSwitch => "power_switch",
+            Item::ProcessingUnit => "processing_unit",
+            Item::ProductionSciencePack => "production_science_pack",
+            Item::ProductivityModule2 => "productivity_module_2",
+            Item::ProductivityModule3 => "productivity_module_3",
+            Item::Rail => "rail",
+            Item::RailChainSignal => "rail_chain_signal",
+            Item::RailSignal => "rail_signal",
+            Item::RawFish => "raw_fish",
+            Item::RefinedConcrete => "refined_concrete",
+            Item::RefinedHazardConcrete => "refined_hazard_concrete",
+            Item::RequesterChest => "requester_chest",
+            Item::Rocket => "rocket",
+            Item::RocketFuel => "rocket_fuel",
+            Item::RocketLauncher => "rocket_launcher",
+            Item::RocketSilo => "rocket_silo",
+            Item::Satellite => "satellite",
+            Item::SelectorCombinator => "selector_combinator",
+            Item::ShotgunShell => "shotgun_shell",
+            Item::SlowdownCapsule => "slowdown_capsule",
+            Item::SolarPanelEquipment => "solar_panel_equipment",
+            Item::SpeedModule2 => "speed_module_2",
+            Item::SpeedModule3 => "speed_module_3",
+            Item::Spidertron => "spidertron",
+            Item::StorageChest => "storage_chest",
+            Item::SubmachineGun => "submachine_gun",
+            Item::Uranium235 => "uranium_235",
+            Item::Uranium238 => "uranium_238",
+            Item::UraniumCannonShell => "uranium_cannon_shell",
+            Item::UraniumFuelCell => "uranium_fuel_cell",
+            Item::UraniumRoundsMagazine => "uranium_rounds_magazine",
+            Item::UtilitySciencePack => "utility_science_pack",
         }
     }
 
@@ -715,7 +985,97 @@ impl Item {
             | Item::AssemblingMachine3
             | Item::Roboport
             | Item::SmallLamp
-            | Item::Coal => 0.0,
+            | Item::Coal
+            | Item::ActiveProviderChest
+            | Item::ArithmeticCombinator
+            | Item::ArtilleryShell
+            | Item::ArtilleryWagon
+            | Item::AtomicBomb
+            | Item::BatteryEquipment
+            | Item::BatteryMk2Equipment
+            | Item::BeltImmunityEquipment
+            | Item::BufferChest
+            | Item::CannonShell
+            | Item::Car
+            | Item::CargoLandingPad
+            | Item::CargoWagon
+            | Item::ChemicalSciencePack
+            | Item::CliffExplosives
+            | Item::ClusterGrenade
+            | Item::ConstantCombinator
+            | Item::ConstructionRobot
+            | Item::DeciderCombinator
+            | Item::DefenderCapsule
+            | Item::DestroyerCapsule
+            | Item::DischargeDefenseEquipment
+            | Item::DisplayPanel
+            | Item::DistractorCapsule
+            | Item::EfficiencyModule2
+            | Item::EfficiencyModule3
+            | Item::ElectricEngineUnit
+            | Item::ElectricMiningDrill
+            | Item::EnergyShieldEquipment
+            | Item::EnergyShieldMk2Equipment
+            | Item::ExoskeletonEquipment
+            | Item::ExplosiveCannonShell
+            | Item::ExplosiveRocket
+            | Item::ExplosiveUraniumCannonShell
+            | Item::FissionReactorEquipment
+            | Item::Flamethrower
+            | Item::FlyingRobotFrame
+            | Item::Gate
+            | Item::Grenade
+            | Item::GunTurret
+            | Item::HeavyArmor
+            | Item::LandMine
+            | Item::LaserTurret
+            | Item::Locomotive
+            | Item::LogisticRobot
+            | Item::LogisticSciencePack
+            | Item::LowDensityStructure
+            | Item::MilitarySciencePack
+            | Item::ModularArmor
+            | Item::NightVisionEquipment
+            | Item::PassiveProviderChest
+            | Item::PersonalLaserDefenseEquipment
+            | Item::PersonalRoboportMk2Equipment
+            | Item::PiercingRoundsMagazine
+            | Item::PiercingShotgunShell
+            | Item::PoisonCapsule
+            | Item::PowerArmor
+            | Item::PowerArmorMk2
+            | Item::PowerSwitch
+            | Item::ProcessingUnit
+            | Item::ProductionSciencePack
+            | Item::ProductivityModule2
+            | Item::ProductivityModule3
+            | Item::Rail
+            | Item::RailChainSignal
+            | Item::RailSignal
+            | Item::RawFish
+            | Item::RefinedConcrete
+            | Item::RefinedHazardConcrete
+            | Item::RequesterChest
+            | Item::Rocket
+            | Item::RocketFuel
+            | Item::RocketLauncher
+            | Item::RocketSilo
+            | Item::Satellite
+            | Item::SelectorCombinator
+            | Item::ShotgunShell
+            | Item::SlowdownCapsule
+            | Item::SolarPanelEquipment
+            | Item::SpeedModule2
+            | Item::SpeedModule3
+            | Item::Spidertron
+            | Item::StorageChest
+            | Item::SubmachineGun
+            | Item::Uranium235
+            | Item::Uranium238
+            | Item::UraniumCannonShell
+            | Item::UraniumFuelCell
+            | Item::UraniumRoundsMagazine
+            | Item::UtilitySciencePack => 0.0,
         }
     }
 
@@ -897,9 +1257,8 @@ fn raw_expand(item: Item, qty: f64, index: &HashMap<Item, Recipe>) -> (NonEmpty<
     (items, time)
 }
 
-/// The assembling machines that craft a standard recipe. The one
-/// `advanced-crafting` recipe (engine_unit) can't use tier 1, so it lists
-/// tiers 2/3 inline at its call site.
+/// The assembling machines: in Factorio 2.0 every tier crafts every
+/// fluid-free recipe (`crafting`, `basic-crafting`, `advanced-crafting`).
 const ASSEMBLING_MACHINES: &[Item] = &[
     Item::AssemblingMachine1,
     Item::AssemblingMachine2,
@@ -919,9 +1278,6 @@ const FURNACES: &[Item] = &[
 /// per-second). They are not scale-free: a machine finishes at most its
 /// crafting speed over `crafting_time` crafts per second, so the per-craft
 /// quantities set its rates.
-///
-/// Oil refinery is omitted because its five inputs do not belong to any of the
-/// supported 1–4 ingredient recipe lessons.
 pub fn all_recipes() -> Vec<(Item, Recipe)> {
     vec![
         // 1 copper plate -> 2 copper cables, 0.5s
@@ -1037,7 +1393,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::EngineUnit, 1.0)],
                 crafting_time: 10.0,
-                produced_by: &[Item::AssemblingMachine2, Item::AssemblingMachine3],
+                produced_by: ASSEMBLING_MACHINES,
             },
         ),
         // Storage
@@ -1797,6 +2153,1015 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 produced_by: ASSEMBLING_MACHINES,
             },
         ),
+        (
+            Item::ActiveProviderChest,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelChest, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::AdvancedCircuit, 1.0)
+                ],
+                produces: nonempty![(Item::ActiveProviderChest, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ArithmeticCombinator,
+            Recipe {
+                consumes: nonempty![(Item::CopperCable, 5.0), (Item::ElectronicCircuit, 5.0)],
+                produces: nonempty![(Item::ArithmeticCombinator, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ArtilleryShell,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ExplosiveCannonShell, 4.0),
+                    (Item::Radar, 1.0),
+                    (Item::Explosives, 8.0)
+                ],
+                produces: nonempty![(Item::ArtilleryShell, 1.0)],
+                crafting_time: 15.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ArtilleryWagon,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 64.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::SteelPlate, 40.0),
+                    (Item::Pipe, 16.0),
+                    (Item::AdvancedCircuit, 20.0)
+                ],
+                produces: nonempty![(Item::ArtilleryWagon, 1.0)],
+                crafting_time: 4.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::AssemblingMachine3,
+            Recipe {
+                consumes: nonempty![(Item::SpeedModule, 4.0), (Item::AssemblingMachine2, 2.0)],
+                produces: nonempty![(Item::AssemblingMachine3, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::AtomicBomb,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProcessingUnit, 10.0),
+                    (Item::Explosives, 10.0),
+                    (Item::Uranium235, 30.0)
+                ],
+                produces: nonempty![(Item::AtomicBomb, 1.0)],
+                crafting_time: 50.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::BatteryEquipment,
+            Recipe {
+                consumes: nonempty![(Item::Battery, 5.0), (Item::SteelPlate, 10.0)],
+                produces: nonempty![(Item::BatteryEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::BatteryMk2Equipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::BatteryEquipment, 10.0),
+                    (Item::ProcessingUnit, 15.0),
+                    (Item::LowDensityStructure, 5.0)
+                ],
+                produces: nonempty![(Item::BatteryMk2Equipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::BeltImmunityEquipment,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::SteelPlate, 10.0)],
+                produces: nonempty![(Item::BeltImmunityEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::BufferChest,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelChest, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::AdvancedCircuit, 1.0)
+                ],
+                produces: nonempty![(Item::BufferChest, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::CannonShell,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 2.0),
+                    (Item::PlasticBar, 2.0),
+                    (Item::Explosives, 1.0)
+                ],
+                produces: nonempty![(Item::CannonShell, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Car,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 8.0),
+                    (Item::IronPlate, 20.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::Car, 1.0)],
+                crafting_time: 2.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::CargoLandingPad,
+            Recipe {
+                consumes: nonempty![
+                    (Item::Concrete, 200.0),
+                    (Item::SteelPlate, 25.0),
+                    (Item::ProcessingUnit, 10.0)
+                ],
+                produces: nonempty![(Item::CargoLandingPad, 1.0)],
+                crafting_time: 30.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::CargoWagon,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 10.0),
+                    (Item::IronPlate, 20.0),
+                    (Item::SteelPlate, 20.0)
+                ],
+                produces: nonempty![(Item::CargoWagon, 1.0)],
+                crafting_time: 1.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ChemicalSciencePack,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 2.0),
+                    (Item::AdvancedCircuit, 3.0),
+                    (Item::Sulfur, 1.0)
+                ],
+                produces: nonempty![(Item::ChemicalSciencePack, 2.0)],
+                crafting_time: 24.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::CliffExplosives,
+            Recipe {
+                consumes: nonempty![
+                    (Item::Explosives, 10.0),
+                    (Item::Grenade, 1.0),
+                    (Item::Barrel, 1.0)
+                ],
+                produces: nonempty![(Item::CliffExplosives, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ClusterGrenade,
+            Recipe {
+                consumes: nonempty![
+                    (Item::Grenade, 7.0),
+                    (Item::Explosives, 5.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::ClusterGrenade, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ConstantCombinator,
+            Recipe {
+                consumes: nonempty![(Item::CopperCable, 5.0), (Item::ElectronicCircuit, 2.0)],
+                produces: nonempty![(Item::ConstantCombinator, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ConstructionRobot,
+            Recipe {
+                consumes: nonempty![
+                    (Item::FlyingRobotFrame, 1.0),
+                    (Item::ElectronicCircuit, 2.0)
+                ],
+                produces: nonempty![(Item::ConstructionRobot, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::DeciderCombinator,
+            Recipe {
+                consumes: nonempty![(Item::CopperCable, 5.0), (Item::ElectronicCircuit, 5.0)],
+                produces: nonempty![(Item::DeciderCombinator, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::DefenderCapsule,
+            Recipe {
+                consumes: nonempty![
+                    (Item::PiercingRoundsMagazine, 3.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::IronGearWheel, 3.0)
+                ],
+                produces: nonempty![(Item::DefenderCapsule, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::DestroyerCapsule,
+            Recipe {
+                consumes: nonempty![(Item::DistractorCapsule, 4.0), (Item::SpeedModule, 1.0)],
+                produces: nonempty![(Item::DestroyerCapsule, 1.0)],
+                crafting_time: 15.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::DischargeDefenseEquipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProcessingUnit, 5.0),
+                    (Item::SteelPlate, 20.0),
+                    (Item::LaserTurret, 10.0)
+                ],
+                produces: nonempty![(Item::DischargeDefenseEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::DisplayPanel,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 1.0), (Item::ElectronicCircuit, 1.0)],
+                produces: nonempty![(Item::DisplayPanel, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::DistractorCapsule,
+            Recipe {
+                consumes: nonempty![(Item::DefenderCapsule, 4.0), (Item::AdvancedCircuit, 3.0)],
+                produces: nonempty![(Item::DistractorCapsule, 1.0)],
+                crafting_time: 15.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::EfficiencyModule2,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EfficiencyModule, 4.0),
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::ProcessingUnit, 5.0)
+                ],
+                produces: nonempty![(Item::EfficiencyModule2, 1.0)],
+                crafting_time: 30.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::EfficiencyModule3,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EfficiencyModule2, 4.0),
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::ProcessingUnit, 5.0)
+                ],
+                produces: nonempty![(Item::EfficiencyModule3, 1.0)],
+                crafting_time: 60.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ElectricMiningDrill,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::IronPlate, 10.0)
+                ],
+                produces: nonempty![(Item::ElectricMiningDrill, 1.0)],
+                crafting_time: 2.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::EnergyShieldEquipment,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::SteelPlate, 10.0)],
+                produces: nonempty![(Item::EnergyShieldEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::EnergyShieldMk2Equipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EnergyShieldEquipment, 10.0),
+                    (Item::ProcessingUnit, 5.0),
+                    (Item::LowDensityStructure, 5.0)
+                ],
+                produces: nonempty![(Item::EnergyShieldMk2Equipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ExoskeletonEquipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProcessingUnit, 10.0),
+                    (Item::ElectricEngineUnit, 30.0),
+                    (Item::SteelPlate, 20.0)
+                ],
+                produces: nonempty![(Item::ExoskeletonEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ExplosiveCannonShell,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 2.0),
+                    (Item::PlasticBar, 2.0),
+                    (Item::Explosives, 2.0)
+                ],
+                produces: nonempty![(Item::ExplosiveCannonShell, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ExplosiveRocket,
+            Recipe {
+                consumes: nonempty![(Item::Rocket, 1.0), (Item::Explosives, 2.0)],
+                produces: nonempty![(Item::ExplosiveRocket, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ExplosiveUraniumCannonShell,
+            Recipe {
+                consumes: nonempty![(Item::ExplosiveCannonShell, 1.0), (Item::Uranium238, 1.0)],
+                produces: nonempty![(Item::ExplosiveUraniumCannonShell, 1.0)],
+                crafting_time: 12.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::FissionReactorEquipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProcessingUnit, 200.0),
+                    (Item::LowDensityStructure, 50.0),
+                    (Item::UraniumFuelCell, 4.0)
+                ],
+                produces: nonempty![(Item::FissionReactorEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Flamethrower,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 5.0), (Item::IronGearWheel, 10.0)],
+                produces: nonempty![(Item::Flamethrower, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::FlyingRobotFrame,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectricEngineUnit, 1.0),
+                    (Item::Battery, 2.0),
+                    (Item::SteelPlate, 1.0),
+                    (Item::ElectronicCircuit, 3.0)
+                ],
+                produces: nonempty![(Item::FlyingRobotFrame, 1.0)],
+                crafting_time: 20.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Gate,
+            Recipe {
+                consumes: nonempty![
+                    (Item::StoneWall, 1.0),
+                    (Item::SteelPlate, 2.0),
+                    (Item::ElectronicCircuit, 2.0)
+                ],
+                produces: nonempty![(Item::Gate, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Grenade,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 5.0), (Item::Coal, 10.0)],
+                produces: nonempty![(Item::Grenade, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::GunTurret,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 10.0),
+                    (Item::CopperPlate, 10.0),
+                    (Item::IronPlate, 20.0)
+                ],
+                produces: nonempty![(Item::GunTurret, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::HeavyArmor,
+            Recipe {
+                consumes: nonempty![(Item::CopperPlate, 100.0), (Item::SteelPlate, 50.0)],
+                produces: nonempty![(Item::HeavyArmor, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::LandMine,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 1.0), (Item::Explosives, 2.0)],
+                produces: nonempty![(Item::LandMine, 4.0)],
+                crafting_time: 5.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::LaserTurret,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 20.0),
+                    (Item::ElectronicCircuit, 20.0),
+                    (Item::Battery, 12.0)
+                ],
+                produces: nonempty![(Item::LaserTurret, 1.0)],
+                crafting_time: 20.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Locomotive,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 20.0),
+                    (Item::ElectronicCircuit, 10.0),
+                    (Item::SteelPlate, 30.0)
+                ],
+                produces: nonempty![(Item::Locomotive, 1.0)],
+                crafting_time: 4.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::LogisticRobot,
+            Recipe {
+                consumes: nonempty![(Item::FlyingRobotFrame, 1.0), (Item::AdvancedCircuit, 2.0)],
+                produces: nonempty![(Item::LogisticRobot, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::LogisticSciencePack,
+            Recipe {
+                consumes: nonempty![(Item::Inserter, 1.0), (Item::TransportBelt, 1.0)],
+                produces: nonempty![(Item::LogisticSciencePack, 1.0)],
+                crafting_time: 6.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::LowDensityStructure,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 2.0),
+                    (Item::CopperPlate, 20.0),
+                    (Item::PlasticBar, 5.0)
+                ],
+                produces: nonempty![(Item::LowDensityStructure, 1.0)],
+                crafting_time: 15.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::MilitarySciencePack,
+            Recipe {
+                consumes: nonempty![
+                    (Item::PiercingRoundsMagazine, 1.0),
+                    (Item::Grenade, 1.0),
+                    (Item::StoneWall, 2.0)
+                ],
+                produces: nonempty![(Item::MilitarySciencePack, 2.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ModularArmor,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 30.0), (Item::SteelPlate, 50.0)],
+                produces: nonempty![(Item::ModularArmor, 1.0)],
+                crafting_time: 15.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::NightVisionEquipment,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::SteelPlate, 10.0)],
+                produces: nonempty![(Item::NightVisionEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::OilRefinery,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 15.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::StoneBrick, 10.0),
+                    (Item::ElectronicCircuit, 10.0),
+                    (Item::Pipe, 10.0)
+                ],
+                produces: nonempty![(Item::OilRefinery, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PassiveProviderChest,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelChest, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::AdvancedCircuit, 1.0)
+                ],
+                produces: nonempty![(Item::PassiveProviderChest, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PersonalLaserDefenseEquipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProcessingUnit, 20.0),
+                    (Item::LowDensityStructure, 5.0),
+                    (Item::LaserTurret, 5.0)
+                ],
+                produces: nonempty![(Item::PersonalLaserDefenseEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PersonalRoboportMk2Equipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::PersonalRoboportEquipment, 5.0),
+                    (Item::ProcessingUnit, 100.0),
+                    (Item::LowDensityStructure, 20.0)
+                ],
+                produces: nonempty![(Item::PersonalRoboportMk2Equipment, 1.0)],
+                crafting_time: 20.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PiercingRoundsMagazine,
+            Recipe {
+                consumes: nonempty![
+                    (Item::FirearmMagazine, 2.0),
+                    (Item::SteelPlate, 1.0),
+                    (Item::CopperPlate, 2.0)
+                ],
+                produces: nonempty![(Item::PiercingRoundsMagazine, 2.0)],
+                crafting_time: 6.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PiercingShotgunShell,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ShotgunShell, 2.0),
+                    (Item::CopperPlate, 5.0),
+                    (Item::SteelPlate, 2.0)
+                ],
+                produces: nonempty![(Item::PiercingShotgunShell, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PoisonCapsule,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 3.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::Coal, 10.0)
+                ],
+                produces: nonempty![(Item::PoisonCapsule, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PowerArmor,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProcessingUnit, 40.0),
+                    (Item::ElectricEngineUnit, 20.0),
+                    (Item::SteelPlate, 40.0)
+                ],
+                produces: nonempty![(Item::PowerArmor, 1.0)],
+                crafting_time: 20.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PowerArmorMk2,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EfficiencyModule2, 25.0),
+                    (Item::SpeedModule2, 25.0),
+                    (Item::ProcessingUnit, 60.0),
+                    (Item::ElectricEngineUnit, 40.0),
+                    (Item::LowDensityStructure, 30.0)
+                ],
+                produces: nonempty![(Item::PowerArmorMk2, 1.0)],
+                crafting_time: 25.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::PowerSwitch,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronPlate, 5.0),
+                    (Item::CopperCable, 5.0),
+                    (Item::ElectronicCircuit, 2.0)
+                ],
+                produces: nonempty![(Item::PowerSwitch, 1.0)],
+                crafting_time: 2.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ProductionSciencePack,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectricFurnace, 1.0),
+                    (Item::ProductivityModule, 1.0),
+                    (Item::Rail, 30.0)
+                ],
+                produces: nonempty![(Item::ProductionSciencePack, 3.0)],
+                crafting_time: 21.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ProductivityModule2,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProductivityModule, 4.0),
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::ProcessingUnit, 5.0)
+                ],
+                produces: nonempty![(Item::ProductivityModule2, 1.0)],
+                crafting_time: 30.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ProductivityModule3,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ProductivityModule2, 4.0),
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::ProcessingUnit, 5.0)
+                ],
+                produces: nonempty![(Item::ProductivityModule3, 1.0)],
+                crafting_time: 60.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Rail,
+            Recipe {
+                consumes: nonempty![
+                    (Item::Stone, 1.0),
+                    (Item::IronStick, 1.0),
+                    (Item::SteelPlate, 1.0)
+                ],
+                produces: nonempty![(Item::Rail, 2.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::RailChainSignal,
+            Recipe {
+                consumes: nonempty![(Item::ElectronicCircuit, 1.0), (Item::IronPlate, 5.0)],
+                produces: nonempty![(Item::RailChainSignal, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::RailSignal,
+            Recipe {
+                consumes: nonempty![(Item::ElectronicCircuit, 1.0), (Item::IronPlate, 5.0)],
+                produces: nonempty![(Item::RailSignal, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::RefinedHazardConcrete,
+            Recipe {
+                consumes: nonempty![(Item::RefinedConcrete, 10.0)],
+                produces: nonempty![(Item::RefinedHazardConcrete, 10.0)],
+                crafting_time: 0.25,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::RequesterChest,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelChest, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::AdvancedCircuit, 1.0)
+                ],
+                produces: nonempty![(Item::RequesterChest, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Rocket,
+            Recipe {
+                consumes: nonempty![(Item::Explosives, 1.0), (Item::IronPlate, 2.0)],
+                produces: nonempty![(Item::Rocket, 1.0)],
+                crafting_time: 4.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::RocketLauncher,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronPlate, 5.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::ElectronicCircuit, 5.0)
+                ],
+                produces: nonempty![(Item::RocketLauncher, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::RocketSilo,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 1000.0),
+                    (Item::Concrete, 1000.0),
+                    (Item::Pipe, 100.0),
+                    (Item::ProcessingUnit, 200.0),
+                    (Item::ElectricEngineUnit, 200.0)
+                ],
+                produces: nonempty![(Item::RocketSilo, 1.0)],
+                crafting_time: 30.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Satellite,
+            Recipe {
+                consumes: nonempty![
+                    (Item::LowDensityStructure, 100.0),
+                    (Item::SolarPanel, 100.0),
+                    (Item::Accumulator, 100.0),
+                    (Item::Radar, 5.0),
+                    (Item::ProcessingUnit, 100.0),
+                    (Item::RocketFuel, 50.0)
+                ],
+                produces: nonempty![(Item::Satellite, 1.0)],
+                crafting_time: 5.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SelectorCombinator,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 2.0), (Item::DeciderCombinator, 5.0)],
+                produces: nonempty![(Item::SelectorCombinator, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::ShotgunShell,
+            Recipe {
+                consumes: nonempty![(Item::CopperPlate, 2.0), (Item::IronPlate, 2.0)],
+                produces: nonempty![(Item::ShotgunShell, 1.0)],
+                crafting_time: 3.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SlowdownCapsule,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelPlate, 2.0),
+                    (Item::ElectronicCircuit, 2.0),
+                    (Item::Coal, 5.0)
+                ],
+                produces: nonempty![(Item::SlowdownCapsule, 1.0)],
+                crafting_time: 8.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SolarPanelEquipment,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SolarPanel, 1.0),
+                    (Item::AdvancedCircuit, 2.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::SolarPanelEquipment, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SpeedModule2,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SpeedModule, 4.0),
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::ProcessingUnit, 5.0)
+                ],
+                produces: nonempty![(Item::SpeedModule2, 1.0)],
+                crafting_time: 30.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SpeedModule3,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SpeedModule2, 4.0),
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::ProcessingUnit, 5.0)
+                ],
+                produces: nonempty![(Item::SpeedModule3, 1.0)],
+                crafting_time: 60.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::Spidertron,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ExoskeletonEquipment, 4.0),
+                    (Item::FissionReactorEquipment, 2.0),
+                    (Item::RocketLauncher, 4.0),
+                    (Item::ProcessingUnit, 16.0),
+                    (Item::LowDensityStructure, 150.0),
+                    (Item::Radar, 2.0),
+                    (Item::EfficiencyModule3, 2.0),
+                    (Item::RawFish, 1.0)
+                ],
+                produces: nonempty![(Item::Spidertron, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::StorageChest,
+            Recipe {
+                consumes: nonempty![
+                    (Item::SteelChest, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::AdvancedCircuit, 1.0)
+                ],
+                produces: nonempty![(Item::StorageChest, 1.0)],
+                crafting_time: 0.5,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::SubmachineGun,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 10.0),
+                    (Item::CopperPlate, 5.0),
+                    (Item::IronPlate, 10.0)
+                ],
+                produces: nonempty![(Item::SubmachineGun, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::UraniumCannonShell,
+            Recipe {
+                consumes: nonempty![(Item::CannonShell, 1.0), (Item::Uranium238, 1.0)],
+                produces: nonempty![(Item::UraniumCannonShell, 1.0)],
+                crafting_time: 12.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::UraniumFuelCell,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronPlate, 10.0),
+                    (Item::Uranium235, 1.0),
+                    (Item::Uranium238, 19.0)
+                ],
+                produces: nonempty![(Item::UraniumFuelCell, 10.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::UraniumRoundsMagazine,
+            Recipe {
+                consumes: nonempty![(Item::PiercingRoundsMagazine, 1.0), (Item::Uranium238, 1.0)],
+                produces: nonempty![(Item::UraniumRoundsMagazine, 1.0)],
+                crafting_time: 10.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
+        (
+            Item::UtilitySciencePack,
+            Recipe {
+                consumes: nonempty![
+                    (Item::LowDensityStructure, 3.0),
+                    (Item::ProcessingUnit, 2.0),
+                    (Item::FlyingRobotFrame, 1.0)
+                ],
+                produces: nonempty![(Item::UtilitySciencePack, 3.0)],
+                crafting_time: 21.0,
+                produced_by: ASSEMBLING_MACHINES,
+            },
+        ),
         // Smelting: each ingredient smelts into exactly one product, so a
         // furnace's recipe is a function of what it is fed.
         (
@@ -2088,27 +3453,6 @@ mod tests {
         assert!(steel.is_smelting());
 
         assert!(get_recipe(Item::IronOre).is_none());
-        assert!(get_recipe(Item::OilRefinery).is_none());
-    }
-
-    #[test]
-    fn test_produced_by_crafting_vs_advanced() {
-        // A standard `crafting` recipe lists all three assembler tiers.
-        let ec = get_recipe(Item::ElectronicCircuit).unwrap();
-        assert_eq!(
-            ec.produced_by.to_vec(),
-            vec![
-                Item::AssemblingMachine1,
-                Item::AssemblingMachine2,
-                Item::AssemblingMachine3
-            ]
-        );
-        // The one `advanced-crafting` recipe excludes assembling machine 1.
-        let eu = get_recipe(Item::EngineUnit).unwrap();
-        assert_eq!(
-            eu.produced_by.to_vec(),
-            vec![Item::AssemblingMachine2, Item::AssemblingMachine3]
-        );
     }
 
     #[test]
@@ -2138,13 +3482,6 @@ mod tests {
                 "{item:?} recipe key must be one of its positive outputs"
             );
         }
-    }
-
-    #[test]
-    fn test_every_recipe_has_a_supported_ingredient_count() {
-        assert!(all_recipes()
-            .iter()
-            .all(|(_, recipe)| (1..=4).contains(&recipe.consumes.len())));
     }
 
     #[test]

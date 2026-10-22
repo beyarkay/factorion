@@ -13,3 +13,19 @@ factory: |
   .. e. aaaaaaaa e. ..
   S> i> aa    aa i> K>
   .. .. aaaaaaaa .. ..
+---
+description: |
+  A grenade (5 iron plates + 10 coal) takes 8 s to craft, so an assembling
+  machine 1 at crafting speed 0.5 makes one every 16 s: 0.0625 grenades/s,
+  far below what either input inserter could bring.
+items:
+- { x: 0, y: 1, item: iron_plate }
+- { x: 0, y: 2, item: coal }
+- { x: 2, y: 0, item: grenade }   # assembler recipe (anchor = top-left)
+- { x: 6, y: 1, item: grenade }
+throughput:
+- { item: grenade, per_second: 0.0625 }
+factory: |
+  .. e. aaaaaaaa e. ..
+  S> i> aa    aa i> K>
+  S> i> aaaaaaaa .. ..
