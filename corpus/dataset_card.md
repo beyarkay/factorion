@@ -23,7 +23,7 @@ layout, ignoring position).
 
 | column | |
 |---|---|
-| `string` | the design as a Factorio exchange string (`"0"` + base64(zlib(json))), importable in game. Save regions also carry `unbuildable`: `[x, y, length]` row runs of terrain no belt can go on (water, lava, space, cliffs), in the blueprint's frame |
+| `string` | the design as a Factorio exchange string (`"0"` + base64(zlib(json))), importable in game. Save regions also carry `unbuildable`: `[x, y, length]` row runs of terrain no belt can go on (water, lava, space, cliffs), in the blueprint's frame, and `lanes`: `[x, y, line, "item,item"]`, what each belt lane (line 1 = left) held when the game was saved |
 | `source`, `source_id`, `url`, `title` | where it came from (`save:<site>` for save regions; `source_id` is `<save>#<surface>#<region x>,<region y>` for those, 256-tile regions) |
 | `label` | the design's own label |
 | `version` | game version that wrote it (`major.minor.patch`) |

@@ -37,8 +37,9 @@ def _rows(rec: dict) -> list[dict]:
         bps = list(designs(rec["string"]))
     except Exception:
         return []
-    if rec.get("unbuildable"):  # a save region's terrain (`corpus.extract_saves`)
-        bps[0]["unbuildable"] = rec["unbuildable"]
+    for key in ("unbuildable", "lanes"):  # a save region's terrain and belt contents (`corpus.extract_saves`)
+        if rec.get(key):
+            bps[0][key] = rec[key]
     out = []
     for bp in bps:
         try:

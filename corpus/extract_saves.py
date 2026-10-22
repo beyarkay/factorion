@@ -8,7 +8,9 @@ and blueprints the player's buildings on every surface, one blueprint per 256 ×
 world comes out exactly as a blueprint of it would. Each record's
 `unbuildable` lists the terrain no belt can go on (water, lava, space, cliffs)
 as `[x, y, length]` row runs in the blueprint's frame, which `corpus.build`
-carries into the design and `corpus.convert` masks. `--index` (one JSON object
+carries into the design and `corpus.convert` masks; `lanes` lists what each
+belt lane held when the game was saved, `[x, y, line, "item,item"]` (line 1 is
+the left lane), which says where sources and sinks of known items can go. `--index` (one JSON object
 per line: file, url, title, mods_if_known) supplies each record's metadata and
 skips saves with mods beyond base and the DLC.
 """
@@ -85,8 +87,19 @@ for _, surface in pairs(game.surfaces) do
           i = j + 1
         end
       end
+      -- What each belt lane carries, read off the running factory. Line 1 is the belt's left lane.
+      local lanes = {}
+      for _, e in pairs(surface.find_entities_filtered{area = area, type = {"transport-belt", "underground-belt"}, force = "player"}) do
+        for i = 1, 2 do
+          local items = {}
+          for _, c in pairs(e.get_transport_line(i).get_contents()) do items[#items + 1] = c.name end
+          if #items > 0 then
+            lanes[#lanes + 1] = {math.floor(e.position.x + ox), math.floor(e.position.y + oy), i, table.concat(items, ",")}
+          end
+        end
+      end
       helpers.write_file("OUT", helpers.table_to_json{surface = surface.name, x = r[1], y = r[2],
-        string = bp.export_stack(), unbuildable = runs} .. "\\n", true)
+        string = bp.export_stack(), unbuildable = runs, lanes = lanes} .. "\\n", true)
       n = n + 1
     end
   end
@@ -158,6 +171,7 @@ def main() -> None:
                 rec = {"source": f"save:{meta.get('source', 'unknown')}", "id": f"{save.name}#{r['surface']}#{r['x']},{r['y']}"}
                 rec |= {"url": meta.get("url", ""), "title": meta.get("title", save.stem), "string": r["string"]}
                 rec["unbuildable"] = r.get("unbuildable") or []
+                rec["lanes"] = r.get("lanes") or []
                 f.write(json.dumps(rec) + "\n")
             print(f"{save.name}: {len(regions)} regions in {time.time() - t:.0f}s", flush=True)
 

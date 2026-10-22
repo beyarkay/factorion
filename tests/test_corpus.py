@@ -269,3 +269,16 @@ def test_terrain_is_unbuildable_and_unmodelled_entities_masked():
     assert (fp[0:2, 1] == Footprint.UNBUILDABLE.value).all() and (fp[2:, 1] == Footprint.BUILDABLE.value).all()
     assert fp[0, 0] == Footprint.BUILDABLE.value and (fp[1:, 0] == Footprint.UNBUILDABLE.value).all()
     assert (fp[1:4, 2:5] == Footprint.MASKED.value).all()
+
+
+def test_a_save_regions_terrain_and_belt_contents_reach_its_design():
+    from corpus.build import _rows
+    from corpus.convert import designs
+    from factorion_server.blueprint import world_tensor_to_blueprint_string
+
+    world = _lesson(LessonKind.OPPOSITE_SIDES_1IN, 0).world_CWH.numpy()
+    rec = {"source": "save:test", "string": world_tensor_to_blueprint_string(world),
+           "unbuildable": [[0, 0, 2]], "lanes": [[3, 4, 1, "iron-plate"]]}
+    (row,) = _rows(rec)
+    bp = next(designs(row["string"]))
+    assert bp["unbuildable"] == rec["unbuildable"] and bp["lanes"] == rec["lanes"]
