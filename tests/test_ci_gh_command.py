@@ -93,12 +93,12 @@ def _stub_sweep(monkeypatch, config):
 
 class TestSftDispatch:
     def test_continues_a_checkpoint_with_a_wider_eval(self, gh_ctx, monkeypatch):
-        monkeypatch.setenv("COMMENT_BODY", "/ci sft --num-samples 650k --start-from abc123 --eval-best-of 64 --corpus-frac 0")
+        monkeypatch.setenv("COMMENT_BODY", "/ci sft --num-samples 650k --start-from abc123 --eval-best-of 64 --corpus-frac 0 --lr 5e-4")
         gh_command.main()
 
         (pod,) = gh_ctx["pods"]
         spec = _job_spec(pod)
-        assert (spec["num_samples"], spec["start_from"], spec["eval_best_of"], spec["corpus_frac"]) == (650_000, "abc123", 64, 0)
+        assert (spec["num_samples"], spec["start_from"], spec["eval_best_of"], spec["corpus_frac"], spec["lr"]) == (650_000, "abc123", 64, 0, 5e-4)
         ((_, body),) = gh_ctx["comments"]
         assert "abc123" in body
 

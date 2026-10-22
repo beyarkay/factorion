@@ -13,6 +13,7 @@ comes from `training_config.py`. Full grammar: `ci/README.md`.
 /ci sft --num-samples 5M
 /ci sft --start-from abc123 --eval-best-of 64   # continue an SFT checkpoint, best-of-64 eval
 /ci sft --corpus-frac 1 --num-samples 650k      # human blueprints only (corpus/)
+/ci sft --lr 5e-4                               # a different peak learning rate
 /ci rl --start-from abc123 --total-timesteps 40M
 
 # comparisons — N seeds/side; add `assert` lines for a pass/fail status
