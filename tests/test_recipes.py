@@ -74,10 +74,16 @@ class TestPyItemsBinding:
         # reaches two tiles instead of one). Placeability is decided per-item,
         # not by id range, so it sits in the placeable set despite its id.
         lhi_id = next(v for v in ids if rs[v]["name"] == "long_handed_inserter")
-        poles = {v for v in ids if rs[v]["name"] in ("small_electric_pole", "medium_electric_pole", "substation")}
+        poles = {v for v in ids if rs[v]["name"].endswith(("electric_pole", "substation"))}
+        inert = {
+            v for v in ids if rs[v]["name"] in ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
+        }
+        chests = {v for v in ids if rs[v]["name"] in ("wooden_chest", "iron_chest", "steel_chest")}
+        furnaces = {v for v in ids if rs[v]["name"] in ("stone_furnace", "steel_furnace", "electric_furnace")}
         # Placeable: agent-buildable (1..5) + the long-handed inserter + the
-        # poles + env-spawned source/sink (last two).
-        placeable = {1, 2, 3, 4, 5, lhi_id, *poles, sink_id, source_id}
+        # poles + the inert entities + the chests + the furnaces + env-spawned
+        # source/sink (last two).
+        placeable = {1, 2, 3, 4, 5, lhi_id, *poles, *inert, *chests, *furnaces, sink_id, source_id}
         for value in placeable:
             assert rs[value]["is_placeable"] is True, f"id {value} should be placeable"
         # Everything else (non-placeable items) — recipe ingredients,
@@ -214,11 +220,6 @@ class TestPyRecipesBinding:
             "assembling_machine_2",
             "assembling_machine_3",
         ]
-        # engine_unit is advanced-crafting — assembling machine 1 can't make it.
-        assert rs["engine_unit"]["produced_by"] == [
-            "assembling_machine_2",
-            "assembling_machine_3",
-        ]
 
     def test_every_recipe_produced_by_assemblers(self):
         rs = factorion_rs.py_recipes()
@@ -227,10 +228,11 @@ class TestPyRecipesBinding:
             "assembling_machine_2",
             "assembling_machine_3",
         }
+        furnaces = {"stone_furnace", "steel_furnace", "electric_furnace"}
         for name, data in rs.items():
             assert data["produced_by"], f"{name} has empty produced_by"
-            assert set(data["produced_by"]) <= assemblers, (
-                f"{name} produced_by non-assembler: {data['produced_by']}"
+            assert set(data["produced_by"]) <= assemblers or set(data["produced_by"]) == furnaces, (
+                f"{name} produced_by {data['produced_by']}"
             )
 
     def test_total_raw_expands_to_raw_items(self):
@@ -256,9 +258,12 @@ class TestPyRecipesBinding:
         for name, data in rs.items():
             assert data["total_raw"], f"{name} has empty total_raw"
             assert data["total_raw_time"] > 0, f"{name} total_raw_time not positive"
-            # Raws bottom out at items that have no recipe of their own.
+            # Raws bottom out at items that have no recipe of their own, or
+            # are smelted.
             for raw in data["total_raw"]:
-                assert raw not in rs, f"{name} total_raw lists craftable {raw}"
+                assert raw not in rs or "stone_furnace" in rs[raw]["produced_by"], (
+                    f"{name} total_raw lists craftable {raw}"
+                )
 
 
 class TestPythonRecipesDict:

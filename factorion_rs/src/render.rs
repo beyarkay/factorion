@@ -34,6 +34,19 @@ pub(crate) const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('e', Item::SmallElectricPole, Misc::None),
     ('E', Item::MediumElectricPole, Misc::None),
     ('Z', Item::Substation, Misc::None),
+    ('B', Item::BigElectricPole, Misc::None),
+    ('p', Item::SolarPanel, Misc::None),
+    ('A', Item::Accumulator, Misc::None),
+    ('R', Item::Roboport, Misc::None),
+    ('r', Item::Radar, Misc::None),
+    ('L', Item::SmallLamp, Misc::None),
+    ('W', Item::StoneWall, Misc::None),
+    ('w', Item::WoodenChest, Misc::None),
+    ('c', Item::IronChest, Misc::None),
+    ('C', Item::SteelChest, Misc::None),
+    ('f', Item::StoneFurnace, Misc::None),
+    ('F', Item::SteelFurnace, Misc::None),
+    ('x', Item::ElectricFurnace, Misc::None),
 ];
 
 /// Direction markers. Deliberately disjoint from every [`ENTITY_CHARS`] entry.

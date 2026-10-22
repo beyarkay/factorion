@@ -216,6 +216,7 @@ pub enum EntityEnum {
     Sink(Sink),
     Source(Source),
     Splitter(Splitter),
+    Chest(Chest),
 }
 
 impl EntityEnum {
@@ -227,13 +228,15 @@ impl EntityEnum {
             Item::TransportBelt => Self::TransportBelt(TransportBelt),
             Item::Inserter => Self::Inserter(Inserter),
             Item::LongHandedInserter => Self::LongHandedInserter(LongHandedInserter),
-            Item::AssemblingMachine1 => {
-                Self::AssemblingMachine(AssemblingMachine { recipe_item: item })
-            }
+            k if k.crafts() => Self::AssemblingMachine(AssemblingMachine {
+                kind: k,
+                recipe_item: item,
+            }),
             Item::UndergroundBelt => Self::UndergroundBelt(UndergroundBelt { misc }),
             Item::Sink => Self::Sink(Sink),
             Item::Source => Self::Source(Source { item }),
             Item::Splitter => Self::Splitter(Splitter),
+            k if k.is_chest() => Self::Chest(Chest { kind: k }),
             _ => return None,
         })
     }
@@ -250,6 +253,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.kind(),
             Self::Source(e) => e.kind(),
             Self::Splitter(e) => e.kind(),
+            Self::Chest(e) => e.kind(),
         }
     }
 
@@ -263,6 +267,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.connections(pos, dir, world),
             Self::Source(e) => e.connections(pos, dir, world),
             Self::Splitter(e) => e.connections(pos, dir, world),
+            Self::Chest(e) => e.connections(pos, dir, world),
         }
     }
 
@@ -276,6 +281,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.transform_flow(input),
             Self::Source(e) => e.transform_flow(input),
             Self::Splitter(e) => e.transform_flow(input),
+            Self::Chest(e) => e.transform_flow(input),
         }
     }
 }
@@ -349,40 +355,47 @@ impl FactoryEntity for LongHandedInserter {
 }
 
 // ── Assembling Machine ──────────────────────────────────────────────────────
+//
+// Furnaces craft like assemblers, but carry no recipe: like the game, which
+// picks one from the ingredient that arrives, `build_graph` gives a furnace
+// the smelting recipe of what reaches it. A burner furnace also burns the
+// fuel its inserters bring.
 
 pub struct AssemblingMachine {
+    kind: Item,
     recipe_item: Option<Item>,
 }
 
 impl FactoryEntity for AssemblingMachine {
     fn kind(&self) -> Item {
-        Item::AssemblingMachine1
+        self.kind
     }
 
     fn connections(&self, pos: (usize, usize), _dir: Direction, world: &World) -> Vec<Edge> {
         let mut edges = Vec::new();
         let (x, y) = pos;
-        let self_id = NodeId::new(Item::AssemblingMachine1, x, y, None);
+        let self_id = NodeId::new(self.kind, x, y, None);
+        let n = self.kind.size().0 as i64;
 
-        // Assembling machines are 3x3. The anchor is the top-left corner.
-        // Search the perimeter (ring around the 3x3) for inserters.
-        for ddx in -1i64..=3 {
+        // The anchor is the top-left corner. Search the perimeter (the ring
+        // around the n x n body) for inserters.
+        for ddx in -1i64..=n {
             let nx = x as i64 + ddx;
             if nx < 0 || nx >= world.width() as i64 {
                 continue;
             }
-            for ddy in -1i64..=3 {
+            for ddy in -1i64..=n {
                 let ny = y as i64 + ddy;
                 if ny < 0 || ny >= world.height() as i64 {
                     continue;
                 }
-                // Skip tiles inside the 3x3 assembler body
-                if (0..3).contains(&ddx) && (0..3).contains(&ddy) {
+                // Skip tiles inside the assembler body
+                if (0..n).contains(&ddx) && (0..n).contains(&ddy) {
                     continue;
                 }
                 // Skip corners: only the orthogonal perimeter slots can hold an
                 // inserter that reaches into the assembler body.
-                if (ddx == -1 || ddx == 3) && (ddy == -1 || ddy == 3) {
+                if (ddx == -1 || ddx == n) && (ddy == -1 || ddy == n) {
                     continue;
                 }
 
@@ -435,12 +448,20 @@ impl FactoryEntity for AssemblingMachine {
         };
 
         // Crafts per second: the machine's crafting speed (its flow rate) over
-        // the recipe's crafting time, unless an ingredient runs short first.
+        // the recipe's crafting time, unless an ingredient, or a burner's
+        // fuel, runs short first.
         let mut min_ratio: f64 = self.flow_rate() / recipe.crafting_time;
         for &(item, required) in recipe.consumes.iter() {
             let available = input.get(&item).copied().unwrap_or(0.0);
             let ratio = available / required;
             min_ratio = min_ratio.min(ratio);
+        }
+        if let Some(kj) = self.kind.fuel_per_craft(&recipe) {
+            let energy: f64 = input
+                .iter()
+                .filter_map(|(item, rate)| Some(rate * item.fuel_value()?))
+                .sum();
+            min_ratio = min_ratio.min(energy / kj);
         }
 
         // Produce outputs scaled by the minimum ratio
@@ -596,6 +617,30 @@ impl FactoryEntity for Sink {
     }
 }
 
+// ── Chest ───────────────────────────────────────────────────────────────────
+//
+// Only inserters move items in and out of a chest, so its edges all come from
+// `inserter_connections`. In steady state it passes on what it is given; one
+// nothing takes from fills up and accepts nothing, like a belt to nowhere.
+
+pub struct Chest {
+    kind: Item,
+}
+
+impl FactoryEntity for Chest {
+    fn kind(&self) -> Item {
+        self.kind
+    }
+
+    fn connections(&self, _pos: (usize, usize), _dir: Direction, _world: &World) -> Vec<Edge> {
+        Vec::new()
+    }
+
+    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        input.clone()
+    }
+}
+
 /// Belt-style connections, shared by transport belts and the source/sink
 /// markers — a source/sink connects exactly like a belt, except it never links
 /// to another source/sink.
@@ -694,7 +739,7 @@ fn inserter_connections(
 
     // Pick up from `reach` tiles behind (opposite of facing direction). A real
     // inserter can only pick up from an entity that carries or produces items:
-    // a source, belt, underground belt, or assembler. Notably NOT another
+    // a source, belt, underground belt, crafting machine or chest. Notably NOT another
     // inserter (see #122) or a sink. (Splitters are excluded too, mirroring the
     // drop side — not quite true to Factorio, may revisit.) Picking from a
     // belt draws from both of its lanes.
@@ -706,12 +751,9 @@ fn inserter_connections(
         if let Some(src_entity) = world.entity_at(sx, sy) {
             let src_is_pickable = matches!(
                 src_entity,
-                Item::Source
-                    | Item::Sink
-                    | Item::TransportBelt
-                    | Item::UndergroundBelt
-                    | Item::AssemblingMachine1
-            );
+                Item::Source | Item::Sink | Item::TransportBelt | Item::UndergroundBelt
+            ) || src_entity.crafts()
+                || src_entity.is_chest();
             if src_is_pickable {
                 edges.extend(calc_lane_aware_edges(
                     src_entity,
@@ -739,12 +781,9 @@ fn inserter_connections(
         if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
             let dst_is_insertable = matches!(
                 dst_entity,
-                Item::TransportBelt
-                    | Item::UndergroundBelt
-                    | Item::AssemblingMachine1
-                    | Item::Source
-                    | Item::Sink
-            );
+                Item::TransportBelt | Item::UndergroundBelt | Item::Source | Item::Sink
+            ) || dst_entity.crafts()
+                || dst_entity.is_chest();
             if dst_is_insertable {
                 if dst_entity.is_lane_aware() {
                     let dst_dir = world.direction_at(dx_u, dy_u);
@@ -1305,6 +1344,7 @@ mod tests {
         w.place(4, 2, Item::Inserter, Direction::East, None);
 
         let asm = AssemblingMachine {
+            kind: Item::AssemblingMachine1,
             recipe_item: Some(Item::ElectronicCircuit),
         };
         let edges = asm.connections((1, 1), Direction::None, &w);
@@ -1324,6 +1364,7 @@ mod tests {
     #[test]
     fn test_assembler_transform_flow() {
         let asm = AssemblingMachine {
+            kind: Item::AssemblingMachine1,
             recipe_item: Some(Item::ElectronicCircuit),
         };
 

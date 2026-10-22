@@ -219,3 +219,25 @@ def test_round_trip_assembler_3x3_recipe_preserved():
     asm_mask = decoded[Channel.ENTITIES.value] == asm.value
     assert int(asm_mask.sum()) == 9
     assert np.all(decoded[Channel.ITEMS.value][asm_mask] == recipe_val)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "wooden_chest", "iron_chest", "steel_chest", "stone_furnace", "steel_furnace", "electric_furnace",
+        "big_electric_pole", "solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall",
+    ],
+)
+def test_round_trip_human_only_entity(name):
+    """Chests, furnaces, the big pole and the inert entities decode back to
+    their whole footprint, facing nowhere and (furnaces too) recipe-free."""
+    from factorion import new_world
+
+    e = str2ent(name)
+    w = new_world(width=6, height=6)
+    w[1 : 1 + e.width, 1 : 1 + e.height, Channel.ENTITIES.value] = e.value
+    decoded = _round_trip(np.transpose(w, (2, 0, 1)))
+
+    assert decoded.shape[1:] == (e.width, e.height)
+    assert (decoded[Channel.ENTITIES.value] == e.value).all()
+    assert not decoded[[Channel.DIRECTION.value, Channel.ITEMS.value, Channel.MISC.value]].any()

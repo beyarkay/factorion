@@ -230,6 +230,11 @@ mod tests {
         assert_eq!(tiles.first(), Some(&(2, 2)));
         assert_eq!(tiles.last(), Some(&(19, 19)));
         assert_eq!(tiles.len(), 18 * 18);
+        // A big pole's 4x4 reaches 1 tile past its 2x2 body.
+        let tiles = powered_tiles(&with_poles(40, &[(10, 10, Item::BigElectricPole)]));
+        assert_eq!(tiles.first(), Some(&(9, 9)));
+        assert_eq!(tiles.last(), Some(&(12, 12)));
+        assert_eq!(tiles.len(), 4 * 4);
     }
 
     #[test]
@@ -247,6 +252,10 @@ mod tests {
         let sub = |x| powered_tiles(&with_poles(60, &[(x, 30, Item::Substation)]));
         assert!(!sub(16).is_empty());
         assert!(sub(17).is_empty());
+        // Big pole: ≤ 32.
+        let big = |x| powered_tiles(&with_poles(100, &[(x, 50, Item::BigElectricPole)]));
+        assert!(!big(30).is_empty());
+        assert!(big(31).is_empty());
     }
 
     #[test]

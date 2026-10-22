@@ -1,0 +1,90 @@
+description: |
+  A column of stone furnaces fed iron ore on one lane and coal on the
+  other. Nothing tags them with a recipe: each smelts the ore its inserter
+  brings, one plate per 3.2 s at crafting speed 1, burning 90 kW of coal
+  (0.072 coal a plate), so the three make 3/3.2 plates/s.
+items:
+- { x: 1, y: 0, item: iron_ore }
+- { x: 1, y: 2, item: coal }
+- { x: 8, y: 6, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.9375 }
+factory: |
+  .. Sv .. .. .. .. .. .. ..
+  .. b> b> b> b> b> b> b> ..
+  .. S^ iv E. iv .. iv .. ..
+  .. .. fffff fffff fffff ..
+  .. .. fffff fffff fffff ..
+  .. .. iv .. iv .. iv .. ..
+  .. .. b> b> b> b> b> b> K>
+---
+description: |
+  Steel furnaces smelt at crafting speed 2 and burn wood as readily as
+  coal: 3 x 2/3.2 copper plates/s.
+items:
+- { x: 1, y: 0, item: copper_ore }
+- { x: 1, y: 2, item: wood }
+- { x: 8, y: 6, item: copper_plate }
+throughput:
+- { item: copper_plate, per_second: 1.875 }
+factory: |
+  .. Sv .. .. .. .. .. .. ..
+  .. b> b> b> b> b> b> b> ..
+  .. S^ iv E. iv .. iv .. ..
+  .. .. FFFFF FFFFF FFFFF ..
+  .. .. FFFFF FFFFF FFFFF ..
+  .. .. iv .. iv .. iv .. ..
+  .. .. b> b> b> b> b> b> K>
+---
+description: |
+  Without fuel a burner furnace smelts nothing.
+items:
+- { x: 1, y: 0, item: iron_ore }
+- { x: 8, y: 6, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0 }
+factory: |
+  .. Sv .. .. .. .. .. .. ..
+  .. b> b> b> b> b> b> b> ..
+  .. .. iv E. iv .. iv .. ..
+  .. .. fffff fffff fffff ..
+  .. .. fffff fffff fffff ..
+  .. .. iv .. iv .. iv .. ..
+  .. .. b> b> b> b> b> b> K>
+---
+description: |
+  An electric furnace needs power, not fuel. At crafting speed 2 it
+  could take 1.25 stone/s for 0.625 bricks/s, but one inserter brings only
+  0.86 stone/s: the two make 2 x 0.43 bricks/s.
+items:
+- { x: 1, y: 0, item: stone }
+- { x: 8, y: 7, item: stone_brick }
+throughput:
+- { item: stone_brick, per_second: 0.86 }
+factory: |
+  .. Sv E. .. .. .. .. .. ..
+  .. b> b> b> b> b> b> b> ..
+  .. .. iv .. .. iv .. .. ..
+  .. .. xxxxxxxx xxxxxxxx ..
+  .. .. xx    xx xx    xx ..
+  .. .. xxxxxxxx xxxxxxxx ..
+  .. .. iv .. .. iv .. .. ..
+  .. .. b> b> b> b> b> b> K>
+  .. .. E. .. .. .. .. .. ..
+---
+description: |
+  Fed iron plate, a furnace smelts steel: 5 plates per 16 s craft.
+items:
+- { x: 1, y: 0, item: iron_plate }
+- { x: 1, y: 2, item: solid_fuel }
+- { x: 4, y: 6, item: steel_plate }
+throughput:
+- { item: steel_plate, per_second: 0.0625 }
+factory: |
+  .. Sv .. .. ..
+  .. b> b> b> ..
+  E. S^ iv .. ..
+  .. .. fffff ..
+  .. .. fffff ..
+  .. .. iv .. ..
+  .. .. b> b> K>

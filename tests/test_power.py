@@ -9,7 +9,7 @@ import torch
 from helpers import Channel, Direction, LessonKind, Misc, blank_entities, build_factory, str2ent
 import factorion_rs
 from denoise import TYPES
-from factorion import POLE_ENT_IDS, apply_placement_action, count_unpowered
+from factorion import POLE_ENT_IDS, UNDIRECTED_ENT_IDS, apply_placement_action, count_unpowered
 
 POWER = Channel.POWER.value
 MEDIUM_POLE = str2ent("medium_electric_pole").value
@@ -75,9 +75,9 @@ def test_a_pole_too_far_from_the_edge_powers_nothing():
 
 def test_a_pole_has_no_facing():
     world = _empty_world(5)
-    assert _place(world, 2, 2, MEDIUM_POLE, Direction.EAST) == "pole_with_direction"
+    assert _place(world, 2, 2, MEDIUM_POLE, Direction.EAST) == "undirected_with_direction"
     assert not world[Channel.ENTITIES.value].any()
 
 
-def test_the_denoiser_places_poles_facing_nowhere():
-    assert {d for e, d, _ in TYPES if e in POLE_ENT_IDS} == {Direction.NONE.value}
+def test_the_denoiser_places_undirected_entities_facing_nowhere():
+    assert {d for e, d, _ in TYPES if e in UNDIRECTED_ENT_IDS} == {Direction.NONE.value}

@@ -4,8 +4,10 @@
 Belts join where one feeds the next, undergrounds fade into a dotted tunnel,
 splitters cross every input to every output, assemblers, sources and sinks
 carry their item's Factorio icon, inserters point the way items move
-(long-handed ones mark their two-tile reach), poles are lightning bolts over
-the tiles they power, and unbuildable tiles are hatched.
+(long-handed ones mark their two-tile reach), small and medium poles are
+lightning bolts over the tiles they power (the 2x2 poles show their icons),
+chests, furnaces and inert entities are boxes with their own icon, and
+unbuildable tiles are hatched.
 
 Usage:
     uv run python scripts/render_png.py --kind OPPOSITE_SIDES_1IN --seed 3 --out factory.png
@@ -36,14 +38,19 @@ from factorion import DIR_TO_DELTA, Channel, Direction, LessonKind, Misc, build_
 ICONS = Path(__file__).resolve().parent.parent / "factorio-icons"
 ID = {n: str2ent(n).value for n in (
     "transport_belt", "underground_belt", "splitter", "inserter", "long_handed_inserter",
-    "assembling_machine_1", "small_electric_pole", "medium_electric_pole", "substation", "source", "sink",
+    "assembling_machine_1", "small_electric_pole", "medium_electric_pole", "substation", "big_electric_pole", "source", "sink",
 )}
+CHESTS = ("wooden_chest", "iron_chest", "steel_chest")
+FURNACES = ("stone_furnace", "steel_furnace", "electric_furnace")
+INERT = ("solar_panel", "accumulator", "roboport", "radar", "small_lamp", "stone_wall")
 BELTISH = {ID["transport_belt"], ID["underground_belt"], ID["splitter"]}
 C = dict(
     unbuildable="#4a4a4a", empty="#fbfbf8", powered="#d3e9fb", grid="#dcdcdc", belt="#e0b03a",
     belt_dark="#6b4e0c", splitter="#55595e", asm="#c9c3b6", asm_edge="#5d5a52", inserter="#f2c200",
     inserter_edge="#7a6200", long="#e07b00", pole="#1f6fd1", source="#1e9e4a", sink="#7b3fa0",
+    chest="#c7a26b", furnace="#e3a07a", inert="#b4c0cc",
 )
+BOXED = {str2ent(n).value: C[kind] for kind, names in (("chest", CHESTS), ("furnace", FURNACES), ("inert", INERT)) for n in names}
 BELT_W = 0.8
 BOLT = np.array([(0.58, 0.05), (0.25, 0.55), (0.47, 0.55), (0.38, 0.95), (0.75, 0.4), (0.53, 0.4), (0.68, 0.05)])
 
@@ -183,9 +190,16 @@ def draw(world_CWH, ax, title="", crop=None):
         if parts[x, y] == 0:
             ax.add_patch(Rectangle((x + 0.06, y + 0.06), 2.88, 2.88, facecolor=C["asm"], edgecolor=C["asm_edge"], lw=1.5, zorder=4))
             icon(itm[x, y], x + 1.5, y + 1.5, 1.9)
-    for x, y in zip(*np.nonzero(ent == ID["substation"])):
+    # The two 2x2 poles look alike as bolts, so they show their own icons.
+    for x, y in zip(*np.nonzero(np.isin(ent, [ID["substation"], ID["big_electric_pole"]]))):
         if parts[x, y] == 0:
-            ax.add_patch(Polygon(BOLT * 2 + (x, y), closed=True, facecolor=C["pole"], edgecolor="#0b2f63", lw=0.8, zorder=6))
+            icon(ent[x, y], x + 1, y + 1, 1.8)
+    for x, y in zip(*np.nonzero(np.isin(ent, list(BOXED)))):
+        if parts[x, y] == 0:
+            side = items[int(ent[x, y])].width
+            ax.add_patch(Rectangle((x + 0.06, y + 0.06), side - 0.12, side - 0.12, facecolor=BOXED[int(ent[x, y])],
+                                   edgecolor=C["asm_edge"], lw=1.2, zorder=4))
+            icon(ent[x, y], x + side / 2, y + side / 2, 0.75 * side)
 
     ax.set_xlim(x0, x1)
     ax.set_ylim(y1, y0)
@@ -202,7 +216,10 @@ LEGEND = [
     Patch(facecolor=C["asm"], edgecolor=C["asm_edge"], label="assembler (recipe icon)"),
     Patch(facecolor=C["inserter"], edgecolor=C["inserter_edge"], label="inserter (arrow = item flow)"),
     Patch(facecolor=C["long"], edgecolor=C["inserter_edge"], label="long-handed (dotted = 2-tile reach)"),
-    Patch(facecolor=C["pole"], label="electric pole (bolt)"),
+    Patch(facecolor=C["pole"], label="electric pole (bolt, or its icon if 2x2)"),
+    Patch(facecolor=C["chest"], edgecolor=C["asm_edge"], label="chest (icon)"),
+    Patch(facecolor=C["furnace"], edgecolor=C["asm_edge"], label="furnace (smelts what it is fed)"),
+    Patch(facecolor=C["inert"], edgecolor=C["asm_edge"], label="solar, accumulator, roboport, radar, lamp, wall"),
     Patch(facecolor=C["powered"], label="powered tile"),
     Patch(facecolor=C["source"], label="source (item icon)"),
     Patch(facecolor=C["sink"], label="sink (item icon)"),
