@@ -740,9 +740,8 @@ fn inserter_connections(
     // Pick up from `reach` tiles behind (opposite of facing direction). A real
     // inserter can only pick up from an entity that carries or produces items:
     // a source, belt, underground belt, crafting machine or chest. Notably NOT another
-    // inserter (see #122) or a sink. (Splitters are excluded too, mirroring the
-    // drop side — not quite true to Factorio, may revisit.) Picking from a
-    // belt draws from both of its lanes.
+    // inserter (see #122) or a sink. A splitter emits its own inserter edges
+    // (see `Splitter`). Picking from a belt draws from both of its lanes.
     let src_x = x as i64 - dx * reach;
     let src_y = y as i64 - dy * reach;
     if world.in_bounds(src_x, src_y) {
@@ -928,6 +927,7 @@ impl FactoryEntity for Splitter {
             }
 
             // Output: cell ahead of this tile (in facing direction)
+            let mut own_receiver = None;
             let out_pos = Pos::new(tile.x + dx, tile.y + dy);
             if let Some((ox, oy)) = out_pos.to_usize() {
                 if world.in_bounds(out_pos.x, out_pos.y) {
@@ -947,8 +947,53 @@ impl FactoryEntity for Splitter {
                             && dst_not_opposing
                             && !tile_set.contains(&out_pos)
                         {
+                            own_receiver = Some((dst_entity, (ox, oy)));
                             receivers.push((dst_entity, (ox, oy)));
                         }
+                    }
+                }
+            }
+
+            // Inserters reaching this tile (measured in Factorio): a hand
+            // from behind meets the tile past the split, so its drop stays
+            // on this tile's output; from the side or ahead it drops before
+            // the split. A pickup takes from this tile's output, which both
+            // tiles feed, so the inserter joins the fan-out as a receiver.
+            for side in CARDINALS {
+                let (sx, sy) = side.delta();
+                for (kind, reach) in [(Item::Inserter, 1), (Item::LongHandedInserter, 2)] {
+                    let at = Pos::new(tile.x + sx * reach, tile.y + sy * reach);
+                    let Some((ax, ay)) = at.to_usize() else {
+                        continue;
+                    };
+                    if !world.in_bounds(at.x, at.y) || world.entity_at(ax, ay) != Some(kind) {
+                        continue;
+                    }
+                    let hand = world.direction_at(ax, ay);
+                    let inserter = NodeId::new(kind, ax, ay, None);
+                    if hand == side {
+                        receivers.push((kind, (ax, ay)));
+                    } else if hand == side.opposite() && side == dir.opposite() {
+                        if let Some((dst_kind, dst_pos)) = own_receiver {
+                            edges.extend(
+                                calc_lane_aware_edges(
+                                    Item::Splitter,
+                                    tile_xy,
+                                    dst_kind,
+                                    dst_pos,
+                                    world,
+                                )
+                                .into_iter()
+                                .filter(|(src, _)| src.lane == Some(Lane::Right))
+                                .map(|(_, dst)| (inserter.clone(), dst)),
+                            );
+                        }
+                    } else if hand == side.opposite() {
+                        let lane = Lane::on_side(dir, hand).unwrap_or(Lane::Right);
+                        edges.push((
+                            inserter,
+                            NodeId::new(Item::Splitter, tile_xy.0, tile_xy.1, Some(lane)),
+                        ));
                     }
                 }
             }
