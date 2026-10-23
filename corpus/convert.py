@@ -624,13 +624,14 @@ def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]
 _POOL = 64
 
 
-def download(repo: str) -> list[Path]:
-    """The corpus's design shards, fetched from the Hugging Face dataset `repo`
-    (`corpus/build.py`) into the local cache."""
+def download(repo: str, folder: str = "designs") -> list[Path]:
+    """The corpus's `folder` shards (`designs`, `corpus/build.py`, or
+    `windows`, `corpus/windows.py`), fetched from the Hugging Face dataset
+    `repo` into the local cache."""
     from huggingface_hub import snapshot_download
 
-    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns="designs/*"))
-    return sorted(root.glob("designs/*.parquet"))
+    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=f"{folder}/*"))
+    return sorted(root.glob(f"{folder}/*.parquet"))
 
 
 def views(r: Raster, size: int) -> int:
@@ -640,10 +641,30 @@ def views(r: Raster, size: int) -> int:
     return sum(cut(r, (slice(x, x + size), slice(y, y + size))) is not None for x in range(0, W, size) for y in range(0, H, size))
 
 
-def held_out(layout_hash: str) -> bool:
-    """The 1% of designs kept out of training, by layout so the split is the
-    same on every machine."""
-    return int(layout_hash[:8], 16) % 100 == 0
+def held_out(digest: str, every: int = 100) -> bool:
+    """Whether a design (by its layout hash) or a save (`corpus.windows`) is
+    in the 1/`every` kept out of training, the same on every machine."""
+    return int(digest[:8], 16) % every == 0
+
+
+def _mine(layout_hash: str, worker: int, workers: int) -> bool:
+    return int(layout_hash[8:16], 16) % workers == worker
+
+
+def _strings(files: list[Path], rng: random.Random, keep) -> Iterator[tuple[str, dict]]:
+    """The exchange string and metadata of each design of `files` that `keep`
+    accepts, in a random order, epoch after epoch."""
+    import pyarrow.parquet as pq
+
+    while True:
+        for f in rng.sample(files, len(files)):
+            pf = pq.ParquetFile(f)
+            meta = pf.read(columns=["source", "layout_hash", "modded"]).to_pylist()
+            # Only the kept strings: a shard's are hundreds of MB, and every worker reads every shard.
+            strings = (s for b in pf.iter_batches(1024, columns=["string"]) for s in b.column(0).to_pylist())
+            rows = [(s, m) for s, m in zip(strings, meta) if keep(m)]
+            rng.shuffle(rows)
+            yield from rows
 
 
 def stream(
@@ -653,25 +674,15 @@ def stream(
     in epochs: each design gives `views` windows per epoch, interleaved with
     `_POOL` - 1 others. Worker `worker` of `workers` takes its own share of
     the designs, so the workers together see each design once an epoch."""
-    import pyarrow.parquet as pq
 
     def rasters() -> Iterator[tuple[Raster, bool, int]]:
-        while True:
-            for f in rng.sample(files, len(files)):
-                pf = pq.ParquetFile(f)
-                meta = pf.read(columns=["source", "layout_hash", "modded"]).to_pylist()
-                mine = [
-                    not m["modded"] and held_out(m["layout_hash"]) == val and int(m["layout_hash"][8:16], 16) % workers == worker
-                    for m in meta
-                ]
-                # Only this worker's strings: a shard's are hundreds of MB, and every worker reads every shard.
-                strings = (s for b in pf.iter_batches(1024, columns=["string"]) for s in b.column(0).to_pylist())
-                rows = [(s, m["source"]) for s, m, ok in zip(strings, meta, mine) if ok]
-                rng.shuffle(rows)
-                for string, src in rows:
-                    r = rasterise(next(designs(string)))
-                    if r is not None and (n := views(r, size)):
-                        yield r, src.startswith("save:"), n
+        def keep(m: dict) -> bool:
+            return not m["modded"] and held_out(m["layout_hash"]) == val and _mine(m["layout_hash"], worker, workers)
+
+        for string, m in _strings(files, rng, keep):
+            r = rasterise(next(designs(string)))
+            if r is not None and (n := views(r, size)):
+                yield r, m["source"].startswith("save:"), n
 
     source = rasters()
     pool = list(itertools.islice(source, _POOL))
@@ -688,3 +699,40 @@ def stream(
         if min(left[i]) == 0:
             pool[i] = next(source)
             left[i] = [pool[i][2], 4 * pool[i][2]]
+
+
+def functional(
+    files: list[Path], window_files: list[Path], size: int, rng: random.Random, worker: int = 0, workers: int = 1, val: bool = False
+) -> Iterator[np.ndarray]:
+    """The functional windows (`corpus.windows`) of `files`' designs, each
+    turned and mirrored at random, in epochs: a design's windows in a random
+    order, interleaved with `_POOL` - 1 other designs'. `val` takes those of
+    the 5% of saves held out, else worker `worker` of `workers` its own share
+    of the rest."""
+    import pyarrow.parquet as pq
+
+    mine: dict[str, list[tuple[int, int, list[Edit]]]] = {}
+    for f in window_files:
+        t = pq.read_table(f, columns=["layout_hash", "save", "size", "x", "y", "edits"]).to_pylist()
+        for w in t:
+            if w["size"] == size and held_out(w["save"], 20) == val and (val or _mine(w["layout_hash"], worker, workers)):
+                e = w["edits"]
+                mine.setdefault(w["layout_hash"], []).append((w["x"], w["y"], [tuple(e[i : i + 5]) for i in range(0, len(e), 5)]))
+    if not mine:
+        raise ValueError(f"no {size}-wide functional windows to stream")
+
+    def sources() -> Iterator[tuple[Raster, list]]:
+        for string, m in _strings(files, rng, lambda m: m["layout_hash"] in mine):
+            r = rasterise(next(designs(string)))
+            if r is not None:
+                yield r, rng.sample(mine[m["layout_hash"]], len(mine[m["layout_hash"]]))
+
+    source = sources()
+    pool = list(itertools.islice(source, _POOL))
+    while True:
+        i = rng.randrange(len(pool))
+        r, left = pool[i]
+        x, y, edits = left.pop()
+        yield np.ascontiguousarray(np.stack(orient(list(paste(r, x, y, size, edits)), rng.randrange(4), rng.random() < 0.5)))
+        if not left:
+            pool[i] = next(source)

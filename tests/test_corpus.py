@@ -331,3 +331,80 @@ def test_labelled_belts_across_the_edge_and_store_chests_become_markers_of_what_
     got = {(x, y): rate for x, y, _, rate in factorion_rs.py_sink_deliveries(np.ascontiguousarray(w.transpose(1, 2, 0)))}
     assert got[(16, 5)] > 0 and got[(16, 5)] + got[(31, 3)] == pytest.approx(15)
 
+
+def _save_corpus(tmp_path, kinds=(LessonKind.OPPOSITE_SIDES_1IN, LessonKind.SPLITTER_1IN)) -> tuple[list, list]:
+    """The design and window shards of a corpus of save regions, one per kind:
+    a lesson stripped of its markers, its input belt labelled."""
+    import gzip
+    import json
+
+    from corpus.build import _encode, build
+    from corpus.windows import build as build_windows
+
+    raw = tmp_path / "regions.jsonl.gz"
+    with gzip.open(raw, "wt") as f:
+        for i, kind in enumerate(kinds):
+            world = _lesson(kind, 0).world_CWH.numpy()
+            bp = world_tensor_to_blueprint_dict(world)["blueprint"]
+            xs, ys = [e["position"]["x"] for e in bp["entities"]], [e["position"]["y"] for e in bp["entities"]]
+            for x, y in ((min(xs) - 12, min(ys) - 12), (max(xs) + 12, max(ys) + 12)):
+                bp["entities"].append({"name": "small-electric-pole", "position": {"x": x, "y": y}})
+            (sx, sy), = np.argwhere(world[Channel.ENTITIES.value] == str2ent("source").value)
+            dx, dy = DIR_TO_DELTA[Direction(world[Channel.DIRECTION.value, sx, sy])]
+            fed = items[int(world[Channel.ITEMS.value, sx, sy])].name.replace("_", "-")
+            rec = {"source": "save:test", "id": f"save{i}.zip#nauvis#0,0", "string": _encode(bp), "unbuildable": [],
+                   "lanes": [[int(sx + dx), int(sy + dy), 1, fed]]}
+            f.write(json.dumps(rec) + "\n")
+    build([raw], tmp_path / "out")
+    assert build_windows([raw], tmp_path / "out", 1) >= len(kinds)
+    return sorted((tmp_path / "out" / "designs").glob("*.parquet")), sorted((tmp_path / "out" / "windows").glob("*.parquet"))
+
+
+def test_sft_stream_mixes_in_working_windows_of_save_regions(tmp_path):
+    """Save regions go through the whole functional-window path — scraped
+    records, the windows precompute, the dataset, the SFT stream — and come
+    out as factories that deliver."""
+    from denoise import score_world
+    from sft import _iter_factories
+
+    files, window_files = _save_corpus(tmp_path)
+    worlds = list(itertools.islice(_iter_factories(32, 0, 0, 1, corpus_files=files, window_files=window_files, windows_frac=1.0), 16))
+    for state in worlds:
+        world = state.long().numpy()[: len(Channel)]
+        assert score_world(world, 1.0, 0)["thput_raw"] > 0
+        assert np.isin(world[Channel.ENTITIES.value], [str2ent("source").value, str2ent("sink").value]).any()
+
+
+def test_held_out_saves_never_train(tmp_path, monkeypatch):
+    import hashlib
+
+    import corpus.convert as convert
+
+    files, window_files = _save_corpus(tmp_path)
+    val_save = hashlib.blake2b(b"save0.zip", digest_size=16).hexdigest()
+    monkeypatch.setattr(convert, "held_out", lambda digest, every=100: digest == val_save)
+    monkeypatch.setattr(convert, "paste", lambda r, *_: np.full((len(Channel), 1, 1), r.ent.sum()))
+    monkeypatch.setattr(convert, "orient", lambda chans, *_: chans)
+
+    def seen(**kw) -> set:
+        return {int(w[0, 0, 0]) for w in itertools.islice(convert.functional(files, window_files, 32, random.Random(0), **kw), 200)}
+
+    val, train = seen(val=True), seen()
+    assert len(val) == len(train) == 1 and val != train
+
+
+def test_the_human_eval_scores_the_humans_own_build_at_one(tmp_path, monkeypatch):
+    import corpus.convert as convert
+    from denoise import score_world
+    from factorion import blank_entities
+    from sft import build_human_eval_factories
+    from training_config import SftArgs
+
+    files, window_files = _save_corpus(tmp_path)
+    monkeypatch.setattr(convert, "held_out", lambda digest, every=100: True)
+    for _, _, f in build_human_eval_factories(SftArgs(eval_seeds_per_kind=4), files, window_files):
+        world = f.world_CWH.numpy()
+        assert score_world(world, f.max_throughput, 0)["thput"] == pytest.approx(1)
+        blank, _ = blank_entities(f)
+        markers = np.isin(world[Channel.ENTITIES.value], [str2ent("source").value, str2ent("sink").value])
+        assert (blank.numpy()[Channel.ENTITIES.value] > 0).sum() == markers.sum()

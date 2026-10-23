@@ -5,6 +5,8 @@ configs:
   data_files: designs/*.parquet
 - config_name: raw
   data_files: raw/*.jsonl.gz
+- config_name: windows
+  data_files: windows/*.parquet
 ---
 
 # Factorio blueprints
@@ -32,6 +34,21 @@ layout, ignoring position).
 | `modded` | holds an entity outside base, Space Age, Quality and Elevated Rails |
 | `space_age` | holds a Space Age entity (2.0+ only) |
 | `layout_hash` | the deduplication key |
+
+## `windows`
+
+Working factories cut from the save regions: a 30 × 30 interior of a
+region's human layout inside a ring of sources and sinks of what its belts
+carried, one row per window that delivers anything. Paste `edits` onto the
+design's layout to rebuild it (factorion's `corpus.convert.paste`).
+
+| column | |
+|---|---|
+| `layout_hash` | the design (`designs`) it is cut from |
+| `save` | a hash of the save the design is a region of |
+| `size`, `x`, `y` | the window's side, and its interior's corner in the design's bounding box |
+| `edits` | `(x, y, entity, facing, item)` runs, in the window's own frame, of each tile that becomes a source, sink or pole (factorion's ids) |
+| `delivered`, `crafted` | items/s reaching the sinks, and of those, what machines in the window made |
 
 ## `raw`
 

@@ -551,7 +551,7 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
 
 def run_denoise_eval(
     model,
-    factories: list[tuple[int, LessonKind, Factory]],
+    factories: list[tuple[int, LessonKind | str, Factory]],
     device,
     *,
     best_of: int,
@@ -610,9 +610,10 @@ def run_denoise_eval(
         unpowered = [0, 0]  # lesson, trial
         for (s, kind, _), rs in zip(factories, results):
             best = max(rs[:n], key=lambda r: (r["thput"], -r["entity_cost"], -r["chain"]))
-            is_trial = LESSON_IS_TRIAL[kind]
+            is_trial = LESSON_IS_TRIAL.get(kind, False)
+            name = getattr(kind, "name", kind)
             (trial if is_trial else lesson).append(best["thput"])
-            per_kind.setdefault(kind.name, []).append(best["thput"])
+            per_kind.setdefault(name, []).append(best["thput"])
             if n == best_of:
                 d_in, d_out = count_dangling_inserters(torch.from_numpy(best["world"]))
                 dangling[2 * is_trial] += d_in
@@ -623,7 +624,7 @@ def run_denoise_eval(
                     records.append(
                         {
                             "seed": s,
-                            "kind": kind.name,
+                            "kind": name,
                             "thput": best["thput"],
                             "entity_cost": best["entity_cost"],
                             "inserters_no_input": d_in,

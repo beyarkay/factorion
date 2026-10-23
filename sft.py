@@ -42,6 +42,7 @@ from denoise import (
     free_mask,
     load_denoiser,
     run_denoise_eval,
+    score_world,
     state_to_tokens,
     tokens_to_state,
     world_to_state,
@@ -185,9 +186,12 @@ def build_lesson(kind: LessonKind, seed: int, size: int, box_frac: float) -> Opt
     return build_factory(size=size, kind=kind, seed=seed)
 
 
-def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0, corpus_files=(), corpus_frac=0.0):
+def _iter_factories(
+    size, base_seed, worker_id, num_workers, box_frac=0.0, corpus_files=(), corpus_frac=0.0, window_files=(), windows_frac=0.0
+):
     """Yield the uint8 state of fresh lesson factories (`build_lesson`) forever,
-    `corpus_frac` of them HUMAN_BLUEPRINTS windows of `corpus_files`.
+    `corpus_frac` of them HUMAN_BLUEPRINTS windows of `corpus_files` and
+    `windows_frac` their functional windows (`window_files`).
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     concurrent workers never share a factory. Kinds are drawn uniformly.
@@ -204,11 +208,20 @@ def _iter_factories(size, base_seed, worker_id, num_workers, box_frac=0.0, corpu
     rng = random.Random(base_seed + worker_id)
 
     human = corpus.stream(list(corpus_files), size, random.Random(rng.random()), worker_id, num_workers) if corpus_frac else None
+    working = (
+        corpus.functional(list(corpus_files), list(window_files), size, random.Random(rng.random()), worker_id, num_workers)
+        if windows_frac
+        else None
+    )
 
     seed = base_seed + worker_id
     while True:
-        if human is not None and rng.random() < corpus_frac:
+        u = rng.random() if human is not None or working is not None else 1.0
+        if human is not None and u < corpus_frac:
             yield torch.from_numpy(world_to_state(next(human)))
+            continue
+        if working is not None and u < corpus_frac + windows_frac:
+            yield torch.from_numpy(world_to_state(next(working)))
             continue
         kind = rng.choice(available)
         seed += num_workers
@@ -238,13 +251,14 @@ class FactoryStream(IterableDataset):
     CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, base_seed, box_frac, args: SftArgs, prior, corpus_files=()):
+    def __init__(self, size, base_seed, box_frac, args: SftArgs, prior, corpus_files=(), window_files=()):
         self.size = size
         self.base_seed = base_seed
         self.box_frac = box_frac
         self.args = args
         self.prior = prior
         self.corpus_files = corpus_files
+        self.window_files = window_files
 
     def __iter__(self):
         """(state, its `noise_repeats` corruptions): corrupting here, where
@@ -253,7 +267,15 @@ class FactoryStream(IterableDataset):
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
         for state in _iter_factories(
-            self.size, self.base_seed, worker_id, num_workers, self.box_frac, self.corpus_files, self.args.corpus_frac
+            self.size,
+            self.base_seed,
+            worker_id,
+            num_workers,
+            self.box_frac,
+            self.corpus_files,
+            self.args.corpus_frac,
+            self.window_files,
+            self.args.windows_frac,
         ):
             states = state.long().expand(self.args.noise_repeats, -1, -1, -1)
             yield state, corrupt_states(states, self.args, self.prior).to(torch.uint8)
@@ -525,6 +547,16 @@ def build_eval_factories(args) -> list[tuple[int, LessonKind, Factory]]:
     return out
 
 
+def build_human_eval_factories(args, files, window_files) -> list[tuple[int, str, Factory]]:
+    """`eval_seeds_per_kind` functional windows of the held-out saves, each
+    scored against the human's own build."""
+    held_out = corpus.functional(files, window_files, args.size, random.Random(args.seed), val=True)
+    return [
+        (i, "HUMAN_WINDOWS", Factory(torch.from_numpy(w), 0, score_world(w, 1.0, 0)["thput_raw"]))
+        for i, w in enumerate(itertools.islice(held_out, args.eval_seeds_per_kind))
+    ]
+
+
 def _upload_checkpoint(run, args, best_thput, files, previous):
     """Upload the run's best checkpoint via `_upload_replacing`."""
     return upload_replacing(
@@ -565,9 +597,11 @@ def train_sft(args: SftArgs):
         [torch.from_numpy(world_to_state(f.world_CWH)) for _, k, f in factories if not LESSON_IS_TRIAL[k]]
     )
 
-    corpus_files = corpus.download(args.corpus_repo) if args.corpus_frac else []
+    corpus_files = corpus.download(args.corpus_repo) if args.corpus_frac or args.windows_frac else []
+    window_files = corpus.download(args.corpus_repo, "windows") if args.windows_frac else []
+    human_factories = build_human_eval_factories(args, corpus_files, window_files) if window_files else []
     corpus_val = None
-    if corpus_files:
+    if args.corpus_frac:
         held_out = corpus.stream(corpus_files, args.size, random.Random(args.seed), val=True)
         corpus_val = torch.stack([torch.from_numpy(world_to_state(w)) for w in itertools.islice(held_out, 512)])
     if args.start_from is not None:
@@ -584,7 +618,12 @@ def train_sft(args: SftArgs):
         )
     # This run's data, not a checkpoint's: a corpus-pretrained model continued on lessons noises them as lessons.
     prior_states = list(
-        itertools.islice(_iter_factories(args.size, train_seed, 0, 1, args.box_frac, corpus_files, args.corpus_frac), 256)
+        itertools.islice(
+            _iter_factories(
+                args.size, train_seed, 0, 1, args.box_frac, corpus_files, args.corpus_frac, window_files, args.windows_frac
+            ),
+            256,
+        )
     )
     model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
@@ -611,7 +650,7 @@ def train_sft(args: SftArgs):
 
     workers = min(32, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu(), corpus_files),
+        FactoryStream(args.size, train_seed, args.box_frac, args, model.noise_prior.cpu(), corpus_files, window_files),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",
@@ -640,7 +679,13 @@ def train_sft(args: SftArgs):
     next_eval = eval_every
     best_thput, uploaded, pending = -1.0, None, False
     # Without lessons nothing has learnt to connect markers yet, so thput is ~0 noise.
-    key = "val/corpus/type_acc" if args.corpus_frac == 1 else f"val/thput@{args.eval_best_of}"
+    key = (
+        "val/corpus/type_acc"
+        if args.corpus_frac == 1
+        else f"val/human/thput@{args.eval_best_of}"
+        if args.windows_frac == 1
+        else f"val/thput@{args.eval_best_of}"
+    )
     samples_seen = step = 0
     acc: dict[str, torch.Tensor] = {}
     n_acc = 0
@@ -684,6 +729,9 @@ def train_sft(args: SftArgs):
             metrics |= val_denoise_metrics(ema, corpus_val, args, device, "val/corpus")
         t_gen = time.time()
         metrics |= generation_metrics(ema, factories, args, device)
+        if human_factories:
+            human = generation_metrics(ema, human_factories, args, device)
+            metrics |= {k.replace("val/", "val/human/", 1): v for k, v in human.items() if "HUMAN_WINDOWS" not in k}
         metrics |= {
             "train/samples_seen": samples_seen,
             "train/global_step": step,

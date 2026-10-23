@@ -3,12 +3,15 @@
 Pretraining data from the factories people have actually built: blueprints
 scraped from the community sites, plus the bases in real save files, windowed
 into factorion training examples. It widens SFT's prior beyond the procedural
-lessons; it has no sources or sinks, so it is never evaluated.
+lessons. Plain windows have no sources or sinks, so they are never evaluated;
+the functional windows of save regions have both, and SFT scores held-out
+ones as `val/human/`.
 
 ```
 scraped records ──corpus.build──▶ HF dataset ──corpus.download──▶ SFT stream
 (raw/*.jsonl.gz)                 (designs/*.parquet)              (corpus.convert, at load time)
 saves ──corpus.extract_saves──▶ raw/saves.jsonl.gz
+save regions ──corpus.windows──▶ HF dataset (windows/*.parquet) ──▶ SFT stream (corpus.convert.functional)
 ```
 
 The dataset stores raw exchange strings, one design per row, and every
@@ -57,6 +60,34 @@ cached.
   `val/corpus/...` and, when `corpus_frac` is 1 (thput then means nothing
   yet), selects checkpoints on `val/corpus/type_acc`.
 
+## Functional windows (`windows.py`)
+
+A save records what each belt lane carried (`lanes`), which says where a
+working factory's sources and sinks go. `convert.edit` turns a save region's
+30 × 30 interior, all of it buildable, into a working 32 × 32 factory:
+
+- every flow across the interior's edge, or into an entity the engine lacks
+  or the edge cuts, becomes a source or sink on that tile, of the item the
+  save saw on the belt (or along it), as do a tunnel the edge cuts, a
+  labelled belt fed by nothing, a belt that ends at nothing and nothing
+  picks from upstream, and a mining drill's output;
+- a chest inserters fill and none empty (a store for later) becomes a sink;
+- a marker no label settles gets the item that brings the most of the
+  machines' products to the sinks (a belt nothing touches, any item);
+- medium poles power whatever the human's poles leave unpowered, where there
+  is room.
+
+About 94% of windows then deliver something, and two thirds of those with a
+machine get its products out. Each takes ~30 ms (a few dozen simulations to
+choose items), too slow for SFT to make on the fly, so `windows.py`
+precomputes them: interiors 15 tiles apart, each nudged up to 3 to cut the
+fewest machines, keeping those that deliver, as their edits over the human
+layout in `windows/` beside `designs/`, which it leaves untouched.
+`convert.functional` pastes them back on at load time, turned and mirrored
+at random. The 5% of saves `held_out` by save never train; SFT generates
+`eval_seeds_per_kind` of their windows from their markers, scored against
+the human's own build, as `val/human/thput@N`.
+
 ## Commands
 
 ```bash
@@ -66,8 +97,12 @@ uv run python -m corpus.build raw/*.jsonl.gz --out corpus_out [--repo beyarkay/f
 uv run python -m corpus.extract_saves saves/*.zip --index saves/index.jsonl --out raw/saves.jsonl.gz
 # how much of it the current converter can use
 uv run python -m corpus.stats corpus_out/designs/*.parquet
+# lane-labelled save regions -> windows/, resuming where it stopped
+uv run python -m corpus.windows raw/saves_lanes/*.jsonl.gz --out corpus_out [--repo beyarkay/factorio-blueprints]
 # SFT with a quarter of examples from the corpus
 uv run python sft.py --corpus-frac 0.25
+# ... or from its functional windows
+uv run python sft.py --windows-frac 0.25
 ```
 
 The scrapers that wrote `raw/` (blueprint sites, forums, Reddit via Arctic

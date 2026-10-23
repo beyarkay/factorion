@@ -50,15 +50,22 @@ def _rows(rec: dict) -> list[dict]:
     return out
 
 
+def layout_hash(bp: dict) -> str:
+    """What two copies of one design share wherever they sit."""
+    ents = bp["entities"]
+    x0, y0 = min(e["position"]["x"] for e in ents), min(e["position"]["y"] for e in ents)
+    layout = sorted(
+        repr((e["name"], e["position"]["x"] - x0, e["position"]["y"] - y0, e.get("direction", 0), e.get("recipe"), e.get("type")))
+        for e in ents
+    )
+    return hashlib.blake2b(json.dumps(layout).encode(), digest_size=16).hexdigest()
+
+
 def _row(rec: dict, bp: dict) -> dict:
     ents = bp["entities"]
     xs = [e["position"]["x"] for e in ents]
     ys = [e["position"]["y"] for e in ents]
     x0, y0 = min(xs), min(ys)
-    layout = sorted(
-        repr((e["name"], e["position"]["x"] - x0, e["position"]["y"] - y0, e.get("direction", 0), e.get("recipe"), e.get("type")))
-        for e in ents
-    )
     counts = Counter(e["name"] for e in ents)
     v = bp.get("version", 0)
     return {
@@ -75,7 +82,7 @@ def _row(rec: dict, bp: dict) -> dict:
         "entity_counts": json.dumps(dict(counts.most_common())),
         "modded": any(n not in _SIZES for n in counts),
         "space_age": v >> 48 >= 2 and any(_SIZES.get(n, [0, 0, ""])[2] == "space-age" for n in counts),
-        "layout_hash": hashlib.blake2b(json.dumps(layout).encode(), digest_size=16).hexdigest(),
+        "layout_hash": layout_hash(bp),
     }
 
 
