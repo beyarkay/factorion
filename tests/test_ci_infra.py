@@ -75,9 +75,10 @@ class TestSftCommand:
         assert cmd[cmd.index("--start-from") + 1] == "abc123" and "from:abc123" in cmd
         assert cmd[cmd.index("--eval-best-of") + 1] == "64"
 
-    def test_corpus_frac_and_lr_pass_through(self):
-        cmd = sft_command(SftJob(sha=SHA, corpus_frac=1.0, lr=5e-4))
+    def test_corpus_fracs_and_lr_pass_through(self):
+        cmd = sft_command(SftJob(sha=SHA, corpus_frac=1.0, windows_frac=0.25, lr=5e-4))
         assert cmd[cmd.index("--corpus-frac") + 1] == "1.0" and cmd[cmd.index("--lr") + 1] == "0.0005"
+        assert cmd[cmd.index("--windows-frac") + 1] == "0.25"
 
     def test_tags_identify_the_run(self):
         cmd = sft_command(SftJob(sha=SHA, extra_tags=["pr:42"]))

@@ -252,6 +252,7 @@ def cmd_sft(args, ctx) -> None:
         start_from=args.start_from,
         eval_best_of=args.eval_best_of,
         corpus_frac=args.corpus_frac,
+        windows_frac=args.windows_frac,
         lr=args.lr,
         extra_tags=[f"pr:{ctx['pr']}"],
     )
@@ -626,6 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--start-from", default=None)
     sp.add_argument("--eval-best-of", type=int, default=None)
     sp.add_argument("--corpus-frac", type=float, default=None)
+    sp.add_argument("--windows-frac", type=float, default=None)
     sp.add_argument("--lr", type=float, default=None)
     common(sp)
 

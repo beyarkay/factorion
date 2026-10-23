@@ -57,6 +57,8 @@ def sft_command(job: SftJob) -> list[str]:
         cmd += ["--eval-best-of", str(job.eval_best_of)]
     if job.corpus_frac is not None:
         cmd += ["--corpus-frac", str(job.corpus_frac)]
+    if job.windows_frac is not None:
+        cmd += ["--windows-frac", str(job.windows_frac)]
     if job.lr is not None:
         cmd += ["--lr", str(job.lr)]
     if job.start_from is None:

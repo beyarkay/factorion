@@ -14,6 +14,7 @@ flags (don't type the brackets); counts (`N`) accept an SI-ish suffix —
 /ci sft [--num-samples N]                  # SFT from scratch at the PR head
      [--start-from <run>] [--eval-best-of N] # ...or continuing a checkpoint; eval chains
      [--corpus-frac F]                     # share of human-blueprint windows
+     [--windows-frac F]                    # share of working windows of human saves
      [--lr LR]                             # peak learning rate
 /ci rl --start-from j0s5y2mc               # RL from an SFT checkpoint
 /ci compare sft [--seeds 3] [--num-samples N]   # PR head vs main, seed-paired

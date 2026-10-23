@@ -4,7 +4,7 @@ This module is the single source of truth for *infrastructure* knobs (docker
 image, GPU lineup, pod naming, time budgets). Training hyperparameters are NOT
 here — they live in `training_config.py` and flow into jobs untouched: a job
 spec only carries the handful of fields the CLI is allowed to override
-(commitish, SFT num_samples/start_from/eval_best_of/corpus_frac/lr, RL start_from/total_timesteps,
+(commitish, SFT num_samples/start_from/eval_best_of/corpus_frac/windows_frac/lr, RL start_from/total_timesteps,
 compare seeds).
 Anything a spec leaves as None is simply not passed on the training command
 line, so the `training_config.py` default applies.
@@ -181,6 +181,7 @@ class SftJob:
     start_from: Optional[str] = None  # W&B run id to continue from; None = fresh model
     eval_best_of: Optional[int] = None  # None = SftArgs default
     corpus_frac: Optional[float] = None  # None = SftArgs default
+    windows_frac: Optional[float] = None  # None = SftArgs default
     lr: Optional[float] = None  # None = SftArgs default
     seed: Optional[int] = None  # None = SftArgs default
     group: Optional[str] = None  # W&B group
