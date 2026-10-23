@@ -16,14 +16,15 @@ import json
 import math
 import random
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
 import numpy as np
 import torch
 
-from factorion import UNDIRECTED_ENT_IDS, Channel, Direction, Footprint, Misc, refresh_power, str2ent, str2item
+import factorion_rs
+from factorion import UNDIRECTED_ENT_IDS, Channel, Direction, Footprint, Misc, items, refresh_power, str2ent, str2item
 from denoise import _ASM_RECIPE_ITEM_IDS
 
 # Placement footprint of every base / Space Age / Quality / Elevated Rails
@@ -69,6 +70,8 @@ _UG = str2ent("underground_belt").value
 _UG_REACH = {f"{t}underground-belt": r for t, r in zip(_TIERS, (5, 7, 9, 11))}
 _ENGINE_UG_REACH = 5
 _DIR16 = {0: Direction.NORTH.value, 4: Direction.EAST.value, 8: Direction.SOUTH.value, 12: Direction.WEST.value}
+_DRILL_REACH = {"electric-mining-drill": 1, "big-mining-drill": 2}
+_GAME_ITEM = {it.name.replace("_", "-"): i for i, it in items.items()}
 _DELTA = {Direction.NORTH.value: (0, -1), Direction.EAST.value: (1, 0), Direction.SOUTH.value: (0, 1), Direction.WEST.value: (-1, 0)}
 
 
@@ -100,13 +103,17 @@ class Raster:
     inst: np.ndarray
     tiles: np.ndarray  # tile count of each instance
     masked: list[tuple[str, int, int, int, int]]  # name, x, y, w, h
+    # What a save saw on each belt tile's lanes (item ids, -1 for one the engine lacks).
+    lanes: dict[tuple[int, int], set[int]] = field(default_factory=dict)
+    # (x, y, facing) of the tile at the front of each mining drill, which it mines onto.
+    drills: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 def rasterise(bp: dict) -> Optional[Raster]:
     """`bp` on its bounding box; None when it holds an entity of unknown size
     (a mod's), which would leave an unknowable hole, or nothing at all. The
     `[x, y, length]` row runs of `bp["unbuildable"]` (a save's terrain) mask
-    whatever tiles they leave empty."""
+    whatever tiles they leave empty, and its `bp["lanes"]` become `Raster.lanes`."""
     ents = bp.get("entities") or []
     if not ents or any(e["name"] not in _SIZES for e in ents):
         return None
@@ -141,6 +148,10 @@ def rasterise(bp: dict) -> Optional[Raster]:
                 ent = None
         if "inserter" in name:
             d = (d + 8) % 16  # blueprint faces the drop tile, the engine the pickup
+        if name in _DRILL_REACH and d in _DIR16:
+            dx, dy = _DELTA[_DIR16[d]]
+            k = _DRILL_REACH[name]
+            r.drills.append((sl[0].start + w // 2 + dx * k, sl[1].start + h // 2 + dy * k, _DIR16[d]))
         if ent is None or d not in _DIR16:
             r.masked.append((name, sl[0].start, sl[1].start, w, h))
             r.inst[sl] = _MASKED
@@ -155,6 +166,8 @@ def rasterise(bp: dict) -> Optional[Raster]:
         if 0 <= y - min_y < H:
             row = r.inst[max(0, x - min_x) : max(0, x - min_x + n), y - min_y]
             row[row == 0] = _TERRAIN
+    for x, y, _, names in bp.get("lanes", ()):
+        r.lanes.setdefault((x - min_x, y - min_y), set()).update(_GAME_ITEM.get(n, -1) for n in names.split(","))
     r.tiles = np.bincount(r.inst[r.inst > 0], minlength=len(placed) + 1)
     return r if (r.inst > 0).any() else None
 
@@ -336,6 +349,275 @@ def window(
     region rather than a blueprint."""
     f = frame(r, size, rng)
     return None if f is None else place(r, f, size, region, min_known, max_masked)
+
+
+_BELT, _SPLITTER = str2ent("transport_belt").value, str2ent("splitter").value
+_FLOWING = (_BELT, _UG, _SPLITTER)
+_REACH = {str2ent("inserter").value: 1, str2ent("long_handed_inserter").value: 2}
+_CHESTS = [str2ent(n).value for n in ("wooden_chest", "iron_chest", "steel_chest")]
+_FURNACES = [str2ent(n).value for n in ("stone_furnace", "steel_furnace", "electric_furnace")]
+_SOURCE, _SINK = str2ent("source").value, str2ent("sink").value
+_ITEM = {it.name: i for i, it in items.items()}
+_RECIPES = {_ITEM[k]: v for k, v in factorion_rs.py_recipes().items()}
+_SMELTS = [_ITEM[n] for n in ("iron_ore", "copper_ore", "stone", "iron_plate", "coal")]
+_SMELTED = [_ITEM[n] for n in ("iron_plate", "copper_plate", "steel_plate", "stone_brick")]
+_BELT_ITEMS = sorted(set(items) - {0, _SOURCE, _SINK})
+_CH = [c.value for c in (Channel.ENTITIES, Channel.DIRECTION, Channel.ITEMS, Channel.MISC)]
+# (x, y, entity, facing, item) of a grid tile a functional window changes.
+Edit = tuple[int, int, int, int, int]
+
+
+def _interior(r: Raster, x: int, y: int, size: int) -> np.ndarray:
+    """The size × size world of the human layout in `r`'s (size - 2)² interior
+    at (x, y), buildable but where the edge cuts an entity, inside a ring of
+    unbuildable tiles."""
+    n = size - 2
+    sl = (slice(x, x + n), slice(y, y + n))
+    inst = r.inst[sl]
+    inner = np.bincount(inst[inst > 0], minlength=len(r.tiles))
+    whole = (inst > 0) & (inner == r.tiles)[np.maximum(inst, 0)]
+    world = np.zeros((len(Channel), size, size), np.int64)
+    for c, a in zip(_CH, (r.ent, r.dir, r.item, r.misc)):
+        world[c, 1:-1, 1:-1] = np.where(whole, a[sl], 0)
+    world[Channel.FOOTPRINT.value] = Footprint.UNBUILDABLE.value
+    world[Channel.FOOTPRINT.value, 1:-1, 1:-1] = np.where(whole | (inst == 0), Footprint.BUILDABLE.value, Footprint.UNBUILDABLE.value)
+    return world
+
+
+def paste(r: Raster, x: int, y: int, size: int, edits: list[Edit]) -> np.ndarray:
+    """The functional window of `r` at (x, y) that `edits` made (`edit`)."""
+    world = _interior(r, x, y, size)
+    for gx, gy, ent, d, item in edits:
+        world[_CH, gx, gy] = ent, d, item, 0
+    refresh_power(torch.from_numpy(world))
+    return world
+
+
+def _machine_items(world: np.ndarray) -> tuple[set[int], set[int]]:
+    """(ingredients, products) of the world's assemblers and furnaces."""
+    ent, item = world[Channel.ENTITIES.value], world[Channel.ITEMS.value]
+    ins, outs = set(), set()
+    for v in np.unique(item[ent == _ASM]):
+        if (rec := _RECIPES.get(int(v))) is not None:
+            ins |= {_ITEM[n] for n in rec["consumes"]}
+            outs |= {_ITEM[n] for n in rec["produces"]}
+    if np.isin(ent, _FURNACES).any():
+        ins |= set(_SMELTS)
+        outs |= set(_SMELTED)
+    return ins, outs
+
+
+def deliveries(world: np.ndarray, products: set[int]) -> tuple[float, float]:
+    """(items/s reaching the sinks, of which `products`) of a (C, W, H) world."""
+    got = factorion_rs.py_sink_deliveries(np.ascontiguousarray(world.transpose(1, 2, 0)))
+    names = {items[i].name for i in products}
+    return sum(rate for *_, rate in got), sum(rate for _, _, item, rate in got if item in names)
+
+
+def _isolated(world: np.ndarray, x: int, y: int, d: int) -> bool:
+    """Whether the belt a source at (x, y) facing `d` starts is one nothing else
+    feeds and no inserter touches, so what it carries can't matter."""
+    ent, dirs = world[Channel.ENTITIES.value], world[Channel.DIRECTION.value]
+    W, H = ent.shape
+    chain, (cx, cy) = [], (x + _DELTA[d][0], y + _DELTA[d][1])
+    while 0 <= cx < W and 0 <= cy < H and ent[cx, cy] in (_BELT, _UG) and (cx, cy) not in chain:
+        chain.append((cx, cy))
+        dx, dy = _DELTA.get(int(dirs[cx, cy]), (0, 0))
+        cx, cy = cx + dx, cy + dy
+    on = set(chain)
+    for ix, iy in np.argwhere(np.isin(ent, list(_REACH))):
+        k = _REACH[int(ent[ix, iy])]
+        dx, dy = _DELTA.get(int(dirs[ix, iy]), (0, 0))
+        if (ix - dx * k, iy - dy * k) in on or (ix + dx * k, iy + dy * k) in on:
+            return False
+    for i, (cx, cy) in enumerate(chain):
+        for d2, (dx, dy) in _DELTA.items():
+            u = (cx - dx, cy - dy)
+            fed = 0 <= u[0] < W and 0 <= u[1] < H and ent[u] in (*_FLOWING, _SOURCE) and dirs[u] == d2
+            if fed and u != (x, y) and (i == 0 or u != chain[i - 1]):
+                return False
+    return bool(chain)
+
+
+def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]:
+    """What turns `r`'s (size - 2)² interior at (x, y) into a working factory
+    (`paste`): every flow across the interior's edge, or into an entity the
+    engine lacks or the edge cuts, becomes a source or sink on that tile, of
+    what the save saw on the belt (`Raster.lanes`), as does a tunnel the edge
+    cuts, a belt that starts or ends at nothing, and a mining drill's output.
+    A chest that inserters fill and none empty, a store for later, becomes a
+    sink. Where no label settles a marker's item it is the one that brings the
+    most of the machines' products to the sinks. Medium poles go wherever the
+    human's leave something unpowered and there is room."""
+    n = size - 2
+    W, H = r.ent.shape
+    world = _interior(r, x, y, size)
+    base = world.copy()
+    whole = world[Channel.FOOTPRINT.value, 1:-1, 1:-1].astype(bool) & (r.inst[x : x + n, y : y + n] > 0)
+
+    def inside(t):
+        return x <= t[0] < x + n and y <= t[1] < y + n
+
+    def ring(t):
+        return x - 1 <= t[0] <= x + n and y - 1 <= t[1] <= y + n and not inside(t)
+
+    def on(t):
+        return 0 <= t[0] < W and 0 <= t[1] < H
+
+    def kept(t):
+        return inside(t) and whole[t[0] - x, t[1] - y]
+
+    def flowing(t):
+        return on(t) and r.ent[t] in _FLOWING and int(r.dir[t]) in _DELTA
+
+    def portable(t):
+        """Where flow leaves the modelled factory: the ring, or a masked or cut entity."""
+        return ring(t) or (inside(t) and r.inst[t] != 0 and not kept(t) and r.inst[t] != _TERRAIN)
+
+    def fed(t):
+        return any(kept(u) and r.ent[u] in _FLOWING and r.dir[u] == d for d, (dx, dy) in _DELTA.items() for u in [(t[0] - dx, t[1] - dy)])
+
+    def label(t):
+        """What the save saw on `t`, else on the nearest labelled tile along its belt."""
+        if t in r.lanes:
+            return r.lanes[t]
+        for sign in (1, -1):
+            p = t
+            for _ in range(40):
+                if not flowing(p):
+                    break
+                dx, dy = _DELTA[int(r.dir[p])]
+                p = (p[0] + sign * dx, p[1] + sign * dy)
+                if p in r.lanes:
+                    return r.lanes[p]
+        return set()
+
+    ports: dict[tuple[int, int], tuple[int, int, set[int]]] = {}
+
+    def port(t, kind, d, its):
+        ports.setdefault(t, (kind, d, its))
+
+    kept_tiles = [(x + int(i), y + int(j)) for i, j in zip(*np.nonzero(whole))]
+    for t in kept_tiles:
+        ent, d = int(r.ent[t]), int(r.dir[t])
+        if d not in _DELTA:
+            continue
+        dx, dy = _DELTA[d]
+        aft, fore = (t[0] - dx, t[1] - dy), (t[0] + dx, t[1] + dy)
+        if ent in _FLOWING:
+            if ring(aft) and flowing(aft) and r.dir[aft] == d:
+                port(aft, _SOURCE, d, label(aft) or label(t))
+            elif portable(aft) and not ring(aft) and not fed(t):
+                port(aft, _SOURCE, d, label(t))
+            if (ring(fore) and flowing(fore)) or (portable(fore) and not ring(fore)):
+                port(fore, _SINK, d, label(t))
+        if ent in _REACH:
+            k = _REACH[ent]
+            pick, drop = (t[0] - dx * k, t[1] - dy * k), (t[0] + dx * k, t[1] + dy * k)
+            if portable(pick) and on(pick) and r.inst[pick] != 0:
+                port(pick, _SOURCE, d, r.lanes.get(pick) or label(drop))
+            if portable(drop) and on(drop) and r.inst[drop] != 0:
+                port(drop, _SINK, d, r.lanes.get(drop) or label(pick))
+    picks = set()
+    for t in kept_tiles:
+        if r.ent[t] in _REACH and int(r.dir[t]) in _DELTA:
+            dx, dy = _DELTA[int(r.dir[t])]
+            picks.add((t[0] - dx * _REACH[int(r.ent[t])], t[1] - dy * _REACH[int(r.ent[t])]))
+
+    def upstream(t):
+        """The belt tiles that lead to `t`, straight on before side feeds."""
+        line = [t]
+        while len(line) < 4 * n:
+            p = line[-1]
+            fs = [u for d, (dx, dy) in _DELTA.items() for u in [(p[0] - dx, p[1] - dy)] if kept(u) and r.ent[u] in (_BELT, _UG) and r.dir[u] == d]
+            fs = [u for u in fs if u not in line]
+            if not fs:
+                break
+            dx, dy = _DELTA[int(r.dir[p])]
+            line.append((p[0] - dx, p[1] - dy) if (p[0] - dx, p[1] - dy) in fs else fs[0])
+        return set(line)
+
+    for fx, fy, d in r.drills:
+        dx, dy = _DELTA[d]
+        out = (fx + dx, fy + dy)
+        if (inside((fx, fy)) or ring((fx, fy))) and kept(out) and r.ent[out] in (_BELT, _UG):
+            port((fx, fy), _SOURCE, d, label(out))
+    for t in kept_tiles:
+        ent, d = int(r.ent[t]), int(r.dir[t])
+        if d not in _DELTA:
+            continue
+        dx, dy = _DELTA[d]
+        if ent == _UG:
+            down = r.misc[t] == Misc.UNDERGROUND_DOWN.value
+            step = 1 if down else -1  # an entrance looks ahead for its exit, an exit behind
+            for k in range(1, _ENGINE_UG_REACH + 1):
+                p = (t[0] + step * dx * k, t[1] + step * dy * k)
+                if not on(p):
+                    break
+                if r.ent[p] == _UG and r.dir[p] == d and r.misc[p] != r.misc[t]:
+                    if not inside(p):
+                        port(t, _SINK if down else _SOURCE, d, label(t))
+                    break
+        fore, aft = (t[0] + dx, t[1] + dy), (t[0] - dx, t[1] - dy)
+        if ent == _BELT and on(fore) and r.inst[fore] == 0 and not picks & upstream(t):
+            port(t, _SINK, d, label(t))
+        if ent in (_BELT, _SPLITTER) and not fed(t) and label(t) and on(aft) and r.inst[aft] == 0:
+            port(t, _SOURCE, d, label(t))
+    for t in kept_tiles:
+        if r.ent[t] not in _CHESTS:
+            continue
+        fills, empties, its = 0, 0, set()
+        for p in [(t[0] + a, t[1] + b) for a in range(-2, 3) for b in range(-2, 3) if (a == 0) != (b == 0)]:
+            if kept(p) and r.ent[p] in _REACH and int(r.dir[p]) in _DELTA:
+                k = _REACH[int(r.ent[p])]
+                dx, dy = _DELTA[int(r.dir[p])]
+                if (p[0] + dx * k, p[1] + dy * k) == t:
+                    fills += 1
+                    its |= r.lanes.get((p[0] - dx * k, p[1] - dy * k), set())
+                elif (p[0] - dx * k, p[1] - dy * k) == t:
+                    empties += 1
+        if fills and not empties:
+            port(t, _SINK, Direction.NORTH.value, its)
+    perimeter = [(a, b) for a in range(x - 1, x + n + 1) for b in (y - 1, y + n)] + [(a, b) for a in (x - 1, x + n) for b in range(y, y + n)]
+    for t in perimeter:
+        if flowing(t):
+            d = int(r.dir[t])
+            p = (t[0] + _DELTA[d][0], t[1] + _DELTA[d][1])
+            if kept(p) and r.ent[p] in (_BELT, _UG) and int(r.dir[p]) not in (d, (d + 1) % 4 + 1):
+                port(t, _SOURCE, d, label(t))
+
+    def put(t, kind, d, item):
+        world[_CH, t[0] - x + 1, t[1] - y + 1] = kind, d, item, 0
+
+    pending = []
+    for t, (kind, d, its) in ports.items():
+        known = its - {-1}
+        if len(known) == 1:
+            put(t, kind, d, next(iter(known)))
+        else:
+            pending.append((t, kind, d, known))
+    ins, outs = _machine_items(world)
+    seen = {i for t, its in r.lanes.items() if inside(t) or ring(t) for i in its} - {-1}
+    for t, kind, d, known in sorted(pending, key=lambda p: p[1] != _SOURCE):
+        sources = set(world[Channel.ITEMS.value][world[Channel.ENTITIES.value] == _SOURCE].tolist())
+        options = known or (ins if kind == _SOURCE else outs | ins | sources)
+        if not options and kind == _SOURCE and _isolated(world, t[0] - x + 1, t[1] - y + 1, d):
+            options = {rng.choice(_BELT_ITEMS)}
+        if not options:
+            commonest = np.bincount([i for its in r.lanes.values() for i in its if i > 0] or [_ITEM["iron_plate"]]).argmax()
+            options = seen or {int(commonest)}
+
+        def value(item):
+            put(t, kind, d, item)
+            total, crafted = deliveries(world, outs)
+            return crafted + 1e-3 * total
+
+        put(t, kind, d, max(sorted(options), key=value) if len(options) > 1 else next(iter(options)))
+    powered = factorion_rs.py_place_poles(np.ascontiguousarray(world.transpose(1, 2, 0)))
+    if powered is not None:
+        world = powered.transpose(2, 0, 1)
+    ent, d, item = world[_CH[:3]]
+    return [(int(gx), int(gy), int(ent[gx, gy]), int(d[gx, gy]), int(item[gx, gy])) for gx, gy in np.argwhere((world[_CH] != base[_CH]).any(0))]
 
 
 # Designs windowed at once: consecutive windows come from different designs.

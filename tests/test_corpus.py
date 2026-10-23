@@ -9,7 +9,7 @@ import torch
 
 from corpus.convert import orient, rasterise, to_world, window
 from denoise import score_world
-from factorion import LESSON_IS_TRIAL, Channel, Footprint, LessonKind, build_factory, str2ent
+from factorion import DIR_TO_DELTA, LESSON_IS_TRIAL, Channel, Direction, Footprint, LessonKind, build_factory, items, str2ent
 from factorion_server.blueprint import world_tensor_to_blueprint_dict
 
 KINDS = [k for k in LessonKind if not LESSON_IS_TRIAL[k]]
@@ -282,3 +282,52 @@ def test_a_save_regions_terrain_and_belt_contents_reach_its_design():
     (row,) = _rows(rec)
     bp = next(designs(row["string"]))
     assert bp["unbuildable"] == rec["unbuildable"] and bp["lanes"] == rec["lanes"]
+
+
+def test_a_lesson_stripped_of_its_markers_works_again_as_a_functional_window():
+    """A lesson's markers come back masked (`test_lesson_round_trips_through_a_blueprint`):
+    the functional window puts a source and sink where its flows meet them,
+    and with nothing labelled picks the items that make the machines produce
+    as much as the lesson did."""
+    import factorion_rs
+
+    from corpus.convert import _machine_items, deliveries, edit, paste
+
+    world = _lesson(LessonKind.OPPOSITE_SIDES_1IN, 0).world_CWH.numpy()
+    bp = world_tensor_to_blueprint_dict(world)["blueprint"]
+    xs, ys = [e["position"]["x"] for e in bp["entities"]], [e["position"]["y"] for e in bp["entities"]]
+    for x, y in ((min(xs) - 12, min(ys) - 12), (max(xs) + 12, max(ys) + 12)):  # room for the window's ring
+        bp["entities"].append({"name": "small-electric-pole", "position": {"x": x, "y": y}})
+    r = _raster(bp)
+    assert r.ent.shape[0] >= 34 and r.ent.shape[1] >= 34
+    lesson = sum(rate for *_, rate in factorion_rs.py_sink_deliveries(np.ascontiguousarray(world.transpose(1, 2, 0))))
+    w = paste(r, 2, 2, 32, edit(r, 2, 2, 32, random.Random(0)))
+    _, products = _machine_items(w)
+    assert lesson > 0 and deliveries(w, products)[1] == pytest.approx(lesson)
+
+
+def test_labelled_belts_across_the_edge_and_store_chests_become_markers_of_what_they_carried():
+    import factorion_rs
+
+    from corpus.convert import edit, paste
+
+    east, north = {"direction": 4}, {"direction": 0}
+    bp = _bp(
+        *(("transport-belt", x + 0.5, 3.5, east) for x in range(40)),
+        ("inserter", 20.5, 4.5, north),  # from the belt into the chest
+        ("wooden-chest", 20.5, 5.5, {}),
+        ("medium-electric-pole", 21.5, 5.5, {}),
+        ("small-electric-pole", 0.5, 0.5, {}),
+        ("small-electric-pole", 0.5, 39.5, {}),
+    )
+    bp["lanes"] = [[20, 3, 1, "copper-plate"]]
+    edits = edit(r := _raster(bp), 5, 1, 32, random.Random(0))
+    w = paste(r, 5, 1, 32, edits)
+    ent, item = w[Channel.ENTITIES.value], w[Channel.ITEMS.value]
+    copper = str2ent("copper_plate").value
+    for (x, y), kind in (((0, 3), "source"), ((31, 3), "sink"), ((16, 5), "sink")):
+        assert (ent[x, y], item[x, y]) == (str2ent(kind).value, copper)
+    assert len(edits) == 3  # the human's pole already powers the inserter
+    got = {(x, y): rate for x, y, _, rate in factorion_rs.py_sink_deliveries(np.ascontiguousarray(w.transpose(1, 2, 0)))}
+    assert got[(16, 5)] > 0 and got[(16, 5)] + got[(31, 3)] == pytest.approx(15)
+
