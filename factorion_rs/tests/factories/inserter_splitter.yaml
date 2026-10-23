@@ -1,23 +1,104 @@
-# How inserters connect (or don't) to a Splitter.
+# How inserters connect to a Splitter (each rule measured in Factorio).
 
 description: |
-  Inserters flanking a splitter's lateral sides do not connect to it — they sit
-  beside the splitter's body, not at its input or output ends, so no edge is
-  produced.
-graph: ""
+  An inserter beside either tile of a splitter picks from it: a pickup takes
+  from the tile's output, which both tiles feed.
+graph: |
+  Y@1,0 -> i@0,0
+  Y@2,0 -> i@0,0
+  Y@1,0 -> i@3,0
+  Y@2,0 -> i@3,0
 factory: |
   i< YvvvY i>
   E. .. .. ..
 ---
 description: |
-  A splitter's output should feed an inserter directly below it
-  (Y@0,1 -> i@0,2). `ignored: true`: the engine is currently WRONG here — it
-  produces the source->splitter edge but omits the splitter->inserter edge.
-ignored: true
+  An inserter ahead of a splitter picks from its output too.
 graph: |
   S@0,0 -> Y@0,1
   Y@0,1 -> i@0,2
+  Y@1,1 -> i@0,2
 factory: |
   Sv E.
   YvvvY
   iv ..
+---
+description: |
+  A drop from the side lands before the split, so both outputs share it.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 2, y: 2, item: iron_plate }
+- { x: 3, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.43 }
+- { item: iron_plate, per_second: 0.43 }
+factory: |
+  S> i> YvvvY
+  E. .. bv bv
+  .. .. Kv Kv
+---
+description: |
+  A drop from behind reaches past the split onto its tile's output only.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 0, y: 4, item: iron_plate }
+- { x: 1, y: 4, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0 }
+factory: |
+  Sv .. E.
+  iv .. ..
+  YvvvY ..
+  bv bv ..
+  Kv Kv ..
+---
+description: |
+  A drop from ahead lands before the split, so both outputs share it.
+items:
+- { x: 1, y: 4, item: iron_plate }
+- { x: 0, y: 1, item: iron_plate }
+- { x: 2, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.6 }
+- { item: iron_plate, per_second: 0.6 }
+factory: |
+  .. YvvvY ..
+  K< b< bv ..
+  .. l^ Kv ..
+  .. .. .. E.
+  .. S^ .. ..
+---
+description: |
+  The inserter beside the unfed tile still picks, from what crosses over to
+  that tile's output.
+items:
+- { x: 3, y: 0, item: iron_plate }
+- { x: 0, y: 1, item: iron_plate }
+- { x: 2, y: 3, item: iron_plate }
+- { x: 3, y: 3, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 7.07 }
+- { item: iron_plate, per_second: 7.07 }
+factory: |
+  .. .. .. Sv
+  K< i< YvvvY
+  E. .. bv bv
+  .. .. Kv Kv
+---
+description: |
+  With nothing ahead of its tile, the splitter routes the rest of the flow to
+  its other output.
+items:
+- { x: 1, y: 0, item: iron_plate }
+- { x: 0, y: 3, item: iron_plate }
+- { x: 1, y: 3, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 14.14 }
+factory: |
+  .. Sv ..
+  YvvvY ..
+  iv bv E.
+  Kv Kv ..

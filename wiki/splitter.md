@@ -140,5 +140,5 @@ Three lesson generators use splitters:
 |---|---|
 | [[transport-belt]] | Primary connection — sits between two belts, splitting or merging flow. |
 | [[underground-belt]] | Can connect to underground belt endpoints the same way belts do. |
-| [[inserter]] | Not typically used adjacent to splitters in standard designs. |
+| [[inserter]] | Picks from and drops onto either tile, as in Factorio: a drop from behind lands past the split, on that tile's output only; one from the side or ahead lands before it, so both outputs share it; a pickup takes from the tile's output, which both tiles feed. |
 | [[assembling-machine]] | No direct connection — always has belts + inserters between them. |

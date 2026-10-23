@@ -159,4 +159,5 @@ Python legacy names) but behave as infinite-capacity item endpoints.
 | [[transport-belt]] | Picks items off belt (from behind) / places items onto belt (ahead). Primary use case. |
 | [[assembling-machine]] | Feeds ingredients in / extracts products out. Must be on the machine's perimeter. Direction determines flow: facing away = extracting, facing toward = inserting. |
 | [[underground-belt]] | Can pick from / place onto underground belt tiles, same as regular belts. |
+| [[splitter]] | Picks from / places onto either tile; see [[splitter]] for which output a drop reaches. |
 | Source / Sink | Share inserter connection logic. Source: infinite output. Sink: infinite input. |
