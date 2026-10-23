@@ -5605,7 +5605,7 @@ fn finish(
     })
 }
 
-/// Power every entity that needs it with medium poles on free tiles, greedily
+/// Power every entity that needs it and no pole powers yet with medium poles on free tiles, greedily
 /// on the tile powering the most unpowered entities among those whose pole
 /// would be live. When no live tile helps, a relay goes on the live tile
 /// nearest one that would. Returns the number of poles placed, `None` when
@@ -5615,10 +5615,13 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
     let supply = kind.pole()?.supply;
     let (w, h) = (world.width(), world.height());
     let anchor_of = unit_anchors(world);
+    let powered = PowerMap::of(world);
     let units: Vec<Vec<Cell>> = (0..w)
         .flat_map(|x| (0..h).map(move |y| (x, y)))
         .filter(|t| !anchor_of.contains_key(t))
-        .filter(|&(x, y)| world.entity_at(x, y).is_some_and(Item::needs_power))
+        .filter(|&(x, y)| {
+            world.entity_at(x, y).is_some_and(Item::needs_power) && !powered.powers(world, x, y)
+        })
         .map(|(x, y)| {
             let (ew, eh) = world.entity_at(x, y).map_or((1, 1), Item::size);
             crate::entities::entity_tiles(x, y, world.direction_at(x, y), ew, eh)

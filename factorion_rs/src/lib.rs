@@ -108,8 +108,8 @@ fn py_power_map(py: Python<'_>, worlds: PyReadonlyArray4<i64>) -> Py<numpy::PyAr
 }
 
 /// `world` with medium poles on its free tiles powering every inserter and
-/// assembler, as the lesson generators power theirs, or `None` when there is
-/// no room for them.
+/// assembler its own poles leave unpowered, as the lesson generators power
+/// theirs, or `None` when there is no room for them.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 fn py_place_poles(
