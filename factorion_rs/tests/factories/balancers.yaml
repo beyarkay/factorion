@@ -747,9 +747,6 @@ description: |
   belt_4_to_5: a belt balancer, 4 belt(s) in, 5 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/31.
   Factorio 2.0 delivers 15, 11.25, 11.25, 11.25, 11.25 items/s.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 4, y: 12, item: iron_plate }
 - { x: 5, y: 12, item: iron_plate }
@@ -882,9 +879,6 @@ description: |
   belt_5_to_3: a belt balancer, 5 belt(s) in, 3 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/37.
   Factorio 2.0 delivers 15 items/s to each output.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 3, y: 12, item: iron_plate }
 - { x: 4, y: 12, item: iron_plate }
@@ -917,9 +911,6 @@ description: |
   belt_5_to_4: a belt balancer, 5 belt(s) in, 4 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/38.
   Factorio 2.0 delivers 15 items/s to each output.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 1, y: 11, item: iron_plate }
 - { x: 2, y: 11, item: iron_plate }
@@ -988,9 +979,6 @@ description: |
   belt_6_to_7: a belt balancer, 6 belt(s) in, 7 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/49.
   Factorio 2.0 delivers 90/7 items/s to each output.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 5, y: 12, item: iron_plate }
 - { x: 6, y: 12, item: iron_plate }
@@ -1087,9 +1075,6 @@ description: |
   belt_7_to_6: a belt balancer, 7 belt(s) in, 6 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/56.
   Factorio 2.0 delivers 15 items/s to each output.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 4, y: 11, item: iron_plate }
 - { x: 5, y: 11, item: iron_plate }
@@ -1129,9 +1114,6 @@ description: |
   belt_7_to_7: a belt balancer, 7 belt(s) in, 7 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/57.
   Factorio 2.0 delivers 15 items/s to each output.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 4, y: 12, item: iron_plate }
 - { x: 5, y: 12, item: iron_plate }
@@ -1174,9 +1156,6 @@ description: |
   belt_8_to_8: a belt balancer, 8 belt(s) in, 8 out.
   Decoded from https://factoriobin.com/post/KafN8H7L/66.
   Factorio 2.0 delivers 15 items/s to each output.
-  Parked: an underground belt's tunnel ends at the first underground it
-  passes, even one crossing at right angles, which the game tunnels under.
-ignored: true
 items:
 - { x: 3, y: 12, item: iron_plate }
 - { x: 4, y: 12, item: iron_plate }

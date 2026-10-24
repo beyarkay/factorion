@@ -1,0 +1,17 @@
+description: |
+  An east-facing tunnel passes under a north-facing underground. Undergrounds
+  at right angles don't interact, so the tunnel pairs with its exit beyond
+  and carries a full belt. Factorio 2.0 delivers 15 items/s.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@0,0 -> b@1,0
+  b@1,0 -> d@2,0
+  d@2,0 -> u@5,0
+  u@5,0 -> b@6,0
+  b@6,0 -> K@7,0
+factory: |
+  S> b> d> .. u^ u> b> K>
