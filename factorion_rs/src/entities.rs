@@ -520,9 +520,10 @@ impl FactoryEntity for UndergroundBelt {
             }
             // Entrance: its output goes underground to the paired exit — the
             // first same-direction exit within reach. The tunnel passes beneath
-            // non-underground entities; the first underground belt it meets ends
-            // the search, and pairs only if that belt is a matching exit.
-            // Lanes persist through the tunnel.
+            // everything but undergrounds on its own axis (ones at right angles
+            // don't interact with it); the first of those ends the search, and
+            // pairs only if it is a matching exit. Lanes persist through the
+            // tunnel.
             Misc::UndergroundDown => {
                 for delta in 1..UNDERGROUND_REACH {
                     let (tx, ty) = (x as i64 + dx * delta, y as i64 + dy * delta);
@@ -531,7 +532,9 @@ impl FactoryEntity for UndergroundBelt {
                     }
                     let (tu, tv) = (tx as usize, ty as usize);
                     if let Some(e) = world.entity_at(tu, tv) {
-                        if e == Item::UndergroundBelt {
+                        if e == Item::UndergroundBelt
+                            && matches!(world.direction_at(tu, tv), d if d == dir || d == dir.opposite())
+                        {
                             if world.misc_at(tu, tv) == Misc::UndergroundUp
                                 && world.direction_at(tu, tv) == dir
                             {
