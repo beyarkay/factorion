@@ -403,6 +403,27 @@ def test_sft_stream_mixes_in_working_windows_of_save_regions(tmp_path):
         assert np.isin(world[Channel.ENTITIES.value], [str2ent("source").value, str2ent("sink").value]).any()
 
 
+def test_only_windows_whose_machines_make_something_stream(tmp_path, monkeypatch):
+    import hashlib
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import corpus.convert as convert
+
+    files, window_files = _save_corpus(tmp_path)
+    belts_only = hashlib.blake2b(b"save0.zip", digest_size=16).hexdigest()
+    for f in window_files:
+        t = pq.read_table(f)
+        crafted = [0.0 if s == belts_only else c for s, c in zip(t["save"].to_pylist(), t["crafted"].to_pylist())]
+        pq.write_table(t.set_column(t.schema.get_field_index("crafted"), "crafted", pa.array(crafted, pa.float32())), f)
+    monkeypatch.setattr(convert, "held_out", lambda digest, every=100: False)
+    monkeypatch.setattr(convert, "paste", lambda r, *_: np.full((len(Channel), 1, 1), r.ent.sum()))
+    monkeypatch.setattr(convert, "orient", lambda chans, *_: chans)
+    seen = {int(w[0, 0, 0]) for w in itertools.islice(convert.functional(files, window_files, 32, random.Random(0)), 200)}
+    assert len(seen) == 1
+
+
 def test_held_out_saves_never_train(tmp_path, monkeypatch):
     import hashlib
 
