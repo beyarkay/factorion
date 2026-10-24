@@ -725,14 +725,15 @@ def functional(
     turned and mirrored at random, in epochs: a design's windows in a random
     order, interleaved with `_POOL` - 1 other designs'. `val` takes those of
     the 5% of saves held out, else worker `worker` of `workers` its own share
-    of the rest."""
+    of the rest. Only windows whose machines make something: the rest are
+    belt routing, which the generated lessons already teach."""
     import pyarrow.parquet as pq
 
     mine: dict[str, list[tuple[int, int, list[Edit]]]] = {}
     for f in window_files:
-        t = pq.read_table(f, columns=["layout_hash", "save", "size", "x", "y", "edits"]).to_pylist()
+        t = pq.read_table(f, columns=["layout_hash", "save", "size", "x", "y", "edits", "crafted"]).to_pylist()
         for w in t:
-            if w["size"] == size and held_out(w["save"], 20) == val and (val or _mine(w["layout_hash"], worker, workers)):
+            if w["size"] == size and w["crafted"] > 0 and held_out(w["save"], 20) == val and (val or _mine(w["layout_hash"], worker, workers)):
                 e = w["edits"]
                 mine.setdefault(w["layout_hash"], []).append((w["x"], w["y"], [tuple(e[i : i + 5]) for i in range(0, len(e), 5)]))
     if not mine:
