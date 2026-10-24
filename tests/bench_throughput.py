@@ -48,7 +48,7 @@ MISC_VALUES = [0, 1, 2]
 
 def random_world(size, rng, density=0.3):
     """Random world with mixed entities."""
-    world = torch.zeros((size, size, 4), dtype=torch.int64)
+    world = make_world(size)
     for x in range(size):
         for y in range(size):
             if rng.random() < density:
@@ -61,7 +61,7 @@ def random_world(size, rng, density=0.3):
 
 def random_belt_world(size, rng, density=0.4):
     """Random world with only belts, sources, and sinks."""
-    world = torch.zeros((size, size, 4), dtype=torch.int64)
+    world = make_world(size)
     # Place a source
     sx, sy = rng.randint(0, size - 1), rng.randint(0, size - 1)
     world[sx, sy, 0] = str2ent("source").value
