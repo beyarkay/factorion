@@ -5,8 +5,8 @@ once.
 Each tile's state is three tokens: a *type* (entity × direction × underground
 mode, see `TYPES`), a *recipe* (assemblers only) and a *part* — the tile's
 offset inside its multi-tile entity, which is what lets two touching
-assemblers with the same recipe be told apart. Sources, sinks and walls are
-the conditioning: they are never corrupted, never predicted.
+assemblers with the same recipe be told apart. Sources, sinks and unbuildable tiles
+are the conditioning: they are never corrupted, never predicted.
 
 Training corrupts a known-correct factory by resampling each free tile from
 `noise_prior` with probability t ~ U[0, 1] (t = 0: nothing to fix, t = 1:
@@ -52,7 +52,7 @@ from factorion import (
 )
 
 _CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC, _CH_FOOTPRINT, _CH_POWER = (c.value for c in Channel)
-_FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
+_FOOTPRINT_BUILDABLE = Footprint.BUILDABLE.value
 _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
@@ -167,7 +167,7 @@ def world_to_state(world_CWH) -> np.ndarray:
 def free_mask(state):
     """Tiles the model owns: buildable and not a source/sink."""
     ent = state[:, _CH_ENT]
-    return (state[:, _CH_FOOTPRINT] != _FOOTPRINT_UNAVAILABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
+    return (state[:, _CH_FOOTPRINT] == _FOOTPRINT_BUILDABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
 
 
 def state_to_tokens(state):
@@ -286,7 +286,7 @@ class DenoiserUNet(nn.Module):
 
     `levels` resolutions (channels doubling, stride-2 downsamples), `blocks`
     residual blocks per level and side, and `attn_layers` rotary attention
-    blocks over the bottleneck cells. Grids are padded with wall tiles to a
+    blocks over the bottleneck cells. Grids are padded with unbuildable tiles to a
     multiple of the total stride and cropped back, so any size runs.
     """
 
@@ -300,7 +300,7 @@ class DenoiserUNet(nn.Module):
         self.stride = 2 ** (levels - 1)
         self.head_sizes = [N_TYPES, N_RECIPES, N_PARTS]
         self.part_embed = nn.Embedding(N_PARTS, embed_dim)
-        in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 3
+        in_ch = 3 * embed_dim + len(Direction) + len(Misc) + len(Footprint) + 2
         self.ent_embed = nn.Embedding(len(entities), embed_dim)
         self.item_embed = nn.Embedding(len(items), embed_dim)
         self.stem = nn.Conv2d(in_ch, width, 3, padding=1)
@@ -344,7 +344,7 @@ class DenoiserUNet(nn.Module):
         onehots = [
             F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
             F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
-            s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
+            F.one_hot(s[:, _CH_FOOTPRINT], len(Footprint)).permute(0, 3, 1, 2).float(),
             s[:, _CH_POWER : _CH_POWER + 1].float(),
         ]
         part = lookup(self.part_embed, s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2)
@@ -393,7 +393,7 @@ class DenoiserUNet(nn.Module):
         s = state.long()
         W, H = s.shape[2:]
         pw, ph = -W % self.stride, -H % self.stride
-        # Zero padding is a wall tile: the off-grid world is unbuildable.
+        # Zero padding is an unbuildable tile, as the off-grid world is.
         s = F.pad(s, (0, ph, 0, pw))
         with torch.autocast(s.device.type, dtype=torch.bfloat16, enabled=self.amp):
             h = self.stem(self._embed(s).contiguous(memory_format=torch.channels_last))
@@ -451,7 +451,7 @@ def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np
     world = cond_CWH.copy()
     ent = world[_CH_ENT]
     W, H = ent.shape
-    free = (world[_CH_FOOTPRINT] != _FOOTPRINT_UNAVAILABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
+    free = (world[_CH_FOOTPRINT] == _FOOTPRINT_BUILDABLE) & (ent != _SOURCE_ENT_ID) & (ent != _SINK_ENT_ID)
     claimed = np.zeros((W, H), dtype=bool)
     votes: dict[tuple, list] = {}
     for x, y in zip(*np.nonzero(free & _IS_MULTI_NP[typ])):
@@ -551,7 +551,7 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
 
 def run_denoise_eval(
     model,
-    factories: list[tuple[int, LessonKind, Factory]],
+    factories: list[tuple[int, LessonKind | str, Factory]],
     device,
     *,
     best_of: int,
@@ -565,7 +565,7 @@ def run_denoise_eval(
 ) -> dict:
     """Best-of-N generation eval on held-out factories.
 
-    Each `(seed, kind, Factory)` is fully blanked to its markers and walls,
+    Each `(seed, kind, Factory)` is fully blanked to its markers and unbuildable tiles,
     `best_of` chains denoise it from pure noise, every chain's factory is
     legalized and simulated, and the factory scores its best chain (ties: the
     cheaper build, then the lower chain index). Returns `"thput@n"` /
@@ -610,9 +610,10 @@ def run_denoise_eval(
         unpowered = [0, 0]  # lesson, trial
         for (s, kind, _), rs in zip(factories, results):
             best = max(rs[:n], key=lambda r: (r["thput"], -r["entity_cost"], -r["chain"]))
-            is_trial = LESSON_IS_TRIAL[kind]
+            is_trial = LESSON_IS_TRIAL.get(kind, False)
+            name = getattr(kind, "name", kind)
             (trial if is_trial else lesson).append(best["thput"])
-            per_kind.setdefault(kind.name, []).append(best["thput"])
+            per_kind.setdefault(name, []).append(best["thput"])
             if n == best_of:
                 d_in, d_out = count_dangling_inserters(torch.from_numpy(best["world"]))
                 dangling[2 * is_trial] += d_in
@@ -623,7 +624,7 @@ def run_denoise_eval(
                     records.append(
                         {
                             "seed": s,
-                            "kind": kind.name,
+                            "kind": name,
                             "thput": best["thput"],
                             "entity_cost": best["entity_cost"],
                             "inserters_no_input": d_in,

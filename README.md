@@ -88,7 +88,7 @@ its contents, a tensor of shape `(Channels, Width, Height)`:
 - `MISC`: Whether an underground belt is an entrance or an exit.
 - `FOOTPRINT`: Whether the cell is buildable at all.
 
-A task is a grid holding only source and sink markers (plus any walls); the
+A task is a grid holding only source and sink markers (plus any unbuildable tiles); the
 model fills in every other tile at once. The result is scored by simulating
 the flow of items through the constructed belts and machines to get the
 factory's **throughput** (items produced per second), divided by the

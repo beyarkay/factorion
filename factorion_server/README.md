@@ -4,8 +4,8 @@ Loads the trained Factorion denoiser checkpoint named by the mod's
 "Factorion checkpoint" setting (local, from a GitHub release, or from a W&B
 run), polls a
 running Factorio instance over RCON for prediction requests, generates eight
-factories around each request's markers (its existing entities are walls to
-build around), and streams the highest-throughput one's entities back via
+factories around each request's markers (its existing entities are unbuildable tiles
+to build around), and streams the highest-throughput one's entities back via
 the same RCON connection for immediate placement in the world.
 
 ## Run

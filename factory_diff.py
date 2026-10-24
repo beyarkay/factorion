@@ -21,7 +21,7 @@ from statistics import mean
 from training_config import RlArgs, SftArgs
 
 PER_KIND_DEFAULT = 50
-# Nobody reads the 40th-largest gap, and a wall of grids buries the ones that
+# Nobody reads the 40th-largest gap, and a heap of grids buries the ones that
 # matter. The per-lesson tally still covers every factory.
 MAX_RENDERS_DEFAULT = 25
 # Throughputs come from the same simulator, so equal factories give bitwise

@@ -61,7 +61,7 @@ pub struct Outside {
 impl Outside {
     pub fn of(world: &World) -> Self {
         let (w, h) = (world.width(), world.height());
-        let unbuildable = |x: usize, y: usize| world.get(x, y, Channel::Footprint) == 0;
+        let unbuildable = |x: usize, y: usize| world.get(x, y, Channel::Footprint) != 1;
         let mut joined = vec![false; w * h];
         let mut frontier: Vec<(usize, usize)> = (0..w)
             .flat_map(|x| (0..h).map(move |y| (x, y)))

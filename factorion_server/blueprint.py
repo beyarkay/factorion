@@ -170,9 +170,13 @@ def world_tensor_to_blueprint_dict(
             dir_bp = _DIR_MODEL_TO_BP.get(dir_model, None)
 
             # Center of an N×M entity is at the geometric midpoint of its
-            # tile span. For 1×1 this is +0.5 on both axes.
-            cx = x + ent_meta.width / 2.0
-            cy = y + ent_meta.height / 2.0
+            # tile span. For 1×1 this is +0.5 on both axes. For
+            # axis-rotated entities width/height swap.
+            w, h = ent_meta.width, ent_meta.height
+            if dir_model in (2, 4):  # EAST or WEST → swap dims
+                w, h = h, w
+            cx = x + w / 2.0
+            cy = y + h / 2.0
 
             # Source/sink markers from the request: re-render as
             # constant-combinators carrying virtual-signal labels so the
@@ -212,10 +216,7 @@ def world_tensor_to_blueprint_dict(
             )
 
             # Mark every tile this entity occupies as visited so we don't
-            # emit it again. For axis-rotated entities width/height swap.
-            w, h = ent_meta.width, ent_meta.height
-            if dir_model in (2, 4):  # EAST or WEST → swap dims
-                w, h = h, w
+            # emit it again.
             for dx in range(w):
                 for dy in range(h):
                     tx, ty = x + dx, y + dy

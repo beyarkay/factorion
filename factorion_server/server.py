@@ -64,7 +64,7 @@ def _sink_id() -> int:
 
 def request_to_obs(req: dict) -> np.ndarray:
     """The (C, W, H) world of a request: its markers, plus its existing
-    entities as walls the model builds around, as a lesson protects its own."""
+    entities as unbuildable tiles the model builds around, as a lesson protects its own."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
@@ -114,7 +114,7 @@ def request_to_obs(req: dict) -> np.ndarray:
 
     ent = obs[Channel.ENTITIES.value]
     existing_mask = (ent != str2ent("empty").value) & (ent != src_id) & (ent != snk_id)
-    obs[Channel.FOOTPRINT.value][existing_mask] = Footprint.UNAVAILABLE.value
+    obs[Channel.FOOTPRINT.value][existing_mask] = Footprint.UNBUILDABLE.value
     return obs
 
 

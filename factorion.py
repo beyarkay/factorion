@@ -95,8 +95,14 @@ class Channel(Enum):
 
 
 class Footprint(Enum):
-    UNAVAILABLE = 0
-    AVAILABLE = 1
+    # Immutable: whatever is or isn't here stays (a lesson's box, a save's
+    # water, lava, space or cliffs).
+    UNBUILDABLE = 0
+    # Mutable: the model may place entities here or remove them.
+    BUILDABLE = 1
+    # Unknown, so no loss: past a human blueprint's window, or under an entity
+    # the engine doesn't model (`corpus.convert`). Nothing done here counts.
+    MASKED = 2
 
 
 class Misc(Enum):
@@ -361,7 +367,7 @@ def new_world(width=8, height=8):
     world = np.zeros((width, height, channels), dtype=int)
     world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
     world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
-    world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    world[:, :, Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
     return world
 
 
@@ -473,13 +479,13 @@ def world2html(world_WHC, highlights=None):
 
             available = (
                 world_WHC[x, y, Channel.FOOTPRINT.value]
-                == Footprint.AVAILABLE.value
+                == Footprint.BUILDABLE.value
             )
             if highlights and (x, y) in highlights:
                 bg_style = f"background: {highlights[(x, y)]};"
             elif not available:
                 # Subtle grey cross-hatch (two stacked diagonals) marks
-                # UNAVAILABLE tiles. Low opacity so it sits behind any
+                # UNBUILDABLE tiles. Low opacity so it sits behind any
                 # entity icons without competing visually.
                 bg_style = (
                     "background:"
@@ -862,11 +868,11 @@ def _remove_entities(
     entities in its input. Source/sink are protected unconditionally via
     the entity-id `skip` set below.
 
-    FOOTPRINT is left as new_world() set it (all-AVAILABLE). A previous
+    FOOTPRINT is left as new_world() set it (all-BUILDABLE). A previous
     version marked every empty cell in the completed layout as
-    UNAVAILABLE, but that effectively gave away the answer: the
-    AVAILABLE cells were exactly the optimal placement set, so the
-    agent's task collapsed to "place anything in any AVAILABLE-and-empty
+    UNBUILDABLE, but that effectively gave away the answer: the
+    BUILDABLE cells were exactly the optimal placement set, so the
+    agent's task collapsed to "place anything in any BUILDABLE-and-empty
     cell." Specific lessons can override FOOTPRINT to model bounded
     build regions (e.g. hazard-concrete imports), but the *default*
     must not encode the solution.
@@ -1083,8 +1089,8 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
 
     Placements overwrite: every entity the footprint touches is removed whole
     first, so ``empty`` deletes the entity under ``xy`` and any other entity
-    replaces what it lands on. Walls (which include a lesson's protected
-    entities) and sources/sinks can't be edited. Moving a pole refreshes the
+    replaces what it lands on. Unbuildable tiles (which include a lesson's
+    protected entities) and sources/sinks can't be edited. Moving a pole refreshes the
     POWER channel.
 
     Returns ``None`` when applied, else why the placement was rejected.
@@ -1119,7 +1125,7 @@ def apply_placement_action(world_CWH: torch.Tensor, action: dict) -> Optional[st
     ent = world[Channel.ENTITIES.value]
     if any(not (0 <= tx < size_x and 0 <= ty < size_y) for tx, ty in tiles):
         return "too_wide"
-    if any(world[Channel.FOOTPRINT.value, tx, ty] == Footprint.UNAVAILABLE.value for tx, ty in tiles):
+    if any(world[Channel.FOOTPRINT.value, tx, ty] != Footprint.BUILDABLE.value for tx, ty in tiles):
         return "placed_on_masked_tile"
     if any(ent[tx, ty] in (_SOURCE_ENT_VAL, _SINK_ENT_VAL) for tx, ty in tiles):
         return "replaced_source_or_sink"

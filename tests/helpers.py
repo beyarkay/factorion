@@ -53,7 +53,7 @@ def make_world(w, h=None):
         h = w
     size = max(w, h)
     world = torch.zeros((size, size, len(Channel)), dtype=torch.int64)
-    world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    world[:, :, Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
     return world
 
 
@@ -134,6 +134,6 @@ def power(world):
         shape = list(world.shape)
         shape[axis] = 1
         pad = torch.zeros(shape, dtype=world.dtype)
-        pad[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        pad[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
         world = torch.cat([world, pad], dim=axis)
     raise ValueError("no room to power this world")

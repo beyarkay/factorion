@@ -129,7 +129,7 @@ uv run python -m factorion_server.parity \
 Measurement is adaptive: auto-warmup until the delivery rate plateaus, then
 measure until the cumulative rate converges (counts are zeroed at the
 boundary so buffer-fill can't inflate the rate), with hard tick caps. Crank
-`--game-speed` (100+) to compress wall-clock; slow assembler lessons still
+`--game-speed` (100+) to compress elapsed time; slow assembler lessons still
 need many game-seconds to resolve a fractional items/s rate.
 
 ## Regression check after an engine change

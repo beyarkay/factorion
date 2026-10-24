@@ -36,6 +36,8 @@ train = [
     "wandb",
     "runpod",
     "pyyaml",
+    "huggingface-hub>=2.2.0",
+    "pyarrow>=26.0.0",
 ]
 # Tooling for the pre-commit/pre-push checklist (`uv sync` installs these too).
 dev = [

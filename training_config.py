@@ -198,6 +198,16 @@ class SftArgs(SharedArgs):
     prediction reproduces its input"""
     gen_temperature: float = 1.0
     """sampling temperature of the ancestral steps"""
+    corpus_frac: float = 0.0
+    """fraction of training examples drawn from the HUMAN_BLUEPRINTS lesson:
+    windows of human-made blueprints (`corpus/`), unmodelled entities masked
+    out as unbuildable. They have no markers, so the eval never sees them."""
+    windows_frac: float = 0.0
+    """fraction of training examples that are functional windows of human
+    saves (`corpus/windows.py`): a human layout ringed by the sources and
+    sinks that make it work, which the eval scores as `val/human/`"""
+    corpus_repo: str = "beyarkay/factorio-blueprints"
+    """Hugging Face dataset the HUMAN_BLUEPRINTS lesson downloads"""
     eval_seeds_per_kind: int = 64
     """held-out factories per training lesson kind (and per trial kind)"""
     eval_batch_chains: int = 2048

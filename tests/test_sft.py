@@ -125,10 +125,10 @@ class TestTrainSFTEndToEnd:
         for (k, a), b in zip(loaded.state_dict().items(), model.state_dict().values()):
             assert torch.equal(a, b.cpu()), k
 
-        # --start-from resumes those weights (and the noise prior with them).
-        args.start_from, args.num_samples = str(ckpt), 16
+        # --start-from resumes those weights, noising the new run's data as that data.
+        args.start_from, args.num_samples, args.box_frac = str(ckpt), 16, 1 - args.box_frac
         args.checkpoint_path = str(tmp_path / "ckpt2.pt")
-        assert torch.equal(train_sft(args).noise_prior.cpu(), loaded.noise_prior)
+        assert not torch.equal(train_sft(args).noise_prior.cpu(), loaded.noise_prior)
 
 
 @pytest.fixture(scope="module")

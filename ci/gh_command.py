@@ -251,6 +251,9 @@ def cmd_sft(args, ctx) -> None:
         num_samples=args.num_samples,
         start_from=args.start_from,
         eval_best_of=args.eval_best_of,
+        corpus_frac=args.corpus_frac,
+        windows_frac=args.windows_frac,
+        lr=args.lr,
         extra_tags=[f"pr:{ctx['pr']}"],
     )
     infos = launch([job], args.gpu_type)
@@ -290,7 +293,7 @@ def _compare_wait_seconds(args) -> int:
         from training_config import RlArgs
 
         per = rl_budget_seconds(args.total_timesteps or RlArgs().total_timesteps)
-    # One pod runs all seeds back-to-back, so the wall-clock scales with seeds;
+    # One pod runs all seeds back-to-back, so the elapsed time scales with seeds;
     # the setup slack (baked into `per`) is paid once, not per seed.
     total = SETUP_SLACK_SECONDS + args.seeds * (per - SETUP_SLACK_SECONDS)
     return min(total + 45 * 60, MAX_WAIT_SECONDS)
@@ -623,6 +626,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--num-samples", type=si_int, default=None)
     sp.add_argument("--start-from", default=None)
     sp.add_argument("--eval-best-of", type=int, default=None)
+    sp.add_argument("--corpus-frac", type=float, default=None)
+    sp.add_argument("--windows-frac", type=float, default=None)
+    sp.add_argument("--lr", type=float, default=None)
     common(sp)
 
     sp = sub.add_parser("rl", add_help=False)

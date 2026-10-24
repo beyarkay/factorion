@@ -55,6 +55,12 @@ def sft_command(job: SftJob) -> list[str]:
         cmd += ["--num-samples", str(job.num_samples)]
     if job.eval_best_of is not None:
         cmd += ["--eval-best-of", str(job.eval_best_of)]
+    if job.corpus_frac is not None:
+        cmd += ["--corpus-frac", str(job.corpus_frac)]
+    if job.windows_frac is not None:
+        cmd += ["--windows-frac", str(job.windows_frac)]
+    if job.lr is not None:
+        cmd += ["--lr", str(job.lr)]
     if job.start_from is None:
         return cmd + _run_overrides(job) + _tags(job)
     return cmd + ["--start-from", job.start_from] + _run_overrides(job) + _tags(job, f"from:{job.start_from}")

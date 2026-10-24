@@ -788,14 +788,14 @@ def _count_full_opacity_icons(html, icon_b64):
 def _ent_b64(name):
     # Build a tiny world with just this entity to extract its rendered b64.
     w = torch.zeros(3, 3, len(Channel), dtype=torch.int64)
-    w[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    w[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
     w[1, 1, Channel.ENTITIES.value] = str2ent(name).value
     html = world2html(w).text
     # Extract any data:image src from the rendered cell at (1, 1).
     matches = re.findall(r"src='(data:image/png;base64,[^']+)'", html)
     # The entity icon for the (1,1) cell is the unique non-empty icon.
     empty_w = torch.zeros(3, 3, len(Channel), dtype=torch.int64)
-    empty_w[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    empty_w[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
     empty_html = world2html(empty_w).text
     empty_srcs = set(re.findall(r"src='(data:image/png;base64,[^']+)'", empty_html))
     for src in matches:
@@ -812,7 +812,7 @@ class TestWorld2HtmlMultiTile:
     def test_splitter_renders_one_full_icon(self, direction):
         size = 8
         world = torch.zeros(size, size, len(Channel), dtype=torch.int64)
-        world[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        world[..., Channel.FOOTPRINT.value] = Footprint.BUILDABLE.value
         # Place a splitter; entity_id at BOTH occupied cells, matching what
         # the lessons (and the env) write.
         from helpers import Footprint as _Fp  # noqa
@@ -842,7 +842,7 @@ def _ug_layout_info(world):
     """Extract layout info from a MOVE_VIA_UG_BELT solved world.
 
     Returns dict with: flow_dir, source_pos, sink_pos, ug_down_pos, ug_up_pos,
-    wall_tiles (set of (x, y)).
+    barrier_tiles (set of (x, y)).
     """
     ent = world[Channel.ENTITIES.value]
     direc = world[Channel.DIRECTION.value]
@@ -867,12 +867,12 @@ def _ug_layout_info(world):
     assert down_pos is not None and up_pos is not None
 
     flow_dir = Direction(int(direc[down_pos[0], down_pos[1]].item()))
-    wall_tiles = set()
+    barrier_tiles = set()
     W, H = fp.shape
     for x in range(W):
         for y in range(H):
-            if fp[x, y].item() == Footprint.UNAVAILABLE.value:
-                wall_tiles.add((x, y))
+            if fp[x, y].item() == Footprint.UNBUILDABLE.value:
+                barrier_tiles.add((x, y))
 
     return {
         "flow_dir": flow_dir,
@@ -880,7 +880,7 @@ def _ug_layout_info(world):
         "sink_pos": sink,
         "ug_down_pos": down_pos,
         "ug_up_pos": up_pos,
-        "wall_tiles": wall_tiles,
+        "barrier_tiles": barrier_tiles,
     }
 
 
@@ -945,7 +945,7 @@ class TestMoveViaUgBeltBasic:
 
 
 class TestMoveViaUgBeltGeometry:
-    """A perpendicular wall separates source and sink; UG pair bridges it."""
+    """A perpendicular barrier separates source and sink; UG pair bridges it."""
 
     @pytest.mark.parametrize("seed", range(40))
     def test_ug_pair_faces_flow_direction(self, seed):
@@ -959,9 +959,9 @@ class TestMoveViaUgBeltGeometry:
             assert int(direc[pos[0], pos[1]].item()) == info["flow_dir"].value
 
     @pytest.mark.parametrize("seed", range(40))
-    def test_ug_pair_directly_opposite_across_wall(self, seed):
+    def test_ug_pair_directly_opposite_across_barrier(self, seed):
         """UG_UP shares UG_DOWN's perpendicular coord and is on the other
-        side of the wall, with the wall flush between them."""
+        side of the barrier, with the barrier flush between them."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
         assert factory is not None
@@ -981,12 +981,12 @@ class TestMoveViaUgBeltGeometry:
                 f"seed={seed}: UG_DOWN.x={down[0]} != UG_UP.x={up[0]}"
             )
             gap = abs(up[1] - down[1])
-        # gap = wall_thickness + 1, with wall_thickness ∈ [1, 4]
+        # gap = barrier_thickness + 1, with barrier_thickness ∈ [1, 4]
         assert 2 <= gap <= 5, f"seed={seed}: UG gap {gap} not in [2, 5]"
 
     @pytest.mark.parametrize("seed", range(40))
-    def test_wall_spans_full_perpendicular(self, seed):
-        """The wall (UNAVAILABLE tiles) spans the entire perpendicular
+    def test_barrier_spans_full_perpendicular(self, seed):
+        """The barrier (UNBUILDABLE tiles) spans the entire perpendicular
         dimension of the grid."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
@@ -995,45 +995,45 @@ class TestMoveViaUgBeltGeometry:
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
-        wall = info["wall_tiles"]
-        assert wall, f"seed={seed}: no wall tiles"
+        barrier = info["barrier_tiles"]
+        assert barrier, f"seed={seed}: no barrier tiles"
         # Group by the flow-axis coordinate; each column/row must hit every
         # perpendicular coordinate.
         W, H = world[Channel.FOOTPRINT.value].shape
-        flow_coords = {(x if is_h else y) for x, y in wall}
+        flow_coords = {(x if is_h else y) for x, y in barrier}
         perp_span = H if is_h else W
         for fc in flow_coords:
             perp_cells = {
                 (y if is_h else x)
-                for x, y in wall
+                for x, y in barrier
                 if (x if is_h else y) == fc
             }
             assert perp_cells == set(range(perp_span)), (
-                f"seed={seed}: wall column/row {fc} doesn't span full perp"
+                f"seed={seed}: barrier column/row {fc} doesn't span full perp"
             )
 
     @pytest.mark.parametrize("seed", range(40))
-    def test_only_wall_is_unavailable(self, seed):
-        """No tile outside the wall is FOOTPRINT.UNAVAILABLE — open space
-        on either side of the wall is freely buildable."""
+    def test_only_barrier_is_unavailable(self, seed):
+        """No tile outside the barrier is FOOTPRINT.UNBUILDABLE — open space
+        on either side of the barrier is freely buildable."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
         fp = world[Channel.FOOTPRINT.value]
         info = _ug_layout_info(world)
-        wall = info["wall_tiles"]
+        barrier = info["barrier_tiles"]
         W, H = fp.shape
         for x in range(W):
             for y in range(H):
-                if (x, y) not in wall:
-                    assert fp[x, y].item() == Footprint.AVAILABLE.value, (
-                        f"seed={seed}: ({x},{y}) UNAVAILABLE but not in wall"
+                if (x, y) not in barrier:
+                    assert fp[x, y].item() == Footprint.BUILDABLE.value, (
+                        f"seed={seed}: ({x},{y}) UNBUILDABLE but not in barrier"
                     )
 
     @pytest.mark.parametrize("seed", range(40))
-    def test_source_and_sink_on_opposite_sides_of_wall(self, seed):
-        """Source and sink lie on opposite sides of the wall along the
+    def test_source_and_sink_on_opposite_sides_of_barrier(self, seed):
+        """Source and sink lie on opposite sides of the barrier along the
         flow axis."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
@@ -1042,18 +1042,18 @@ class TestMoveViaUgBeltGeometry:
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
-        wall = info["wall_tiles"]
-        wall_flow = {(x if is_h else y) for x, y in wall}
-        wall_lo, wall_hi = min(wall_flow), max(wall_flow)
+        barrier = info["barrier_tiles"]
+        barrier_flow = {(x if is_h else y) for x, y in barrier}
+        barrier_lo, barrier_hi = min(barrier_flow), max(barrier_flow)
         src = info["source_pos"]
         sink = info["sink_pos"]
         src_f = src[0] if is_h else src[1]
         sink_f = sink[0] if is_h else sink[1]
-        # Both must be outside the wall, and on different sides of it
-        assert src_f < wall_lo or src_f > wall_hi
-        assert sink_f < wall_lo or sink_f > wall_hi
-        assert (src_f < wall_lo) != (sink_f < wall_lo), (
-            f"seed={seed}: src and sink on same side of wall"
+        # Both must be outside the barrier, and on different sides of it
+        assert src_f < barrier_lo or src_f > barrier_hi
+        assert sink_f < barrier_lo or sink_f > barrier_hi
+        assert (src_f < barrier_lo) != (sink_f < barrier_lo), (
+            f"seed={seed}: src and sink on same side of barrier"
         )
 
     @pytest.mark.parametrize("seed", range(40))
@@ -1065,9 +1065,9 @@ class TestMoveViaUgBeltGeometry:
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
-        wall = info["wall_tiles"]
-        wall_flow = {(x if is_h else y) for x, y in wall}
-        wall_lo, wall_hi = min(wall_flow), max(wall_flow)
+        barrier = info["barrier_tiles"]
+        barrier_flow = {(x if is_h else y) for x, y in barrier}
+        barrier_lo, barrier_hi = min(barrier_flow), max(barrier_flow)
         src = info["source_pos"]
         down = info["ug_down_pos"]
         up = info["ug_up_pos"]
@@ -1075,10 +1075,10 @@ class TestMoveViaUgBeltGeometry:
         down_f = down[0] if is_h else down[1]
         up_f = up[0] if is_h else up[1]
         # UG_DOWN on source side
-        if src_f < wall_lo:
-            assert down_f < wall_lo and up_f > wall_hi
+        if src_f < barrier_lo:
+            assert down_f < barrier_lo and up_f > barrier_hi
         else:
-            assert down_f > wall_hi and up_f < wall_lo
+            assert down_f > barrier_hi and up_f < barrier_lo
 
 
 class TestMoveViaUgBeltManySeeds:
@@ -1134,26 +1134,26 @@ class TestMoveViaUgBeltMissingEntities:
         assert (ent == str2ent("sink").value).sum().item() == 1
 
     @pytest.mark.parametrize("seed", range(20))
-    def test_wall_remains_unavailable_after_blanking(self, seed):
-        """Even at maximum blanking, the wall is still the only UNAVAILABLE
-        region (open tiles do not flip to UNAVAILABLE just because they
+    def test_barrier_remains_unavailable_after_blanking(self, seed):
+        """Even at maximum blanking, the barrier is still the only UNBUILDABLE
+        region (open tiles do not flip to UNBUILDABLE just because they
         were blanked)."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
         assert factory is not None
-        # Read the wall from the solved layout: a full blank removes the UG
-        # belts, so the wall can't be inferred from the blanked world's
-        # entities. Blanking never touches FOOTPRINT, so the wall must survive.
+        # Read the barrier from the solved layout: a full blank removes the UG
+        # belts, so the barrier can't be inferred from the blanked world's
+        # entities. Blanking never touches FOOTPRINT, so the barrier must survive.
         info = _ug_layout_info(factory.world_CWH)
         world, _ = blank_entities(factory, num_missing_entities=float("inf"))
-        # The wall spans full perpendicular; any non-wall tile must be
-        # AVAILABLE (already covered by other tests for num_missing=0;
+        # The barrier spans full perpendicular; any non-barrier tile must be
+        # BUILDABLE (already covered by other tests for num_missing=0;
         # here we just re-assert it survives blanking).
         fp = world[Channel.FOOTPRINT.value]
         W, H = fp.shape
         for x in range(W):
             for y in range(H):
-                if (x, y) not in info["wall_tiles"]:
-                    assert fp[x, y].item() == Footprint.AVAILABLE.value
+                if (x, y) not in info["barrier_tiles"]:
+                    assert fp[x, y].item() == Footprint.BUILDABLE.value
 
     @pytest.mark.parametrize("seed", range(20))
     def test_independent_ug_removal_possible(self, seed):

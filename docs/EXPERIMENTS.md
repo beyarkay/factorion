@@ -168,7 +168,7 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#61](https://github.com/beyarkay/factorion/pull/61) | ✅ | Splitter in Python plus lessons INSERTER_TRANSFER, SPLITTER_SPLIT, SPLITTER_MERGE; fixes multi-tile removal, splitter double-counting |
 | [#66](https://github.com/beyarkay/factorion/pull/66) | ⏭️ | Draft assembler lessons + recipe/Item single source of truth; superseded by #78 |
 | [#78](https://github.com/beyarkay/factorion/pull/78) | ✅ | ASSEMBLE_1IN_1OUT lesson (copper_cable, gear) plus Rust recipe/Item SOT and unified Item enum |
-| [#82](https://github.com/beyarkay/factorion/pull/82) | ✅ | Add MOVE_VIA_UG_BELT lesson: UG belt forced by footprint-unavailable wall; 361 tests |
+| [#82](https://github.com/beyarkay/factorion/pull/82) | ✅ | Add MOVE_VIA_UG_BELT lesson: UG belt forced by a footprint-unavailable barrier; 361 tests |
 | [#83](https://github.com/beyarkay/factorion/pull/83) | ✅ | ASSEMBLE_2IN_1OUT lesson (circuit, belt) plus fix for Source/Sink phantom feed in 1IN lesson; smoke val acc ~0.80-0.96 |
 | [#108](https://github.com/beyarkay/factorion/pull/108) | ✅ | Unprotect assembler in ASSEMBLE_1IN_1OUT so item head gets real recipe targets (val/item_acc was trivial NONE) |
 | [#116](https://github.com/beyarkay/factorion/pull/116) | ✅ | Remove INSERTER_TRANSFER lesson kind |
@@ -273,7 +273,7 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#293](https://github.com/beyarkay/factorion/pull/293) | ✅ | Add per-head not-none accuracy metrics (global and per-lesson) to SFT val, since dominant NONE class inflates plain head accuracies |
 | [#294](https://github.com/beyarkay/factorion/pull/294) | ✅ | Add per-lesson eot_acc/eot_pos_recall to greedy rollout eval so PPO eval/ gets EOT-head visibility |
 | [#328](https://github.com/beyarkay/factorion/pull/328) | ✅ | Rename EOT-respecting throughput thput_eot -> thput, drop EOT-ignoring metric, select SFT checkpoints on it |
-| [#345](https://github.com/beyarkay/factorion/pull/345) | ❌ | Rename W&B metric prefixes by how measured and drop PPO greedy eval (14% of wall clock, tracked rollout within 2%); closed unmerged |
+| [#345](https://github.com/beyarkay/factorion/pull/345) | ❌ | Rename W&B metric prefixes by how measured and drop PPO greedy eval (14% of elapsed time, tracked rollout within 2%); closed unmerged |
 | [#383](https://github.com/beyarkay/factorion/pull/383) | ✅ | factory_diff.py / compare-renders: render factories where PR and main sides consistently disagree, largest gap first, per-lesson tally |
 | [#407](https://github.com/beyarkay/factorion/pull/407) | ✅ | CI reports use end-of-run means (last 2% of points) not run summary max/last point; e.g. 0.978 summary vs 0.937 real |
 | [#433](https://github.com/beyarkay/factorion/pull/433) | ❌ | Log structural inserter failures via Rust graph: SFT 5M val +0.025 but runtime 38m->54m, not worth merging; replaced by #451 |
@@ -288,7 +288,7 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#24](https://github.com/beyarkay/factorion/pull/24) | ❌ | Preallocated numpy buffer for Rust sim calls in step(); bench no difference, closed unmerged |
 | [#32](https://github.com/beyarkay/factorion/pull/32) | ❌ | AsyncVectorEnv with self-resetting curriculum plus perf/sps sweep (best 640 sps at 64 envs); closed unmerged |
 | [#143](https://github.com/beyarkay/factorion/pull/143) | ❌ | Defer GPU syncs/vectorise val aggregation/pin_memory in SFT: author found it "just much slower" |
-| [#147](https://github.com/beyarkay/factorion/pull/147) | ✅ | Log SFT data-vs-compute wall-clock split per epoch (perf/*) |
+| [#147](https://github.com/beyarkay/factorion/pull/147) | ✅ | Log SFT data-vs-compute elapsed-time split per epoch (perf/*) |
 | [#202](https://github.com/beyarkay/factorion/pull/202) | ✅ | Port build_factory to Rust with byte-identical CPython RNG parity to speed up RL rollouts |
 | [#205](https://github.com/beyarkay/factorion/pull/205) | ✅ | PPO speedups: numpy world-writes (-0.20 s/iter, bit-identical), str2ent cache; bake lr 7e-4, critic_warmup 5, target_kl 0.02 |
 | [#206](https://github.com/beyarkay/factorion/pull/206) | ✅ | SFT loop speedup via GPU-resident data + bench harness: 88.4s -> 22.6s (-74%), bit-identical val_loss |
