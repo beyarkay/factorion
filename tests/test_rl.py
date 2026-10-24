@@ -50,6 +50,6 @@ def test_rl_trains_a_denoiser_checkpoint(tmp_path):
         capture_output=True, text=True, timeout=600,
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
-    assert "RAFT on cpu: 2 iterations" in proc.stdout
+    assert ": 2 iterations of 2 factories x 2 builds" in proc.stdout
     (saved,) = (tmp_path / "artifacts").glob("raft-*.pt")
     assert load_denoiser(saved).arch == model.arch
