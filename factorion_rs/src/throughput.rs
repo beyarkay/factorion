@@ -18,11 +18,16 @@ pub const FACTORY_SCORE_P: f64 = 0.5;
 
 /// Sweeps a loop gets to settle. Each pass around a balancer's loop shrinks
 /// the gap to its steady state geometrically, so this only binds on a loop
-/// that returns nearly all of its flow; the sweep it stops at undercounts.
+/// that returns nearly all of its flow, which is then scored with its loops
+/// cut.
 const MAX_SWEEPS: usize = 1000;
 
 /// Change in a rate (items/s) below which a loop counts as settled.
 const SETTLED: f64 = 1e-12;
+
+/// What each lane node was offered by each feeder in a sweep, by the rank it
+/// fills in: `(feeder, lane) → (rank, items/s)`.
+type Fed = HashMap<(usize, usize), (usize, f64)>;
 
 /// What a single sink received: the item it was configured to accept and
 /// the achieved throughput (items/s) of that item arriving at it. One
@@ -105,7 +110,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     // Find nodes reachable from sources (for determining processing order)
     let reachable_from_sources = reachable_from(&sources, graph, false);
 
-    let back = back_edges(graph, &sources);
+    let (back, on_loop) = loops(graph, &sources);
 
     // 2. Kahn's algorithm: topological BFS from sources.
     // Count "true" in-degree (only from predecessors reachable from a source).
@@ -157,12 +162,16 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     let mut loop_tails: Vec<usize> = back.iter().map(|&(u, _)| u).collect();
     loop_tails.sort_unstable();
     loop_tails.dedup();
+    let mut accepts = vec![f64::INFINITY; graph.node_count()];
+    let mut outlets: HashMap<usize, Vec<(usize, f64)>> = HashMap::new();
+    let mut cut: Option<Vec<HashMap<Item, f64>>> = None;
 
     // A sweep reads a cut edge's source before computing it, so it sees last
-    // sweep's flow there. Every rule below is monotone in the flow it is
-    // given, so from empty loops the sweeps climb to the least steady state
-    // and never past it: a loop only ever passes on what a source put in.
-    for _ in 0..MAX_SWEEPS {
+    // sweep's flow there; the first sweep, with nothing carried yet, is the
+    // pass over the graph with its loops cut. Every sweep moves only what
+    // sources put in, so the state the sweeps settle in can't deliver more
+    // than the sources emit; one that never settles falls back to the first.
+    for sweep in 0..MAX_SWEEPS {
         let settled: Vec<(HashMap<Item, f64>, HashMap<Item, f64>)> = loop_tails
             .iter()
             .map(|&u| (node_outputs[u].clone(), taken[u].clone()))
@@ -177,6 +186,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         let mut in_degree = in_degree.clone();
         let mut pending_pickers = pending_pickers.clone();
         let mut room = demand.clone();
+        let mut order: Vec<usize> = Vec::new();
+        let mut fed: Option<Fed> = (!back.is_empty()).then(HashMap::new);
 
         let mut queue: VecDeque<usize> = VecDeque::new();
         let mut in_queue: HashSet<usize> = HashSet::new();
@@ -220,6 +231,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                         pickup_input(
                             graph,
                             node_idx,
+                            entity_kind.flow_rate().min(accepts[node_idx]),
                             &node_outputs,
                             &n_pickers,
                             &mut taken,
@@ -227,7 +239,17 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                             &mut room,
                         )
                     } else if entity_kind.is_lane_aware() {
-                        lane_input(graph, node_idx, &node_outputs, &taken, &n_others)
+                        lane_input(
+                            graph,
+                            node_idx,
+                            &|pred, left| {
+                                let leftover = (&node_outputs[pred], &taken[pred]);
+                                share(&outlets, n_others[pred], leftover, pred, node_idx, left)
+                            },
+                            &node_outputs,
+                            &taken,
+                            fed.as_mut(),
+                        )
                     } else {
                         let mut acc: HashMap<Item, f64> = HashMap::new();
                         for &pred in &graph.predecessors[node_idx] {
@@ -236,8 +258,15 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                             for (&item, &flow_rate) in &node_outputs[pred] {
                                 let left =
                                     flow_rate - taken[pred].get(&item).copied().unwrap_or(0.0);
-                                *acc.entry(item).or_insert(0.0) +=
-                                    left.max(0.0) / n_others[pred] as f64;
+                                let leftover = (&node_outputs[pred], &taken[pred]);
+                                *acc.entry(item).or_insert(0.0) += share(
+                                    &outlets,
+                                    n_others[pred],
+                                    leftover,
+                                    pred,
+                                    node_idx,
+                                    left.max(0.0),
+                                );
                             }
                         }
                         acc
@@ -258,6 +287,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             }
 
             already_processed.insert(node_idx);
+            order.push(node_idx);
 
             if is_picker(node_idx) {
                 for &pred in &graph.predecessors[node_idx] {
@@ -294,12 +324,28 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             }
         }
 
-        let unsettled = loop_tails
-            .iter()
-            .zip(&settled)
-            .any(|(&u, (out, took))| differs(&node_outputs[u], out) || differs(&taken[u], took));
+        let Some(fed) = fed else {
+            break;
+        };
+        let cut = cut.get_or_insert_with(|| node_outputs.clone());
+        let backed_up = backpressure(graph, &order, &on_loop, &fed, &taken, &mut accepts);
+        let unsettled =
+            loop_tails.iter().zip(&settled).any(|(&u, (out, took))| {
+                differs(&node_outputs[u], out) || differs(&taken[u], took)
+            }) || backed_up.len() != outlets.len()
+                || backed_up.iter().any(|(n, outs)| {
+                    outlets.get(n).is_none_or(|old| {
+                        old.iter()
+                            .zip(outs)
+                            .any(|(a, b)| a.0 != b.0 || (a.1 - b.1).abs() > SETTLED)
+                    })
+                });
+        outlets = backed_up;
         if !unsettled {
             break;
+        }
+        if sweep + 1 == MAX_SWEEPS {
+            node_outputs = cut.clone();
         }
     }
 
@@ -362,9 +408,10 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
 fn lane_input(
     graph: &FactoryGraph,
     node_idx: usize,
+    share: &dyn Fn(usize, f64) -> f64,
     node_outputs: &[HashMap<Item, f64>],
     taken: &[HashMap<Item, f64>],
-    n_others: &[usize],
+    mut fed: Option<&mut Fed>,
 ) -> HashMap<Item, f64> {
     let node = &graph.nodes[node_idx];
     let priority = |p: usize| {
@@ -384,6 +431,7 @@ fn lane_input(
     let mut input: HashMap<Item, f64> = HashMap::new();
     for rank in 0..3 {
         let mut offered: HashMap<Item, f64> = HashMap::new();
+        let mut by_pred: Vec<(usize, f64)> = Vec::new();
         for &pred in graph.predecessors[node_idx]
             .iter()
             .filter(|&&p| priority(p) == rank)
@@ -391,14 +439,24 @@ fn lane_input(
             // What the inserters leave is shared, not copied, so no item is
             // counted once per branch (#87). A source's infinite rate is
             // clamped to what the lane could ever take.
+            let mut from_pred = 0.0;
             for (&item, &flow_rate) in &node_outputs[pred] {
                 let left = flow_rate - taken[pred].get(&item).copied().unwrap_or(0.0);
-                *offered.entry(item).or_insert(0.0) +=
-                    (left.max(0.0) / n_others[pred] as f64).min(cap);
+                let rate = share(pred, left.max(0.0)).min(cap);
+                *offered.entry(item).or_insert(0.0) += rate;
+                from_pred += rate;
+            }
+            if fed.is_some() {
+                by_pred.push((pred, from_pred));
             }
         }
         let total: f64 = offered.values().sum();
         let scale = if total > room { room / total } else { 1.0 };
+        if let Some(fed) = fed.as_mut() {
+            for (pred, rate) in by_pred {
+                fed.insert((pred, node_idx), (rank, rate));
+            }
+        }
         for (item, rate) in offered {
             *input.entry(item).or_insert(0.0) += rate * scale;
         }
@@ -545,9 +603,11 @@ fn water_fill(claims: &[(f64, f64)], mut budget: f64) -> Vec<f64> {
 /// with it — and reaches the far lane only for what the near one cannot
 /// give, splitting each lane's share across its items in proportion to
 /// their rates.
+#[allow(clippy::too_many_arguments)]
 fn pickup_input(
     graph: &FactoryGraph,
     node_idx: usize,
+    mut hand: f64,
     node_outputs: &[HashMap<Item, f64>],
     n_pickers: &[usize],
     taken: &mut [HashMap<Item, f64>],
@@ -581,7 +641,6 @@ fn pickup_input(
         node_outputs[p].get(&item).copied().unwrap_or(0.0) / n_pickers[p] as f64
     };
 
-    let mut hand = graph.nodes[node_idx].entity_kind.flow_rate();
     for group in groups {
         let mut items: Vec<Item> = group
             .iter()
@@ -626,11 +685,12 @@ fn pickup_input(
     input
 }
 
-/// The edges a DFS from `starts` finds closing a loop. Cutting them leaves
-/// what is reachable acyclic.
-fn back_edges(graph: &FactoryGraph, starts: &[usize]) -> HashSet<(usize, usize)> {
+/// The edges a DFS from `starts` finds closing a loop (cutting them leaves
+/// what is reachable acyclic), and which nodes lie on a loop.
+fn loops(graph: &FactoryGraph, starts: &[usize]) -> (HashSet<(usize, usize)>, Vec<bool>) {
     let mut back = HashSet::new();
     let mut visited = vec![0u8; graph.node_count()]; // 0=unvisited, 1=in-stack, 2=done
+    let mut finished = Vec::new();
 
     for &start in starts {
         if visited[start] != 0 {
@@ -652,11 +712,148 @@ fn back_edges(graph: &FactoryGraph, starts: &[usize]) -> HashSet<(usize, usize)>
                 }
             } else {
                 visited[*node] = 2;
+                finished.push(*node);
                 stack.pop();
             }
         }
     }
-    back
+
+    // Kosaraju: in reverse finishing order, what reaches a node backwards
+    // and is not yet claimed is its strongly connected component.
+    let mut on_loop = vec![false; graph.node_count()];
+    if !back.is_empty() {
+        let mut claimed = vec![false; graph.node_count()];
+        for &root in finished.iter().rev() {
+            if claimed[root] {
+                continue;
+            }
+            claimed[root] = true;
+            let mut component = vec![root];
+            let mut i = 0;
+            while i < component.len() {
+                for &p in &graph.predecessors[component[i]] {
+                    if visited[p] == 2 && !claimed[p] {
+                        claimed[p] = true;
+                        component.push(p);
+                    }
+                }
+                i += 1;
+            }
+            if component.len() > 1 || back.contains(&(root, root)) {
+                for n in component {
+                    on_loop[n] = true;
+                }
+            }
+        }
+    }
+    (back, on_loop)
+}
+
+/// What `pred` passes `node` of an item it has `left` of once its inserters
+/// have taken theirs: an even share, except that a splitter touching a loop
+/// sends an output that has backed up only what it takes and the rest to the
+/// others, as the game's splitters do.
+fn share(
+    outlets: &HashMap<usize, Vec<(usize, f64)>>,
+    n_others: usize,
+    (output, taken): (&HashMap<Item, f64>, &HashMap<Item, f64>),
+    pred: usize,
+    node: usize,
+    left: f64,
+) -> f64 {
+    let Some(outs) = outlets.get(&pred) else {
+        return left / n_others as f64;
+    };
+    let total: f64 = output
+        .iter()
+        .map(|(item, rate)| (rate - taken.get(item).copied().unwrap_or(0.0)).max(0.0))
+        .sum();
+    let claims: Vec<(f64, f64)> = outs.iter().map(|&(_, room)| (room, 1.0)).collect();
+    let sent = water_fill(&claims, total);
+    match outs.iter().position(|&(q, _)| q == node) {
+        Some(i) if total > 0.0 => left * sent[i] / total,
+        _ => 0.0,
+    }
+}
+
+/// Walk a sweep back from the sinks to find what each lane node can pass
+/// on: what its outputs take from it once the flow they put ahead of it is
+/// in, plus what its inserters take. A splitter touching a loop then sends
+/// each output only what it takes and the rest to the other, and an inserter
+/// on or into a loop moves only what its drop takes, so a backed-up loop
+/// fills and stops as in the game. Off the loops nothing backs up, as in an
+/// acyclic factory.
+fn backpressure(
+    graph: &FactoryGraph,
+    order: &[usize],
+    on_loop: &[bool],
+    fed: &Fed,
+    taken: &[HashMap<Item, f64>],
+    accepts: &mut [f64],
+) -> HashMap<usize, Vec<(usize, f64)>> {
+    let outputs = |n: usize| {
+        graph.successors[n].iter().copied().filter(|&q| {
+            !matches!(
+                graph.nodes[q].entity_kind,
+                Item::Inserter | Item::LongHandedInserter
+            )
+        })
+    };
+    // An output takes what is left once the flow it puts ahead of `n` is in,
+    // shared fairly with whatever arrives level with `n`.
+    let takes = |n: usize, q: usize, accepts: &[f64]| {
+        let kind = graph.nodes[q].entity_kind;
+        let Some(&(rank, _)) = fed.get(&(n, q)).filter(|_| kind.is_lane_aware()) else {
+            return f64::INFINITY;
+        };
+        let offers: Vec<(usize, f64)> = graph.predecessors[q]
+            .iter()
+            .filter(|&&p| p != n)
+            .filter_map(|p| fed.get(&(*p, q)).copied())
+            .collect();
+        let mut room = accepts[q].min(kind.flow_rate() / 2.0);
+        for r in 0..rank {
+            room -= offers
+                .iter()
+                .filter(|o| o.0 == r)
+                .map(|o| o.1)
+                .sum::<f64>()
+                .min(room);
+        }
+        let mut level: Vec<(f64, f64)> = offers
+            .iter()
+            .filter(|o| o.0 == rank)
+            .map(|o| (o.1, 1.0))
+            .collect();
+        level.push((f64::INFINITY, 1.0));
+        water_fill(&level, room)[level.len() - 1]
+    };
+    // Both tiles of a splitter split as one, so a splitter touching a loop
+    // overflows from either tile.
+    let looped: HashSet<(usize, usize)> = (0..graph.node_count())
+        .filter(|&n| on_loop[n])
+        .map(|n| graph.nodes[n].anchor)
+        .collect();
+    let mut outlets = HashMap::new();
+    for &n in order.iter().rev() {
+        let kind = graph.nodes[n].entity_kind;
+        let cap = if kind.is_lane_aware() {
+            kind.flow_rate() / 2.0
+        } else if matches!(kind, Item::Inserter | Item::LongHandedInserter)
+            && (on_loop[n] || outputs(n).any(|q| on_loop[q]))
+        {
+            kind.flow_rate()
+        } else {
+            continue;
+        };
+        let picked: f64 = taken[n].values().sum();
+        let onward: f64 = outputs(n).map(|q| takes(n, q, accepts)).sum();
+        accepts[n] = (onward + picked).min(cap);
+        if looped.contains(&graph.nodes[n].anchor) && outputs(n).count() > 1 {
+            outlets.insert(n, outputs(n).map(|q| (q, takes(n, q, accepts))).collect());
+        }
+    }
+    outlets
 }
 
 /// Whether two per-item rates differ by more than [`SETTLED`].
@@ -817,12 +1014,12 @@ mod tests {
             predecessors: vec![vec![1], vec![0]],
         };
 
-        assert_eq!(back_edges(&g, &[0]), HashSet::from([(1, 0)]));
+        assert_eq!(loops(&g, &[0]).0, HashSet::from([(1, 0)]));
 
         // Make it acyclic
         g.successors = vec![vec![1], vec![]];
         g.predecessors = vec![vec![], vec![0]];
-        assert!(back_edges(&g, &[0]).is_empty());
+        assert!(loops(&g, &[0]).0.is_empty());
     }
 
     #[test]
@@ -1262,7 +1459,7 @@ mod tests {
             let sources: Vec<usize> = (0..g.node_count())
                 .filter(|&i| g.nodes[i].entity_kind == Item::Source)
                 .collect();
-            looped += usize::from(!back_edges(&g, &sources).is_empty());
+            looped += usize::from(!loops(&g, &sources).0.is_empty());
             let delivered: f64 = calc_throughput(&g).0.iter().map(|d| d.achieved).sum();
             assert!(
                 delivered <= max_flow(&g) + 1e-9,

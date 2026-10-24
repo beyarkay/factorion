@@ -1,6 +1,23 @@
 # Loops in the flow graph, with the rates measured in headless Factorio 2.0.
 
 description: |
+  A splitter sends one output to the sink and loops the other back to
+  sideload onto its own input belt. The source keeps both lanes of that belt
+  full, and a sideload only fills gaps, so the loop backs up and the splitter
+  sends everything to the sink: 15 i/s.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 6, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  .. .. .. .. .. .. ..
+  .. .. .. .. .. .. ..
+  S> b> b> b> Y> b> K>
+  .. .. b^ .. Y> bv ..
+  .. .. b^ b< b< b< ..
+---
+description: |
   A splitter loops one output round to come straight back on to its own
   input belt, which the source sideloads onto. The loop's flow goes first
   and the source only tops the left lane up to 7.5 i/s, half of which the
@@ -86,6 +103,21 @@ factory: |
   .. iv iv .. .. ..
   .. Kv Kv .. .. ..
   .. .. .. E. .. ..
+---
+description: |
+  An inserter picks off the return leg of a U and drops back onto its start,
+  which the source keeps full. Its hand has nowhere to go, so it stalls and
+  the sink gets all 15 i/s.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 0, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  S> b> b> b> bv
+  .. i^ .. .. bv
+  K< b< b< b< b<
+  .. .. E. .. ..
 ---
 description: |
   A closed ring a source fills, beside a separate source-to-sink line. The
