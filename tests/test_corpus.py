@@ -332,6 +332,34 @@ def test_labelled_belts_across_the_edge_and_store_chests_become_markers_of_what_
     assert got[(16, 5)] > 0 and got[(16, 5)] + got[(31, 3)] == pytest.approx(15)
 
 
+def test_robot_fed_chests_wagons_and_tunnels_out_of_the_region_become_markers():
+    """A chest inserters only empty is a source facing no belt, an inserter
+    loading nothing loads a wagon, and a tunnel whose exit lies past the
+    region's edge ends in a sink."""
+    import factorion_rs
+
+    from corpus.convert import edit, paste
+
+    east, north = {"direction": 4}, {"direction": 0}
+    bp = _bp(
+        *(("transport-belt", x + 0.5, 1.5, east) for x in range(4, 30)),
+        ("underground-belt", 30.5, 1.5, {**east, "type": "input"}),
+        ("steel-chest", 10.5, 2.5, {}),
+        ("inserter", 10.5, 3.5, north),  # from the chest onto the empty track
+        ("medium-electric-pole", 11.5, 3.5, {}),
+        ("small-electric-pole", 0.5, 0.5, {}),
+        ("small-electric-pole", 39.5, 39.5, {}),
+    )
+    bp["lanes"] = [[12, 1, 1, "copper-plate"]]
+    w = paste(r := _raster(bp), 5, 1, 32, edit(r, 5, 1, 32, random.Random(0)))
+    ent, facing = w[Channel.ENTITIES.value], w[Channel.DIRECTION.value]
+    assert ent[6, 2] == str2ent("source").value
+    dx, dy = DIR_TO_DELTA[Direction(facing[6, 2])]
+    assert ent[6 + dx, 2 + dy] != str2ent("transport_belt").value
+    got = {(x, y): rate for x, y, _, rate in factorion_rs.py_sink_deliveries(np.ascontiguousarray(w.transpose(1, 2, 0)))}
+    assert got[(6, 4)] > 0 and got[(26, 1)] == pytest.approx(15)
+
+
 def _save_corpus(tmp_path, kinds=(LessonKind.OPPOSITE_SIDES_1IN, LessonKind.SPLITTER_1IN)) -> tuple[list, list]:
     """The design and window shards of a corpus of save regions, one per kind:
     a lesson stripped of its markers, its input belt labelled."""

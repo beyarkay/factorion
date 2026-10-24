@@ -444,11 +444,13 @@ def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]
     (`paste`): every flow across the interior's edge, or into an entity the
     engine lacks or the edge cuts, becomes a source or sink on that tile, of
     what the save saw on the belt (`Raster.lanes`), as does a tunnel the edge
-    cuts, a belt that starts or ends at nothing, and a mining drill's output.
-    A chest that inserters fill and none empty, a store for later, becomes a
-    sink. Where no label settles a marker's item it is the one that brings the
-    most of the machines' products to the sinks. Medium poles go wherever the
-    human's leave something unpowered and there is room."""
+    cuts, a belt that starts or ends at nothing, a mining drill's output and
+    an inserter's hand over nothing (a wagon). A chest that inserters fill
+    and none empty, a store for later, becomes a sink, and one they only
+    empty (robots fill it) a source. Where no label settles a marker's item
+    it is the one that brings the most of the machines' products to the
+    sinks. Medium poles go wherever the human's leave something unpowered
+    and there is room."""
     n = size - 2
     W, H = r.ent.shape
     world = _interior(r, x, y, size)
@@ -492,6 +494,19 @@ def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]
                     return r.lanes[p]
         return set()
 
+    def loose(t):
+        """Where an inserter's hand meets what the window lacks: an entity past
+        its edge, masked or cut, or nothing at all (a wagon's track)."""
+        return (portable(t) and r.inst[t] != 0) or ((inside(t) or ring(t)) and r.inst[t] == 0)
+
+    def away(t, d):
+        """A facing for a source on `t` that feeds no belt (it only feeds inserters), `d` if it can."""
+        for e in (d, *_DELTA):
+            f = (t[0] + _DELTA[e][0], t[1] + _DELTA[e][1])
+            if not (kept(f) and r.ent[f] in _FLOWING):
+                return e
+        return d
+
     ports: dict[tuple[int, int], tuple[int, int, set[int]]] = {}
 
     def port(t, kind, d, its):
@@ -514,9 +529,9 @@ def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]
         if ent in _REACH:
             k = _REACH[ent]
             pick, drop = (t[0] - dx * k, t[1] - dy * k), (t[0] + dx * k, t[1] + dy * k)
-            if portable(pick) and on(pick) and r.inst[pick] != 0:
-                port(pick, _SOURCE, d, r.lanes.get(pick) or label(drop))
-            if portable(drop) and on(drop) and r.inst[drop] != 0:
+            if loose(pick):
+                port(pick, _SOURCE, away(pick, d), r.lanes.get(pick) or label(drop))
+            if loose(drop):
                 port(drop, _SINK, d, r.lanes.get(drop) or label(pick))
     picks = set()
     for t in kept_tiles:
@@ -552,11 +567,10 @@ def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]
             step = 1 if down else -1  # an entrance looks ahead for its exit, an exit behind
             for k in range(1, _ENGINE_UG_REACH + 1):
                 p = (t[0] + step * dx * k, t[1] + step * dy * k)
-                if not on(p):
+                if not inside(p):  # its partner, if the region has it at all, is past the edge
+                    port(t, _SINK if down else _SOURCE, d, label(t))
                     break
                 if r.ent[p] == _UG and r.dir[p] == d and r.misc[p] != r.misc[t]:
-                    if not inside(p):
-                        port(t, _SINK if down else _SOURCE, d, label(t))
                     break
         fore, aft = (t[0] + dx, t[1] + dy), (t[0] - dx, t[1] - dy)
         if ent == _BELT and on(fore) and r.inst[fore] == 0 and not picks & upstream(t):
@@ -566,18 +580,21 @@ def edit(r: Raster, x: int, y: int, size: int, rng: random.Random) -> list[Edit]
     for t in kept_tiles:
         if r.ent[t] not in _CHESTS:
             continue
-        fills, empties, its = 0, 0, set()
+        fills, empties, filled_with, emptied_onto = 0, 0, set(), set()
         for p in [(t[0] + a, t[1] + b) for a in range(-2, 3) for b in range(-2, 3) if (a == 0) != (b == 0)]:
             if kept(p) and r.ent[p] in _REACH and int(r.dir[p]) in _DELTA:
                 k = _REACH[int(r.ent[p])]
                 dx, dy = _DELTA[int(r.dir[p])]
                 if (p[0] + dx * k, p[1] + dy * k) == t:
                     fills += 1
-                    its |= r.lanes.get((p[0] - dx * k, p[1] - dy * k), set())
+                    filled_with |= r.lanes.get((p[0] - dx * k, p[1] - dy * k), set())
                 elif (p[0] - dx * k, p[1] - dy * k) == t:
                     empties += 1
+                    emptied_onto |= r.lanes.get((p[0] + dx * k, p[1] + dy * k), set())
         if fills and not empties:
-            port(t, _SINK, Direction.NORTH.value, its)
+            port(t, _SINK, Direction.NORTH.value, filled_with)
+        elif empties and not fills:  # robots fill it
+            port(t, _SOURCE, away(t, Direction.NORTH.value), emptied_onto)
     perimeter = [(a, b) for a in range(x - 1, x + n + 1) for b in (y - 1, y + n)] + [(a, b) for a in (x - 1, x + n) for b in range(y, y + n)]
     for t in perimeter:
         if flowing(t):
