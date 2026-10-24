@@ -33,6 +33,7 @@ from helpers import (
     rs_throughput,
     set_assembler,
     set_entity,
+    set_multi_tile_entity,
     str2ent,
 )
 
@@ -224,6 +225,25 @@ def handcrafted_inserter_chain(n_inserters):
     return world
 
 
+def handcrafted_splitter_loops(n_loops):
+    """N splitters each sending one output back round onto its own input belt."""
+    world = make_world(7, n_loops * 3)
+    for i in range(n_loops):
+        row = i * 3
+        set_entity(world, 0, row, "stack_inserter", Direction.EAST, "iron_plate")
+        for x in range(1, 4):
+            set_entity(world, x, row, "transport_belt", Direction.EAST)
+        set_multi_tile_entity(world, "splitter", 4, row, Direction.EAST)
+        set_entity(world, 5, row, "transport_belt", Direction.EAST)
+        set_entity(world, 6, row, "bulk_inserter", Direction.EAST, "iron_plate")
+        set_entity(world, 5, row + 1, "transport_belt", Direction.SOUTH)
+        for x in range(3, 6):
+            set_entity(world, x, row + 2, "transport_belt", Direction.WEST)
+        set_entity(world, 2, row + 2, "transport_belt", Direction.NORTH)
+        set_entity(world, 2, row + 1, "transport_belt", Direction.NORTH)
+    return world
+
+
 # ── Benchmark runner ─────────────────────────────────────────────────────────
 
 
@@ -327,6 +347,10 @@ def main():
     for n in [1, 3, 5]:
         worlds = [handcrafted_inserter_chain(n)]
         results.append(bench(f"Inserter chain (n={n})", worlds, n_repeats=10))
+
+    for n in [1, 3, 5]:
+        worlds = [handcrafted_splitter_loops(n)]
+        results.append(bench(f"Splitter loop-backs (n={n})", worlds, n_repeats=10))
 
     for size in [5, 15, 30]:
         worlds = [make_world(size)]
