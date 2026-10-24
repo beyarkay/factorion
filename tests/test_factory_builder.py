@@ -1194,6 +1194,7 @@ class TestFactoryYaml:
         """Plenty of environments have no git, no repo, or no useful clock.
         Each missing part drops out on its own; only when nothing at all is
         known does the key disappear."""
+        monkeypatch.delenv("GIT_DIR", raising=False)  # git sets it for hooks, e.g. pre-push
         assert fb._git_commit(tmp_path) is None  # a real directory, not a repo
         monkeypatch.setattr(fb, "_git_commit", lambda *a, **k: None)
         _factory, grid = self._grid(LessonKind.SPLITTER_SPLIT)
