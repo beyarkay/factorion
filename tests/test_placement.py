@@ -20,7 +20,7 @@ NONE, EAST = Direction.NONE.value, Direction.EAST.value
 
 def _world():
     w = torch.zeros(len(Channel), 6, 6, dtype=torch.int64)
-    w[FOOT] = Footprint.AVAILABLE.value
+    w[FOOT] = Footprint.BUILDABLE.value
     w[ENT, 0, 0], w[DIR, 0, 0] = SOURCE, EAST
     return w
 
@@ -62,9 +62,9 @@ def test_rejected_placements_leave_the_world_unchanged(action, reason):
     assert torch.equal(w, before)
 
 
-def test_walls_cannot_be_built_on_or_deleted():
+def test_unbuildable_tiles_cannot_be_built_on_or_deleted():
     w = _world()
-    w[FOOT, 2, 2] = Footprint.UNAVAILABLE.value
+    w[FOOT, 2, 2] = Footprint.UNBUILDABLE.value
     w[ENT, 2, 2], w[DIR, 2, 2] = BELT, EAST
     assert _place(w, 2, 2, EMPTY, NONE) == "placed_on_masked_tile"
     assert _asm(w, 1, 1) == "placed_on_masked_tile"

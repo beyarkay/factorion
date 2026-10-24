@@ -214,7 +214,7 @@ def build_world(grid: list[list[dict]]) -> torch.Tensor:
                 item_name, name_to_value["empty"]
             )
             world[x, y, Channel.MISC.value] = Misc[cell.get("misc", "NONE")].value
-            footprint = cell.get("footprint", "AVAILABLE")
+            footprint = cell.get("footprint", "BUILDABLE")
             world[x, y, Channel.FOOTPRINT.value] = Footprint[footprint].value
     world = torch.tensor(world)
     refresh_power(world.permute(2, 0, 1))
@@ -244,7 +244,7 @@ def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
                 "direction": dir_for_value.get(dir_v, "NONE"),
                 "item": name_for_value.get(item_v, "empty"),
                 "misc": misc_for_value.get(misc_v, "NONE"),
-                "footprint": footprint_for_value.get(foot_v, "AVAILABLE"),
+                "footprint": footprint_for_value.get(foot_v, "BUILDABLE"),
             })
         rows.append(row)
     return rows
@@ -696,7 +696,7 @@ def _denoise_step(grid: list[list[dict]], chain: Optional[dict]) -> dict:
     The server keeps no state: `chain` is the previous response's ``chain``
     (the tokens the next call reads, and how many steps it has taken), or
     None to start a fresh one from noise around the grid's markers and
-    walls. The response's ``grid`` is the step's clean-factory prediction,
+    unbuildable tiles. The response's ``grid`` is the step's clean-factory prediction,
     legalized; ``done`` once the greedy refinement reaches a fixed point or
     the step budget runs out."""
     model = _model()
@@ -1257,8 +1257,8 @@ def render_index(default_size: int) -> str:
     </label>
     <label>footprint
       <select id="ed-footprint">
-        <option value="AVAILABLE">AVAILABLE</option>
-        <option value="UNAVAILABLE">UNAVAILABLE</option>
+        <option value="BUILDABLE">BUILDABLE</option>
+        <option value="UNBUILDABLE">UNBUILDABLE</option>
       </select>
     </label>
     <button id="clear-cell" style="margin-top:0.6em;">clear cell</button>
@@ -1347,7 +1347,7 @@ let applyKeyHeld = false;
 function emptyCell() {{
   return {{
     entity: 'empty', direction: 'NONE', item: 'empty',
-    misc: 'NONE', footprint: 'AVAILABLE',
+    misc: 'NONE', footprint: 'BUILDABLE',
   }};
 }}
 
@@ -1407,7 +1407,7 @@ function renderGrid() {{
       const td = document.createElement('td');
       td.dataset.x = x; td.dataset.y = y;
       const c = grid[y][x];
-      if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
+      if (c.footprint === 'UNBUILDABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
 
       const inner = document.createElement('div');
@@ -2325,7 +2325,7 @@ function miniGrid(g) {{
   for (const row of g) {{
     html += '<tr>';
     for (const c of row) {{
-      const cls = c.footprint === 'UNAVAILABLE' ? ' class="unavailable"' : '';
+      const cls = c.footprint === 'UNBUILDABLE' ? ' class="unavailable"' : '';
       html += `<td${{cls}}><div class="cell-inner">${{cellGlyphs(c)}}</div></td>`;
     }}
     html += '</tr>';

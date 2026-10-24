@@ -34,3 +34,16 @@ def test_renders_chests_furnaces_and_inert_entities(tmp_path):
     out = tmp_path / "factory.png"
     render_png.save(np.transpose(w, (2, 0, 1)), out, "new entities")
     assert mpimg.imread(out).shape[1] > 300
+
+
+def test_renders_a_human_blueprint_with_its_masked_entities(tmp_path):
+    from corpus.convert import rasterise, to_world
+
+    r = rasterise({"version": 2 << 48, "entities": [
+        {"name": "transport-belt", "position": {"x": 0.5, "y": 0.5}},
+        {"name": "beacon", "position": {"x": 2.5, "y": 1.5}},
+    ]})
+    assert r is not None and [m[0] for m in r.masked] == ["beacon"]
+    out = tmp_path / "blueprint.png"
+    render_png.save(to_world(r), out, "human blueprint", masked=r.masked)
+    assert mpimg.imread(out).shape[1] > 300

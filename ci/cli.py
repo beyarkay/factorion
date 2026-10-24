@@ -1,7 +1,7 @@
 """CLI command functions. `python -m ci` maps each onto a subcommand.
 
 Deliberately tiny override surface: a commitish plus the few job-specific
-knobs (SFT num_samples/start_from/eval_best_of, RL start_from/total_timesteps,
+knobs (SFT num_samples/start_from/eval_best_of/corpus_frac/windows_frac/lr, RL start_from/total_timesteps,
 compare seeds, sweep pod counts). Every other hyperparameter comes from training_config.py.
 """
 
@@ -32,6 +32,9 @@ def sft(
     num_samples: Optional[int] = None,
     start_from: Optional[str] = None,
     eval_best_of: Optional[int] = None,
+    corpus_frac: Optional[float] = None,
+    windows_frac: Optional[float] = None,
+    lr: Optional[float] = None,
     gpu_type: Optional[str] = None,
     dry_run: bool = False,
     no_wait: bool = False,
@@ -43,11 +46,14 @@ def sft(
         num_samples: Samples per epoch; default = SftArgs().num_samples.
         start_from: W&B run id of an SFT checkpoint to continue training; default = a fresh model.
         eval_best_of: Chains per held-out factory in the generation eval; default = SftArgs().eval_best_of.
+        corpus_frac: Fraction of training samples from the human-blueprint corpus; default = SftArgs().corpus_frac.
+        windows_frac: Fraction of training samples from its functional windows; default = SftArgs().windows_frac.
+        lr: Peak learning rate; default = SftArgs().lr.
         gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating a pod.
         no_wait: Return right after pod creation instead of waiting for boot.
     """
-    job = SftJob(sha=resolve_ref(ref), num_samples=num_samples, start_from=start_from, eval_best_of=eval_best_of)
+    job = SftJob(sha=resolve_ref(ref), num_samples=num_samples, start_from=start_from, eval_best_of=eval_best_of, corpus_frac=corpus_frac, windows_frac=windows_frac, lr=lr)
     launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 

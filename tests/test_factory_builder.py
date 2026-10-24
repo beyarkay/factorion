@@ -84,7 +84,7 @@ def _reset_fb_state():
 def _empty_grid(size: int) -> list[list[dict]]:
     return [
         [{"entity": "empty", "direction": "NONE", "item": "empty",
-          "misc": "NONE", "footprint": "AVAILABLE"} for _ in range(size)]
+          "misc": "NONE", "footprint": "BUILDABLE"} for _ in range(size)]
         for _ in range(size)
     ]
 
@@ -149,7 +149,7 @@ class TestBuildWorld:
         size = 3
         grid = _empty_grid(size)
         grid[1][2] = {"entity": "transport_belt", "direction": "EAST",
-                      "item": "empty", "misc": "NONE", "footprint": "AVAILABLE"}
+                      "item": "empty", "misc": "NONE", "footprint": "BUILDABLE"}
         world = fb.build_world(grid)
         # fb.items is keyed by Item.value, not by name, so look up via
         # the same name->value map build_world itself constructs.
@@ -161,9 +161,9 @@ class TestBuildWorld:
     def test_non_square_raises(self):
         grid = [
             [{"entity": "empty", "direction": "NONE", "item": "empty",
-              "misc": "NONE", "footprint": "AVAILABLE"}] * 4,
+              "misc": "NONE", "footprint": "BUILDABLE"}] * 4,
             [{"entity": "empty", "direction": "NONE", "item": "empty",
-              "misc": "NONE", "footprint": "AVAILABLE"}] * 3,
+              "misc": "NONE", "footprint": "BUILDABLE"}] * 3,
         ]
         with pytest.raises(ValueError, match="square"):
             fb.build_world(grid)
@@ -171,10 +171,10 @@ class TestBuildWorld:
     def test_footprint_unavailable_propagates(self):
         size = 2
         grid = _empty_grid(size)
-        grid[0][0]["footprint"] = "UNAVAILABLE"
+        grid[0][0]["footprint"] = "UNBUILDABLE"
         world = fb.build_world(grid)
         assert int(world[0, 0, fb.Channel.FOOTPRINT.value]) == \
-            fb.Footprint.UNAVAILABLE.value
+            fb.Footprint.UNBUILDABLE.value
 
 
 class TestApplyPrediction:
@@ -305,14 +305,14 @@ class TestRenderGraphPng:
         grid = _empty_grid(4)
         grid[0][0] = {"entity": "stack_inserter", "direction": "EAST",
                       "item": "copper_cable", "misc": "NONE",
-                      "footprint": "AVAILABLE"}
+                      "footprint": "BUILDABLE"}
         grid[0][1] = {"entity": "transport_belt", "direction": "EAST",
-                      "item": "empty", "misc": "NONE", "footprint": "AVAILABLE"}
+                      "item": "empty", "misc": "NONE", "footprint": "BUILDABLE"}
         grid[0][2] = {"entity": "transport_belt", "direction": "EAST",
-                      "item": "empty", "misc": "NONE", "footprint": "AVAILABLE"}
+                      "item": "empty", "misc": "NONE", "footprint": "BUILDABLE"}
         grid[0][3] = {"entity": "bulk_inserter", "direction": "EAST",
                       "item": "copper_cable", "misc": "NONE",
-                      "footprint": "AVAILABLE"}
+                      "footprint": "BUILDABLE"}
         out = fb.render_graph_png(grid)
         assert len(out["png"]) > 0
         assert out["info"] == "6 nodes · 6 edges"
@@ -432,7 +432,7 @@ class TestSwapModel:
 def _fixed_tiles(grid: list[list[dict]]) -> dict:
     return {
         (x, y): c for y, row in enumerate(grid) for x, c in enumerate(row)
-        if c["entity"] in fb._MARKERS or c["footprint"] == "UNAVAILABLE"
+        if c["entity"] in fb._MARKERS or c["footprint"] == "UNBUILDABLE"
     }
 
 
@@ -520,13 +520,13 @@ globalThis.fetch = async (url, opts) => {
   if (opts && opts.body) posts.push({ url, body: JSON.parse(opts.body) });
   if (url === '/lesson_previews') {
     const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
-                   footprint: 'AVAILABLE' };
+                   footprint: 'BUILDABLE' };
     return { json: async () => ({ SPLITTER_1IN: { grid: [[cell]], used_seed: 0,
                                                    total_entities: 0 } }) };
   }
   if (url === '/load_lesson') {
     const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
-                   footprint: 'AVAILABLE' };
+                   footprint: 'BUILDABLE' };
     return { json: async () => ({ size: 1, grid: [[cell]], used_seed: 0,
                                   next_seed: 1, total_entities: 0 }) };
   }
@@ -539,7 +539,7 @@ console.log(JSON.stringify(await eval(src + driver)));
 
 _SCAN_DRIVER = """
 const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
-               footprint: 'AVAILABLE' };
+               footprint: 'BUILDABLE' };
 const result = (kind, seed, thput) => ({
   kind, seed, size: 1, grid: [[cell]], solved_grid: [[cell]], thput_normed: thput,
   thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'converged',
@@ -678,7 +678,7 @@ def test_text_render_copy_uses_a_routed_endpoint():
 
 _DEEP_LINK_DRIVER = """
 const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
-               footprint: 'AVAILABLE' };
+               footprint: 'BUILDABLE' };
 const result = (kind, seed, thput) => ({
   kind, seed, size: 1, grid: [[cell]], solved_grid: [[cell]], thput_normed: thput,
   thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'converged',
@@ -827,7 +827,7 @@ def test_scan_filter_language(tmp_path):
 
 _DENOISE_DRIVER = """
 const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
-               footprint: 'AVAILABLE' };
+               footprint: 'BUILDABLE' };
 const sent = [];
 globalThis.fetch = async (url, opts) => {
   if (url !== '/denoise') return { json: async () => ({}) };
@@ -1058,10 +1058,10 @@ class TestThroughputReadout:
         grid = _empty_grid(5)
         grid[0][0] = {"entity": "stack_inserter", "direction": "EAST",
                       "item": "copper_cable", "misc": "NONE",
-                      "footprint": "AVAILABLE"}
+                      "footprint": "BUILDABLE"}
         grid[4][4] = {"entity": "bulk_inserter", "direction": "EAST",
                       "item": "copper_cable", "misc": "NONE",
-                      "footprint": "AVAILABLE"}
+                      "footprint": "BUILDABLE"}
         assert fb._throughput(fb.build_world(grid))["thput"] == 0
 
     def test_rides_on_each_denoise_step(self, tiny_model):
@@ -1211,7 +1211,7 @@ class TestFactoryYaml:
         document unparseable, taking the rest of the factory down with it."""
         blank = {
             "entity": "empty", "direction": "NONE", "item": "empty",
-            "misc": "NONE", "footprint": "AVAILABLE",
+            "misc": "NONE", "footprint": "BUILDABLE",
         }
         grid = [[dict(blank) for _ in range(4)] for _ in range(4)]
         for x, entity in enumerate(

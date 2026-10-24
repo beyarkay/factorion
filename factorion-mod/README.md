@@ -238,7 +238,7 @@ To check on the first live run (in rough order):
    says they reach off the map.
 5. AM1 accepts 3-5-ingredient recipes on the all-recipes force
    (MEMORISE_3..\_5 lessons).
-6. `game.speed` actually reached (wall-clock per run ≈
+6. `game.speed` actually reached (elapsed time per run ≈
    (warmup+measure)/60/speed seconds, CPU permitting).
 
 ## Debug interfaces (RCON)

@@ -53,7 +53,7 @@ _OPPOSITE = {
 
 
 def _inward_normals(x, y):
-    """The inward normal(s) of the wall(s) cell (x, y) lies on; empty for an
+    """The inward normal(s) of the grid edge(s) cell (x, y) lies on; empty for an
     interior cell."""
     out = []
     if x == 0:
@@ -145,7 +145,7 @@ class TestTrialFactory:
 
     @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
     def test_markers_sit_on_the_edge_working_inward(self, kind):
-        """Sources face their wall's inward normal; the sink faces outward
+        """Sources face their edge's inward normal; the sink faces outward
         (it pulls from the cell behind it, so its belt side is interior)."""
         for seed in range(10):
             f = build_factory(size=SIZE, kind=kind, seed=seed)

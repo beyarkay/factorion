@@ -405,7 +405,7 @@ fn find_belt_paths_in(
         blocked_grid[cell(c.0, c.1)] = true;
     }
     let is_blocked = |c: Cell| blocked_grid[cell(c.0, c.1)];
-    // Rejection sampling often walls `end` into a pocket, which the search
+    // Rejection sampling often boxes `end` into a pocket, which the search
     // below would only rule out after exhausting the grid. A backward flood
     // fill over cells, blind to arrival direction (so a superset of the
     // search's moves), rules it out in a few steps.
@@ -1870,29 +1870,29 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
             }
         };
 
-        let max_wall = 4.min(flow_span - 2);
-        let wall_thickness = rng.randint(1, max_wall);
-        let wall_lo = rng.randint(1, flow_span - 1 - wall_thickness);
-        let wall_hi = wall_lo + wall_thickness - 1;
+        let max_barrier = 4.min(flow_span - 2);
+        let barrier_thickness = rng.randint(1, max_barrier);
+        let barrier_lo = rng.randint(1, flow_span - 1 - barrier_thickness);
+        let barrier_hi = barrier_lo + barrier_thickness - 1;
 
         let forward = matches!(flow_dir, Direction::East | Direction::South);
         let (ug_down_flow, ug_up_flow, src_lo, src_hi, snk_lo, snk_hi) = if forward {
             (
-                wall_lo - 1,
-                wall_hi + 1,
+                barrier_lo - 1,
+                barrier_hi + 1,
                 0,
-                wall_lo - 1,
-                wall_hi + 1,
+                barrier_lo - 1,
+                barrier_hi + 1,
                 flow_span - 1,
             )
         } else {
             (
-                wall_hi + 1,
-                wall_lo - 1,
-                wall_hi + 1,
+                barrier_hi + 1,
+                barrier_lo - 1,
+                barrier_hi + 1,
                 flow_span - 1,
                 0,
-                wall_lo - 1,
+                barrier_lo - 1,
             )
         };
 
@@ -1900,10 +1900,10 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
         let ug_down_pos = fp_to_xy(ug_down_flow, ug_perp);
         let ug_up_pos = fp_to_xy(ug_up_flow, ug_perp);
 
-        let mut wall_tiles: HashSet<Cell> = HashSet::new();
-        for fc in wall_lo..=wall_hi {
+        let mut barrier_tiles: HashSet<Cell> = HashSet::new();
+        for fc in barrier_lo..=barrier_hi {
             for pc in 0..perp_span {
-                wall_tiles.insert(fp_to_xy(fc, pc));
+                barrier_tiles.insert(fp_to_xy(fc, pc));
             }
         }
 
@@ -1943,7 +1943,7 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
             continue;
         }
 
-        if wall_tiles.contains(&source_drop) {
+        if barrier_tiles.contains(&source_drop) {
             continue;
         }
         if source_drop == ug_up_pos || source_drop == sink_pos {
@@ -1958,7 +1958,7 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
             continue;
         }
 
-        if wall_tiles.contains(&sink_input) {
+        if barrier_tiles.contains(&sink_input) {
             continue;
         }
         if sink_input == ug_down_pos || sink_input == source_pos {
@@ -1980,7 +1980,7 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
             vec![]
         } else {
             let ug_down_input = (ug_down_pos.0 - flow_delta.0, ug_down_pos.1 - flow_delta.1);
-            let mut blocked1: HashSet<Cell> = wall_tiles.clone();
+            let mut blocked1: HashSet<Cell> = barrier_tiles.clone();
             blocked1.extend([source_pos, sink_pos, ug_down_pos, ug_up_pos, sink_input]);
             for fc in snk_lo..=snk_hi {
                 for pc in 0..perp_span {
@@ -2009,7 +2009,7 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
         } else {
             let ug_up_drop = (ug_up_pos.0 + flow_delta.0, ug_up_pos.1 + flow_delta.1);
             let path1_cells = belt_cell_set(&path1);
-            let mut blocked2: HashSet<Cell> = wall_tiles.clone();
+            let mut blocked2: HashSet<Cell> = barrier_tiles.clone();
             blocked2.extend([source_pos, sink_pos, ug_down_pos, ug_up_pos, source_drop]);
             blocked2.extend(path1_cells.iter().copied());
             for fc in src_lo..=src_hi {
@@ -2060,8 +2060,8 @@ fn build_move_via_ug_belt(size: usize, rng: &mut Rng, random_item: bool) -> Opti
 
         let total_entities = 2 + path1.len() + path2.len();
 
-        // Mark only the wall as UNAVAILABLE; every other tile is buildable.
-        for &(wx, wy) in &wall_tiles {
+        // Mark only the barrier as UNBUILDABLE; every other tile is buildable.
+        for &(wx, wy) in &barrier_tiles {
             world.set(wx as usize, wy as usize, Channel::Footprint, 0);
         }
 
@@ -5397,7 +5397,7 @@ fn recipe_tree_depth(item: Item, index: &HashMap<Item, Recipe>) -> usize {
     }
 }
 
-/// The inward wall normal(s) of the wall(s) `cell` lies on: one direction
+/// The inward normal(s) of the grid edge(s) `cell` lies on: one direction
 /// for an edge cell, two for a corner, empty for an interior cell.
 fn inward_normals(cell: Cell, s: i64) -> Vec<Direction> {
     let mut dirs = Vec::new();
@@ -5457,7 +5457,7 @@ fn walk_recipe_frontier(
 /// agent's to invent, so `total_entities == 0`.
 ///
 /// Markers always sit on the grid edge working inward: a source faces an
-/// inward wall normal (dropping onto the interior) and the sink faces the
+/// edge's inward normal (dropping onto the interior) and the sink faces the
 /// outward normal (it pulls from the cell behind it, so its belt side is
 /// interior). Every marker reserves that in-grid "working" cell and no other
 /// marker may take it, so the agent always has somewhere to build against
@@ -5589,7 +5589,7 @@ fn finish(
     if count == 0 {
         return None;
     }
-    // Protected entities are never blanked, so walling them off leaks nothing
+    // Protected entities are never blanked, so fencing them off leaks nothing
     // about the solution, and the policy's tile mask (which sees only the
     // world) then can't propose an edit the env would reject forever.
     for &(x, y) in &protected_positions {
@@ -5605,7 +5605,7 @@ fn finish(
     })
 }
 
-/// Power every entity that needs it with medium poles on free tiles, greedily
+/// Power every entity that needs it and no pole powers yet with medium poles on free tiles, greedily
 /// on the tile powering the most unpowered entities among those whose pole
 /// would be live. When no live tile helps, a relay goes on the live tile
 /// nearest one that would. Returns the number of poles placed, `None` when
@@ -5615,10 +5615,13 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
     let supply = kind.pole()?.supply;
     let (w, h) = (world.width(), world.height());
     let anchor_of = unit_anchors(world);
+    let powered = PowerMap::of(world);
     let units: Vec<Vec<Cell>> = (0..w)
         .flat_map(|x| (0..h).map(move |y| (x, y)))
         .filter(|t| !anchor_of.contains_key(t))
-        .filter(|&(x, y)| world.entity_at(x, y).is_some_and(Item::needs_power))
+        .filter(|&(x, y)| {
+            world.entity_at(x, y).is_some_and(Item::needs_power) && !powered.powers(world, x, y)
+        })
         .map(|(x, y)| {
             let (ew, eh) = world.entity_at(x, y).map_or((1, 1), Item::size);
             crate::entities::entity_tiles(x, y, world.direction_at(x, y), ew, eh)
@@ -5636,7 +5639,7 @@ pub fn place_poles(world: &mut World) -> Option<usize> {
             .flat_map(|x| (0..h as i64).map(move |y| (x, y)))
             .filter(|&(x, y)| {
                 world.entity_at(x as usize, y as usize).is_none()
-                    && world.get(x as usize, y as usize, Channel::Footprint) != 0
+                    && world.get(x as usize, y as usize, Channel::Footprint) == 1
             })
             .collect();
         let gain = |&(x, y): &Cell| {
@@ -6620,7 +6623,7 @@ mod tests {
         n
     }
 
-    fn wall(col: i64, size: i64) -> HashSet<Cell> {
+    fn barrier(col: i64, size: i64) -> HashSet<Cell> {
         (0..size).map(|y| (col, y)).collect()
     }
 
@@ -6788,7 +6791,7 @@ mod tests {
         // A positive cap returns exactly that many; 1 matches `find_belt_path`.
         assert_eq!(routes(1).len(), 1);
         // Unreachable target → no routes, whatever the cap.
-        let blocked = wall(1, 5);
+        let blocked = barrier(1, 5);
         assert!(find_belt_paths(
             (0, 0),
             (2, 2),
@@ -6889,9 +6892,9 @@ mod tests {
     }
 
     #[test]
-    fn test_ug_router_tunnels_under_a_wall() {
-        let w = wall(4, 9);
-        // Plain BFS can't cross a full-height wall.
+    fn test_ug_router_tunnels_under_a_barrier() {
+        let w = barrier(4, 9);
+        // Plain BFS can't cross a full-height barrier.
         assert!(find_belt_path((1, 4), (7, 4), Direction::East, 9, &w, Underground::Off).is_none());
         // The UG-aware router tunnels under it with one entrance/exit pair.
         let path = find_belt_path(
@@ -6916,8 +6919,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ug_router_minimal_span_hugs_the_wall() {
-        let w = wall(4, 9);
+    fn test_ug_router_minimal_span_hugs_the_barrier() {
+        let w = barrier(4, 9);
         let path = find_belt_path(
             (1, 4),
             (8, 4),
@@ -6935,16 +6938,16 @@ mod tests {
             .iter()
             .find(|&&(_, _, _, m)| m == Misc::UndergroundUp)
             .unwrap();
-        // Entrance just before the wall, exit just after; both face the flow.
+        // Entrance just before the barrier, exit just after; both face the flow.
         assert_eq!((down.0, down.1, down.2), (3, 4, Direction::East));
         assert_eq!((up.0, up.1, up.2), (5, 4, Direction::East));
     }
 
     #[test]
     fn test_ug_router_start_can_be_entrance() {
-        // start_dir given (source feeds `start` head-on) + a wall right after
+        // start_dir given (source feeds `start` head-on) + a barrier right after
         // start → the entrance sits on `start` itself (source → UG_DOWN).
-        let w = wall(2, 9);
+        let w = barrier(2, 9);
         let path = find_belt_path(
             (1, 4),
             (5, 4),
@@ -6959,8 +6962,8 @@ mod tests {
 
     #[test]
     fn test_ug_router_surfaces_into_sink() {
-        // Wall right before `end` → the exit lands on `end` (UG_UP → sink).
-        let w = wall(6, 9);
+        // Barrier right before `end` → the exit lands on `end` (UG_UP → sink).
+        let w = barrier(6, 9);
         let path = find_belt_path(
             (1, 4),
             (7, 4),
@@ -6978,7 +6981,7 @@ mod tests {
 
     #[test]
     fn test_ug_router_never_reuses_a_tile() {
-        // A wall with a gap at y==0 (a go-around exists) across several start
+        // A barrier with a gap at y==0 (a go-around exists) across several start
         // facings: whatever the router returns, every tile is distinct.
         let w: HashSet<Cell> = (1..9).map(|y| (4, y)).collect();
         for sd in [None, Some(Direction::North), Some(Direction::East)] {
