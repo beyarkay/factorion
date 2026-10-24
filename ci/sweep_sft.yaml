@@ -1,22 +1,22 @@
-# ci/sweep_sft.yaml — denoiser (sft.py) learning-rate grid on generated lessons only.
+# ci/sweep_sft.yaml — denoiser (sft.py) share of human windows, at lr 1e-3.
 #
 # Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 
 method: grid
-run_cap: 4
+run_cap: 3
 metric:
   name: "val/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:
   num_samples:
-    value: 5000000
+    value: 20000000
   windows_frac:
-    value: 0.0
+    values: [0.0, 0.25, 0.5]
   lr:
-    values: [5.0e-4, 1.0e-3, 1.5e-3, 3.0e-3]
+    value: 1.0e-3
 
 program: sft.py
 
