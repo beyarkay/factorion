@@ -16,6 +16,14 @@ use crate::types::{all_items, get_recipe, Item, Lane};
 /// of degree one, so the score keeps items/s units and lives in `[0, ∞)`.
 pub const FACTORY_SCORE_P: f64 = 0.5;
 
+/// Sweeps a loop gets to settle. Each pass around a balancer's loop shrinks
+/// the gap to its steady state geometrically, so this only binds on a loop
+/// that returns nearly all of its flow; the sweep it stops at undercounts.
+const MAX_SWEEPS: usize = 1000;
+
+/// Change in a rate (items/s) below which a loop counts as settled.
+const SETTLED: f64 = 1e-12;
+
 /// What a single sink received: the item it was configured to accept and
 /// the achieved throughput (items/s) of that item arriving at it. One
 /// `SinkDelivery` per (sink, expected-item) demand — today one per sink,
@@ -67,18 +75,15 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 /// it. Collapse to a scalar score with [`factory_score`].
 ///
 /// Algorithm:
-/// 1. Detect cycles → return no deliveries if any exist
-/// 2. BFS from sources (stack_inserters), propagating flow rates
+/// 1. Cut the edges that close a loop, leaving a DAG
+/// 2. BFS from sources (stack_inserters), propagating flow rates, each cut
+///    edge carrying what its source passed on in the previous sweep
 /// 3. At each node, compute output from input using entity trait
-/// 4. Collect each sink's delivery of its configured item
-/// 5. Count unreachable nodes
+/// 4. Repeat 2-3 until the flow on the cut edges settles
+/// 5. Collect each sink's delivery of its configured item
+/// 6. Count unreachable nodes
 pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     if graph.node_count() == 0 {
-        return (Vec::new(), 0);
-    }
-
-    // 1. Cycle detection — no deliveries (downstream treats as 0 throughput).
-    if has_cycle(graph) {
         return (Vec::new(), 0);
     }
 
@@ -100,15 +105,18 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     // Find nodes reachable from sources (for determining processing order)
     let reachable_from_sources = reachable_from(&sources, graph, false);
 
+    let back = back_edges(graph, &sources);
+
     // 2. Kahn's algorithm: topological BFS from sources.
     // Count "true" in-degree (only from predecessors reachable from a source).
-    let mut in_degree: Vec<usize> = graph
+    let in_degree: Vec<usize> = graph
         .predecessors
         .iter()
-        .map(|preds| {
+        .enumerate()
+        .map(|(n, preds)| {
             preds
                 .iter()
-                .filter(|&&p| reachable_from_sources.contains(&p))
+                .filter(|&&p| reachable_from_sources.contains(&p) && !back.contains(&(p, n)))
                 .count()
         })
         .collect();
@@ -135,127 +143,163 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     let mut pending_pickers = vec![0usize; graph.node_count()];
     for &p in &reachable_from_sources {
         for &s in &graph.successors[p] {
-            if !is_picker(s) {
+            if !is_picker(s) && !back.contains(&(p, s)) {
                 pending_pickers[s] += n_pickers[p];
             }
         }
     }
-
-    let mut queue: VecDeque<usize> = VecDeque::new();
-    let mut in_queue: HashSet<usize> = HashSet::new();
-
-    for &s in &sources {
-        queue.push_back(s);
-        in_queue.insert(s);
-    }
+    let pending_pickers = pending_pickers;
 
     let mut node_outputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.output.clone()).collect();
     let mut taken: Vec<HashMap<Item, f64>> = vec![HashMap::new(); graph.node_count()];
     let demand = downstream_demand(graph);
-    let mut room = demand.clone();
+    let mut loop_tails: Vec<usize> = back.iter().map(|&(u, _)| u).collect();
+    loop_tails.sort_unstable();
+    loop_tails.dedup();
 
-    let mut already_processed: HashSet<usize> = HashSet::new();
+    // A sweep reads a cut edge's source before computing it, so it sees last
+    // sweep's flow there. Every rule below is monotone in the flow it is
+    // given, so from empty loops the sweeps climb to the least steady state
+    // and never past it: a loop only ever passes on what a source put in.
+    for _ in 0..MAX_SWEEPS {
+        let settled: Vec<(HashMap<Item, f64>, HashMap<Item, f64>)> = loop_tails
+            .iter()
+            .map(|&u| (node_outputs[u].clone(), taken[u].clone()))
+            .collect();
+        // A loop tail keeps last sweep's takes until it is computed again, so
+        // what it passes on along a cut edge is net of its inserters.
+        let mut carried: Vec<HashMap<Item, f64>> = vec![HashMap::new(); graph.node_count()];
+        for &u in &loop_tails {
+            carried[u] = std::mem::take(&mut taken[u]);
+        }
+        taken = carried.clone();
+        let mut in_degree = in_degree.clone();
+        let mut pending_pickers = pending_pickers.clone();
+        let mut room = demand.clone();
 
-    // Waiting on inserters can deadlock when an inserter is also fed through
-    // the node waiting on it (a source filling an assembler that an inserter
-    // picks from as well as the source); release the stalled node then
-    // rather than leave it, and everything downstream, without flow.
-    while let Some(node_idx) = queue.pop_front().or_else(|| {
-        (0..graph.node_count()).find(|&n| {
-            in_degree[n] == 0
-                && reachable_from_sources.contains(&n)
-                && !already_processed.contains(&n)
-        })
-    }) {
-        in_queue.remove(&node_idx);
+        let mut queue: VecDeque<usize> = VecDeque::new();
+        let mut in_queue: HashSet<usize> = HashSet::new();
 
-        if already_processed.contains(&node_idx) {
-            continue;
+        for &s in &sources {
+            queue.push_back(s);
+            in_queue.insert(s);
         }
 
-        let entity_kind = graph.nodes[node_idx].entity_kind;
+        let mut already_processed: HashSet<usize> = HashSet::new();
 
-        // If this node's output is already set (e.g., source), skip input computation
-        if node_outputs[node_idx].is_empty() {
-            // Accumulate input from all predecessors' outputs. Inserters
-            // divide a fixed capacity over their lanes instead of summing
-            // everything.
-            let accumulated_input: HashMap<Item, f64> =
-                if matches!(entity_kind, Item::Inserter | Item::LongHandedInserter) {
-                    pickup_input(
-                        graph,
-                        node_idx,
-                        &node_outputs,
-                        &n_pickers,
-                        &mut taken,
-                        &demand,
-                        &mut room,
-                    )
-                } else if entity_kind.is_lane_aware() {
-                    lane_input(graph, node_idx, &node_outputs, &taken, &n_others)
-                } else {
-                    let mut acc: HashMap<Item, f64> = HashMap::new();
-                    for &pred in &graph.predecessors[node_idx] {
-                        // What the inserters leave is shared, not copied, so
-                        // no item is counted once per branch (#87).
-                        for (&item, &flow_rate) in &node_outputs[pred] {
-                            let left = flow_rate - taken[pred].get(&item).copied().unwrap_or(0.0);
-                            *acc.entry(item).or_insert(0.0) +=
-                                left.max(0.0) / n_others[pred] as f64;
-                        }
-                    }
-                    acc
-                };
+        // Waiting on inserters can deadlock when an inserter is also fed through
+        // the node waiting on it (a source filling an assembler that an inserter
+        // picks from as well as the source); release the stalled node then
+        // rather than leave it, and everything downstream, without flow.
+        while let Some(node_idx) = queue.pop_front().or_else(|| {
+            (0..graph.node_count()).find(|&n| {
+                in_degree[n] == 0
+                    && reachable_from_sources.contains(&n)
+                    && !already_processed.contains(&n)
+            })
+        }) {
+            in_queue.remove(&node_idx);
 
-            // Compute output using stack-allocated enum dispatch (no heap allocation)
-            let item = if entity_kind.crafts() {
-                graph.nodes[node_idx].recipe_item
-            } else {
-                graph.nodes[node_idx].item
-            };
-            let misc = graph.nodes[node_idx].misc;
-            // entity_kind comes from a graph node, which only contains
-            // placeable items, so new() always returns Some here.
-            if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
-                node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
-            }
-        }
-
-        already_processed.insert(node_idx);
-
-        if is_picker(node_idx) {
-            for &pred in &graph.predecessors[node_idx] {
-                if !reachable_from_sources.contains(&pred) {
-                    continue;
-                }
-                for &succ in &graph.successors[pred] {
-                    if !is_picker(succ) {
-                        pending_pickers[succ] = pending_pickers[succ].saturating_sub(1);
-                        if pending_pickers[succ] == 0
-                            && in_degree[succ] == 0
-                            && !already_processed.contains(&succ)
-                            && !in_queue.contains(&succ)
-                        {
-                            queue.push_back(succ);
-                            in_queue.insert(succ);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Decrement in-degree of successors; enqueue when all predecessors processed
-        for &succ in &graph.successors[node_idx] {
-            if already_processed.contains(&succ) {
+            if already_processed.contains(&node_idx) {
                 continue;
             }
-            // Saturating sub in case of edges from unreachable predecessors
-            in_degree[succ] = in_degree[succ].saturating_sub(1);
-            if in_degree[succ] == 0 && pending_pickers[succ] == 0 && !in_queue.contains(&succ) {
-                queue.push_back(succ);
-                in_queue.insert(succ);
+
+            let entity_kind = graph.nodes[node_idx].entity_kind;
+            for (item, rate) in &carried[node_idx] {
+                *taken[node_idx].entry(*item).or_insert(0.0) -= rate;
             }
+
+            // If this node's output is already set (e.g., source), skip input computation
+            if graph.nodes[node_idx].output.is_empty() {
+                // Accumulate input from all predecessors' outputs. Inserters
+                // divide a fixed capacity over their lanes instead of summing
+                // everything.
+                let accumulated_input: HashMap<Item, f64> =
+                    if matches!(entity_kind, Item::Inserter | Item::LongHandedInserter) {
+                        pickup_input(
+                            graph,
+                            node_idx,
+                            &node_outputs,
+                            &n_pickers,
+                            &mut taken,
+                            &demand,
+                            &mut room,
+                        )
+                    } else if entity_kind.is_lane_aware() {
+                        lane_input(graph, node_idx, &node_outputs, &taken, &n_others)
+                    } else {
+                        let mut acc: HashMap<Item, f64> = HashMap::new();
+                        for &pred in &graph.predecessors[node_idx] {
+                            // What the inserters leave is shared, not copied, so
+                            // no item is counted once per branch (#87).
+                            for (&item, &flow_rate) in &node_outputs[pred] {
+                                let left =
+                                    flow_rate - taken[pred].get(&item).copied().unwrap_or(0.0);
+                                *acc.entry(item).or_insert(0.0) +=
+                                    left.max(0.0) / n_others[pred] as f64;
+                            }
+                        }
+                        acc
+                    };
+
+                // Compute output using stack-allocated enum dispatch (no heap allocation)
+                let item = if entity_kind.crafts() {
+                    graph.nodes[node_idx].recipe_item
+                } else {
+                    graph.nodes[node_idx].item
+                };
+                let misc = graph.nodes[node_idx].misc;
+                // entity_kind comes from a graph node, which only contains
+                // placeable items, so new() always returns Some here.
+                if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
+                    node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
+                }
+            }
+
+            already_processed.insert(node_idx);
+
+            if is_picker(node_idx) {
+                for &pred in &graph.predecessors[node_idx] {
+                    if !reachable_from_sources.contains(&pred) {
+                        continue;
+                    }
+                    for &succ in &graph.successors[pred] {
+                        if !is_picker(succ) && !back.contains(&(pred, succ)) {
+                            pending_pickers[succ] = pending_pickers[succ].saturating_sub(1);
+                            if pending_pickers[succ] == 0
+                                && in_degree[succ] == 0
+                                && !already_processed.contains(&succ)
+                                && !in_queue.contains(&succ)
+                            {
+                                queue.push_back(succ);
+                                in_queue.insert(succ);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Decrement in-degree of successors; enqueue when all predecessors processed
+            for &succ in &graph.successors[node_idx] {
+                if already_processed.contains(&succ) || back.contains(&(node_idx, succ)) {
+                    continue;
+                }
+                // Saturating sub in case of edges from unreachable predecessors
+                in_degree[succ] = in_degree[succ].saturating_sub(1);
+                if in_degree[succ] == 0 && pending_pickers[succ] == 0 && !in_queue.contains(&succ) {
+                    queue.push_back(succ);
+                    in_queue.insert(succ);
+                }
+            }
+        }
+
+        let unsettled = loop_tails
+            .iter()
+            .zip(&settled)
+            .any(|(&u, (out, took))| differs(&node_outputs[u], out) || differs(&taken[u], took));
+        if !unsettled {
+            break;
         }
     }
 
@@ -383,62 +427,16 @@ impl Demand {
     }
 }
 
-/// Every node's [`Demand`], from the sinks back. The graph is acyclic here.
+/// Every node's [`Demand`], from the sinks back. A node on (or feeding) a
+/// loop waits on itself, so those take the least fixed point instead: from
+/// nothing, re-evaluated until they settle.
 fn downstream_demand(graph: &FactoryGraph) -> Vec<Demand> {
     let n = graph.node_count();
     let mut demand = vec![Demand::default(); n];
     let mut pending: Vec<usize> = graph.successors.iter().map(Vec::len).collect();
     let mut ready: Vec<usize> = (0..n).filter(|&i| pending[i] == 0).collect();
     while let Some(node) = ready.pop() {
-        let succs = &graph.successors[node];
-        let total = |item: Item| succs.iter().map(|&s| demand[s].get(item)).sum::<f64>();
-        let kind = graph.nodes[node].entity_kind;
-        demand[node] = match kind {
-            Item::Sink => Demand {
-                rest: f64::INFINITY,
-                items: HashMap::new(),
-            },
-            kind if kind.crafts() => match graph.nodes[node].recipe_item.and_then(get_recipe) {
-                Some(recipe) => {
-                    let crafts = recipe
-                        .produces
-                        .iter()
-                        .map(|&(item, rate)| total(item) / rate)
-                        .fold(kind.flow_rate() / recipe.crafting_time, f64::min);
-                    // A burner takes any one fuel for all of its energy.
-                    let fuel = kind.fuel_per_craft(&recipe).map(|kj| {
-                        all_items()
-                            .into_iter()
-                            .filter_map(move |item| Some((item, crafts * kj / item.fuel_value()?)))
-                    });
-                    Demand {
-                        rest: 0.0,
-                        items: recipe
-                            .consumes
-                            .iter()
-                            .map(|&(item, rate)| (item, rate * crafts))
-                            .chain(fuel.into_iter().flatten())
-                            .collect(),
-                    }
-                }
-                None => Demand::default(),
-            },
-            _ => {
-                let cap = if kind.is_lane_aware() {
-                    kind.flow_rate() / 2.0
-                } else {
-                    kind.flow_rate()
-                };
-                Demand {
-                    rest: succs.iter().map(|&s| demand[s].rest).sum::<f64>().min(cap),
-                    items: succs
-                        .iter()
-                        .flat_map(|&s| demand[s].items.keys())
-                        .map(|&item| (item, total(item).min(cap)))
-                        .collect(),
-                }
-            }
-        };
+        demand[node] = node_demand(graph, node, &demand);
         for &p in &graph.predecessors[node] {
             pending[p] -= 1;
             if pending[p] == 0 {
@@ -446,7 +444,78 @@ fn downstream_demand(graph: &FactoryGraph) -> Vec<Demand> {
             }
         }
     }
+    let looped: Vec<usize> = (0..n).filter(|&i| pending[i] > 0).rev().collect();
+    for _ in 0..MAX_SWEEPS {
+        let mut unsettled = false;
+        for &node in &looped {
+            let new = node_demand(graph, node, &demand);
+            let old = &demand[node];
+            unsettled |= (new.rest - old.rest).abs() > SETTLED
+                || new.items.len() != old.items.len()
+                || new
+                    .items
+                    .iter()
+                    .any(|(&item, &rate)| (rate - old.get(item)).abs() > SETTLED);
+            demand[node] = new;
+        }
+        if !unsettled {
+            break;
+        }
+    }
     demand
+}
+
+/// One node's [`Demand`] given its successors'.
+fn node_demand(graph: &FactoryGraph, node: usize, demand: &[Demand]) -> Demand {
+    let succs = &graph.successors[node];
+    let total = |item: Item| succs.iter().map(|&s| demand[s].get(item)).sum::<f64>();
+    let kind = graph.nodes[node].entity_kind;
+    match kind {
+        Item::Sink => Demand {
+            rest: f64::INFINITY,
+            items: HashMap::new(),
+        },
+        kind if kind.crafts() => match graph.nodes[node].recipe_item.and_then(get_recipe) {
+            Some(recipe) => {
+                let crafts = recipe
+                    .produces
+                    .iter()
+                    .map(|&(item, rate)| total(item) / rate)
+                    .fold(kind.flow_rate() / recipe.crafting_time, f64::min);
+                // A burner takes any one fuel for all of its energy.
+                let fuel = kind.fuel_per_craft(&recipe).map(|kj| {
+                    all_items()
+                        .into_iter()
+                        .filter_map(move |item| Some((item, crafts * kj / item.fuel_value()?)))
+                });
+                Demand {
+                    rest: 0.0,
+                    items: recipe
+                        .consumes
+                        .iter()
+                        .map(|&(item, rate)| (item, rate * crafts))
+                        .chain(fuel.into_iter().flatten())
+                        .collect(),
+                }
+            }
+            None => Demand::default(),
+        },
+        _ => {
+            let cap = if kind.is_lane_aware() {
+                kind.flow_rate() / 2.0
+            } else {
+                kind.flow_rate()
+            };
+            Demand {
+                rest: succs.iter().map(|&s| demand[s].rest).sum::<f64>().min(cap),
+                items: succs
+                    .iter()
+                    .flat_map(|&s| demand[s].items.keys())
+                    .map(|&item| (item, total(item).min(cap)))
+                    .collect(),
+            }
+        }
+    }
 }
 
 /// Split `budget` max-min fairly over `(cap, weight)` claims: each gets
@@ -557,12 +626,13 @@ fn pickup_input(
     input
 }
 
-/// Check if the graph has any cycles using DFS.
-fn has_cycle(graph: &FactoryGraph) -> bool {
-    let n = graph.node_count();
-    let mut visited = vec![0u8; n]; // 0=unvisited, 1=in-stack, 2=done
+/// The edges a DFS from `starts` finds closing a loop. Cutting them leaves
+/// what is reachable acyclic.
+fn back_edges(graph: &FactoryGraph, starts: &[usize]) -> HashSet<(usize, usize)> {
+    let mut back = HashSet::new();
+    let mut visited = vec![0u8; graph.node_count()]; // 0=unvisited, 1=in-stack, 2=done
 
-    for start in 0..n {
+    for &start in starts {
         if visited[start] != 0 {
             continue;
         }
@@ -574,7 +644,7 @@ fn has_cycle(graph: &FactoryGraph) -> bool {
                 let next = graph.successors[*node][*succ_idx];
                 *succ_idx += 1;
                 if visited[next] == 1 {
-                    return true; // Back edge = cycle
+                    back.insert((*node, next));
                 }
                 if visited[next] == 0 {
                     visited[next] = 1;
@@ -586,7 +656,15 @@ fn has_cycle(graph: &FactoryGraph) -> bool {
             }
         }
     }
-    false
+    back
+}
+
+/// Whether two per-item rates differ by more than [`SETTLED`].
+fn differs(a: &HashMap<Item, f64>, b: &HashMap<Item, f64>) -> bool {
+    let rate = |m: &HashMap<Item, f64>, item| m.get(item).copied().unwrap_or(0.0);
+    a.keys()
+        .chain(b.keys())
+        .any(|item| (rate(a, item) - rate(b, item)).abs() > SETTLED)
 }
 
 /// Find all nodes reachable from `starts`.
@@ -618,7 +696,8 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 mod tests {
     use super::*;
     use crate::graph::build_graph;
-    use crate::types::{Direction, Misc, NodeId};
+    use crate::rng::Rng;
+    use crate::types::{Channel, Direction, Misc, NodeId};
     use crate::world::World;
 
     #[test]
@@ -738,12 +817,12 @@ mod tests {
             predecessors: vec![vec![1], vec![0]],
         };
 
-        assert!(has_cycle(&g));
+        assert_eq!(back_edges(&g, &[0]), HashSet::from([(1, 0)]));
 
         // Make it acyclic
         g.successors = vec![vec![1], vec![]];
         g.predecessors = vec![vec![], vec![0]];
-        assert!(!has_cycle(&g));
+        assert!(back_edges(&g, &[0]).is_empty());
     }
 
     #[test]
@@ -1093,5 +1172,104 @@ mod tests {
             "one-of-two-sinks bypass should score 3.75, got {}",
             score
         );
+    }
+
+    /// Most a factory could deliver: the max flow from its sources to its
+    /// sinks with every node passing at most its own rate.
+    fn max_flow(g: &FactoryGraph) -> f64 {
+        let n = g.node_count();
+        let (source, sink) = (2 * n, 2 * n + 1);
+        let mut adj = vec![Vec::new(); 2 * n + 2];
+        let mut cap: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut edge = |a: usize, b: usize, c: f64| {
+            adj[a].push(b);
+            adj[b].push(a);
+            *cap.entry((a, b)).or_insert(0.0) += c;
+            cap.entry((b, a)).or_insert(0.0);
+        };
+        for (i, node) in g.nodes.iter().enumerate() {
+            let kind = node.entity_kind;
+            match kind {
+                Item::Source => edge(source, 2 * i + 1, f64::INFINITY),
+                Item::Sink => edge(2 * i, sink, f64::INFINITY),
+                _ if kind.is_lane_aware() => edge(2 * i, 2 * i + 1, kind.flow_rate() / 2.0),
+                _ => edge(2 * i, 2 * i + 1, kind.flow_rate()),
+            }
+            for &j in &g.successors[i] {
+                edge(2 * i + 1, 2 * j, f64::INFINITY);
+            }
+        }
+        let mut flow = 0.0;
+        loop {
+            let mut prev = vec![usize::MAX; 2 * n + 2];
+            let mut queue = VecDeque::from([source]);
+            while let Some(u) = queue.pop_front() {
+                for &v in &adj[u] {
+                    if prev[v] == usize::MAX && cap[&(u, v)] > 1e-12 {
+                        prev[v] = u;
+                        queue.push_back(v);
+                    }
+                }
+            }
+            if prev[sink] == usize::MAX {
+                return flow;
+            }
+            let mut path = vec![sink];
+            while path[path.len() - 1] != source {
+                path.push(prev[path[path.len() - 1]]);
+            }
+            let push = path
+                .windows(2)
+                .map(|w| cap[&(w[1], w[0])])
+                .fold(f64::INFINITY, f64::min);
+            if push.is_infinite() {
+                return push;
+            }
+            for w in path.windows(2) {
+                *cap.get_mut(&(w[1], w[0])).unwrap() -= push;
+                *cap.get_mut(&(w[0], w[1])).unwrap() += push;
+            }
+            flow += push;
+        }
+    }
+
+    #[test]
+    fn test_loops_never_beat_max_flow() {
+        // RL maximises throughput, so no loop may deliver more than the
+        // belts could carry from the sources at all. Scramble the balancers
+        // (loops everywhere) and hold every build to its max flow.
+        let specs =
+            crate::textual::parse_many(include_str!("../tests/factories/balancers.yaml")).unwrap();
+        let mut rng = Rng::seeded(0);
+        let mut looped = 0;
+        for _ in 0..2000 {
+            let mut w = specs[rng.choice_index(specs.len())].world.clone();
+            for _ in 0..rng.randint(1, 6) {
+                let (x, y) = loop {
+                    let x = rng.choice_index(w.width());
+                    let y = rng.choice_index(w.height());
+                    if w.entity_at(x, y).is_some() {
+                        break (x, y);
+                    }
+                };
+                match rng.randrange(5) {
+                    0..=2 => w.set(x, y, Channel::Direction, rng.randint(1, 4)),
+                    3 => w.set(x, y, Channel::Misc, rng.randint(0, 2)),
+                    _ => w.set(x, y, Channel::Entities, 0),
+                }
+            }
+            let g = build_graph(&w);
+            let sources: Vec<usize> = (0..g.node_count())
+                .filter(|&i| g.nodes[i].entity_kind == Item::Source)
+                .collect();
+            looped += usize::from(!back_edges(&g, &sources).is_empty());
+            let delivered: f64 = calc_throughput(&g).0.iter().map(|d| d.achieved).sum();
+            assert!(
+                delivered <= max_flow(&g) + 1e-9,
+                "{delivered} > {}",
+                max_flow(&g)
+            );
+        }
+        assert!(looped > 500, "only {looped} scrambled builds kept a loop");
     }
 }
