@@ -33,6 +33,7 @@ from helpers import (
     rs_throughput,
     set_assembler,
     set_entity,
+    set_multi_tile_entity,
     str2ent,
 )
 
@@ -48,7 +49,7 @@ MISC_VALUES = [0, 1, 2]
 
 def random_world(size, rng, density=0.3):
     """Random world with mixed entities."""
-    world = torch.zeros((size, size, 4), dtype=torch.int64)
+    world = make_world(size)
     for x in range(size):
         for y in range(size):
             if rng.random() < density:
@@ -61,7 +62,7 @@ def random_world(size, rng, density=0.3):
 
 def random_belt_world(size, rng, density=0.4):
     """Random world with only belts, sources, and sinks."""
-    world = torch.zeros((size, size, 4), dtype=torch.int64)
+    world = make_world(size)
     # Place a source
     sx, sy = rng.randint(0, size - 1), rng.randint(0, size - 1)
     world[sx, sy, 0] = str2ent("source").value
@@ -224,6 +225,25 @@ def handcrafted_inserter_chain(n_inserters):
     return world
 
 
+def handcrafted_splitter_loops(n_loops):
+    """N splitters each sending one output back round onto its own input belt."""
+    world = make_world(7, n_loops * 3)
+    for i in range(n_loops):
+        row = i * 3
+        set_entity(world, 0, row, "stack_inserter", Direction.EAST, "iron_plate")
+        for x in range(1, 4):
+            set_entity(world, x, row, "transport_belt", Direction.EAST)
+        set_multi_tile_entity(world, "splitter", 4, row, Direction.EAST)
+        set_entity(world, 5, row, "transport_belt", Direction.EAST)
+        set_entity(world, 6, row, "bulk_inserter", Direction.EAST, "iron_plate")
+        set_entity(world, 5, row + 1, "transport_belt", Direction.SOUTH)
+        for x in range(3, 6):
+            set_entity(world, x, row + 2, "transport_belt", Direction.WEST)
+        set_entity(world, 2, row + 2, "transport_belt", Direction.NORTH)
+        set_entity(world, 2, row + 1, "transport_belt", Direction.NORTH)
+    return world
+
+
 # ── Benchmark runner ─────────────────────────────────────────────────────────
 
 
@@ -327,6 +347,10 @@ def main():
     for n in [1, 3, 5]:
         worlds = [handcrafted_inserter_chain(n)]
         results.append(bench(f"Inserter chain (n={n})", worlds, n_repeats=10))
+
+    for n in [1, 3, 5]:
+        worlds = [handcrafted_splitter_loops(n)]
+        results.append(bench(f"Splitter loop-backs (n={n})", worlds, n_repeats=10))
 
     for size in [5, 15, 30]:
         worlds = [make_world(size)]

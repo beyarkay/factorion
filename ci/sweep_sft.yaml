@@ -1,66 +1,22 @@
-# ci/sweep_sft.yaml — denoiser (sft.py) sweep at 15x15 on the full-factory lessons.
+# ci/sweep_sft.yaml — denoiser (sft.py) share of human windows, at lr 1e-3.
 #
 # Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
-#
-# No prior sweep of this architecture exists: ranges bracket the defaults
-# (UNet width/depth, bottleneck attention, optimisation, the auxiliary loss
-# weights and the generation schedule).
 
-method: bayes
-run_cap: 30
+method: grid
+run_cap: 3
 metric:
   name: "val/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:
-  size:
-    value: 15
   num_samples:
-    value: 5000000
-
-  # ── Optimisation ─────────────────────────────────────────────────
+    value: 20000000
+  windows_frac:
+    values: [0.0, 0.25, 0.5]
   lr:
-    distribution: log_uniform_values
-    min: 1.0e-4
-    max: 1.0e-3
-  cooldown_frac:
-    distribution: uniform
-    min: 0.2
-    max: 0.8
-
-  # ── Architecture ─────────────────────────────────────────────────
-  width:
-    values: [64, 96, 128, 192]
-  blocks:
-    distribution: int_uniform
-    min: 1
-    max: 3
-  levels:
-    values: [2, 3]
-  attn_layers:
-    distribution: int_uniform
-    min: 0
-    max: 8
-
-  # ── Noise and losses ─────────────────────────────────────────────
-  noise_one_frac:
-    distribution: uniform
-    min: 0.0
-    max: 0.3
-  lw_cost:
-    distribution: log_uniform_values
-    min: 0.005
-    max: 0.5
-
-  # ── Generation ───────────────────────────────────────────────────
-  gen_steps:
-    values: [4, 8, 16]
-  gen_temperature:
-    distribution: uniform
-    min: 0.5
-    max: 1.2
+    value: 1.0e-3
 
 program: sft.py
 
