@@ -3,9 +3,9 @@
 Loads the trained Factorion denoiser checkpoint named by the mod's
 "Factorion checkpoint" setting (local, from a GitHub release, or from a W&B
 run), polls a
-running Factorio instance over RCON for prediction requests, generates eight
-factories around each request's markers (its existing entities are walls to
-build around), and streams the highest-throughput one's entities back via
+running Factorio instance over RCON for prediction requests, generates
+factories around each request's markers, and streams the highest-throughput
+one's denoising steps back via
 the same RCON connection for immediate placement in the world.
 
 ## Run
@@ -45,8 +45,7 @@ writing them there first if absent; pass both to reach a headless server.
 
 The checkpoint setting accepts a W&B run id (fetched from a GitHub release
 asset `<run_id>.pt` if one exists, else from W&B), `entity/project/id`, or a
-local `.pt` checkpoint saved by `sft.py` or `rl.py`. The denoiser runs at any
-grid size; `--grid-size` (default 32) is the region the mod plans.
+local `.pt` checkpoint saved by `sft.py` or `rl.py`.
 `--device auto` (the default) uses CUDA, then MPS, then the CPU.
 
 ## Protocol
@@ -75,7 +74,7 @@ prediction request:
   "request_id": "1234-5-7",
   "checkpoint": "dr17bmik",
   "grid_size": 15,
-  "entities": [
+  "start_entities": [
     { "name": "transport-belt", "x": 2, "y": 3, "direction": 2 },
     {
       "name": "assembling-machine-1",
@@ -92,23 +91,23 @@ prediction request:
 
 `direction` uses Factorion's enum (1=N, 2=E, 3=S, 4=W), _not_ Factorio's
 16-step runtime convention; the server converts before emitting.
-Ctrl-P snapshots supported entities already inside the region into `entities`,
+Ctrl-P snapshots supported entities already inside the region into `start_entities`,
 including their complete rotated footprint, recipes, and underground-belt
 input/output state. Inserter directions are converted from Factorio's drop
 direction to the model's pickup direction.
 
-For each entity of the chosen build, the server sends:
+For each denoising step of the chosen build, the server sends:
 
 ```
 /silent-command rcon.print(remote.call(
-  'factorion','place_prediction','<req_id>','<placement_json>'))
+  'factorion','place_predictions','<req_id>','<placements_json>'))
 ```
 
-The placement contains the Factorio prototype, center position relative to the
+Each placement contains the Factorio prototype, center position relative to the
 region, rotated footprint, direction, and optional recipe or underground-belt
 type. The mod looks up the requesting player and creates the entity on that
 player's surface. The server then calls `finish_prediction` with the number
-of entities placed, the stop reason, and any server error; rerunning or resetting removes only entities created by this protocol.
+of steps, the stop reason, and any server error; rerunning or resetting removes only entities created by this protocol.
 
 ## Reconnect
 
@@ -123,13 +122,13 @@ Spin up `nc` as a fake RCON endpoint to verify the wire format, or run
 just the inference path:
 
 ```python
-from denoise import load_denoiser
-from server import action_to_placement, run_inference
+from server import Generation, denoise_frames, frame_placements, load_model, request_to_obs
 import torch
-model = load_denoiser("sft_checkpoint.pt")
-world, stats = run_inference(
-    model, fake_req, device=torch.device("cpu"),
-    on_placement=lambda action: print(action_to_placement(action)) or True,
-)
+model = load_model("sft_checkpoint.pt", torch.device("cpu"), "factorion", None)
+world = request_to_obs(fake_req)
+frames, stats = denoise_frames(model, world, Generation(), 1, torch.device("cpu"))
+for frame in frames:
+    print(frame_placements(world, frame))
+    world = frame
 print(stats)
 ```

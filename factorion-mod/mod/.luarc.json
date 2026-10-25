@@ -8,6 +8,7 @@
     "game",
     "helpers",
     "log",
+    "prototypes",
     "rcon",
     "remote",
     "rendering",
