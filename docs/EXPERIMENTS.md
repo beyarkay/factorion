@@ -241,6 +241,8 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#390](https://github.com/beyarkay/factorion/pull/390) | ✅ | Connect a splitter to the splitter in front of it (same-direction receiver), fixing balancer-fixture failures |
 | [#394](https://github.com/beyarkay/factorion/pull/394) | ✅ | Inserters pick up from both lanes and split across items on a lane (fixes 0.0 TRIAL_DEPTH_1 builds); SFT 2.5M val +0.008 |
 | [#466](https://github.com/beyarkay/factorion/pull/466) | ⏳ | Let placements overwrite existing entities (edit, delete, rotate) with whole-entity grouping and protected tiles |
+| [#506](https://github.com/beyarkay/factorion/pull/506) | ⏳ | Score loops at their steady state instead of zeroing: sweep the cut-back-edge pass to a fixed point, back up splitters/inserters on loops; 34 active community balancers + 8 hand-built loops match headless Factorio (geometric-series ratio splits exact), acyclic graphs bit-identical |
+| [#509](https://github.com/beyarkay/factorion/pull/509) | ⏳ | An underground's tunnel passes under undergrounds at right angles instead of ending at them; unparks 7 community balancers (8→8 was 7.5 on four outputs, now 15), all matching headless Factorio, generated lessons unchanged |
 
 ### Metrics & eval
 

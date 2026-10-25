@@ -1,0 +1,137 @@
+# Loops in the flow graph, with the rates measured in headless Factorio 2.0.
+
+description: |
+  A splitter sends one output to the sink and loops the other back to
+  sideload onto its own input belt. The source keeps both lanes of that belt
+  full, and a sideload only fills gaps, so the loop backs up and the splitter
+  sends everything to the sink: 15 i/s.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 6, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  .. .. .. .. .. .. ..
+  .. .. .. .. .. .. ..
+  S> b> b> b> Y> b> K>
+  .. .. b^ .. Y> bv ..
+  .. .. b^ b< b< b< ..
+---
+description: |
+  A splitter loops one output round to come straight back on to its own
+  input belt, which the source sideloads onto. The loop's flow goes first
+  and the source only tops the left lane up to 7.5 i/s, half of which the
+  splitter loops back, so the sink gets 3.75 i/s.
+items:
+- { x: 2, y: 0, item: iron_plate }
+- { x: 6, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 3.75 }
+factory: |
+  .. .. Sv .. .. .. ..
+  .. .. bv .. .. .. ..
+  .. b> b> b> Y> b> K>
+  .. b^ .. .. Y> bv ..
+  .. b^ b< b< b< b< ..
+---
+description: |
+  The loop-back sideloads onto the empty lane of a belt the source fills
+  one lane of. That lane carries only what comes round: half the source's
+  lane plus half of itself, which settles at a full 7.5 i/s, so the sink
+  gets 3.75 i/s from each lane.
+items:
+- { x: 1, y: 0, item: iron_plate }
+- { x: 6, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+factory: |
+  .. Sv .. .. .. .. ..
+  .. bv .. .. .. .. ..
+  b> b> b> b> Y> b> K>
+  .. .. b^ .. Y> bv ..
+  .. .. b^ b< b< b< ..
+---
+description: |
+  A splitter's second output runs round into its own second input. The
+  loop fills to a full belt and the sink gets all 15 i/s of the source.
+items:
+- { x: 0, y: 2, item: iron_plate }
+- { x: 6, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  .. .. .. .. .. .. ..
+  .. .. .. .. .. .. ..
+  S> b> b> b> Y> b> K>
+  .. .. .. b> Y> bv ..
+  .. .. .. b^ b< b< ..
+---
+description: |
+  A ring of belts the source sideloads onto, with a splitter in it sending
+  half of the ring's 7.5 i/s lane to the sink and half on round the ring,
+  where the source tops it back up: 3.75 i/s.
+items:
+- { x: 1, y: 0, item: iron_plate }
+- { x: 5, y: 5, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 3.75 }
+factory: |
+  .. Sv .. .. .. .. ..
+  .. bv .. .. .. .. ..
+  b> b> b> b> bv .. ..
+  b^ .. .. .. YvvvY ..
+  b^ .. .. .. bv bv ..
+  b^ b< b< b< b< Kv ..
+---
+description: |
+  A sushi ring the source sideloads onto, with two inserters picking off it.
+  The ring fills and the source tops up only what the inserters take, so each
+  gets its full hand (0.86 i/s here; the game's inserters move 1 i/s).
+items:
+- { x: 1, y: 0, item: iron_plate }
+- { x: 1, y: 6, item: iron_plate }
+- { x: 2, y: 6, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0.86 }
+factory: |
+  .. Sv .. .. .. ..
+  .. bv .. .. .. ..
+  b> b> b> b> bv ..
+  b^ .. .. .. bv ..
+  b^ b< b< b< b< ..
+  .. iv iv .. .. ..
+  .. Kv Kv .. .. ..
+  .. .. .. E. .. ..
+---
+description: |
+  An inserter picks off the return leg of a U and drops back onto its start,
+  which the source keeps full. Its hand has nowhere to go, so it stalls and
+  the sink gets all 15 i/s.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 0, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  S> b> b> b> bv
+  .. i^ .. .. bv
+  K< b< b< b< b<
+  .. .. E. .. ..
+---
+description: |
+  A closed ring a source fills, beside a separate source-to-sink line. The
+  ring passes nothing on, and the line still delivers its 15 i/s.
+items:
+- { x: 1, y: 0, item: iron_plate }
+- { x: 0, y: 5, item: iron_plate }
+- { x: 4, y: 5, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+factory: |
+  .. Sv .. .. ..
+  .. bv .. .. ..
+  b> b> bv .. ..
+  b^ b< b< .. ..
+  .. .. .. .. ..
+  S> b> b> b> K>
